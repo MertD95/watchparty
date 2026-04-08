@@ -1,0 +1,9 @@
+{
+  "name": "watchparty-landing",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "npx serve -l 8090 --no-clipboard --single",
+    "preview": "npx serve -l 8090 --no-clipboard --single"
+  }
+}

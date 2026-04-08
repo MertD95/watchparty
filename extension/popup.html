@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      width: 300px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0f0f1e;
+      color: #e0e0e0;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 14px 16px;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+    }
+    .header h3 {
+      font-size: 14px;
+      font-weight: 600;
+      color: #fff;
+    }
+    .header .version {
+      font-size: 10px;
+      color: #555;
+      margin-left: auto;
+    }
+
+    /* Status indicators */
+    .status-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 16px;
+      font-size: 12px;
+    }
+    .dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .dot.on { background: #22c55e; }
+    .dot.off { background: #ef4444; }
+
+    /* Sections */
+    .section {
+      padding: 12px 16px;
+      border-top: 1px solid rgba(255,255,255,0.06);
+    }
+    .section-title {
+      font-size: 10px;
+      text-transform: uppercase;
+      color: #555;
+      letter-spacing: 0.5px;
+      margin-bottom: 8px;
+    }
+
+    /* Inputs */
+    input[type="text"] {
+      width: 100%;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 6px;
+      padding: 8px 10px;
+      color: #fff;
+      font-size: 13px;
+      outline: none;
+      margin-bottom: 8px;
+    }
+    input[type="text"]:focus {
+      border-color: #6366f1;
+    }
+    input[type="text"]::placeholder {
+      color: #444;
+    }
+
+    /* Buttons */
+    .btn {
+      width: 100%;
+      padding: 9px;
+      border: none;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.15s;
+      margin-bottom: 6px;
+    }
+    .btn-primary {
+      background: #6366f1;
+      color: white;
+    }
+    .btn-primary:hover {
+      background: #5558e6;
+    }
+    .btn-secondary {
+      background: rgba(255,255,255,0.08);
+      color: #ccc;
+    }
+    .btn-secondary:hover {
+      background: rgba(255,255,255,0.12);
+    }
+    .btn-danger {
+      background: rgba(239,68,68,0.15);
+      color: #ef4444;
+    }
+    .btn-danger:hover {
+      background: rgba(239,68,68,0.25);
+    }
+    .btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    /* Room info */
+    .room-info {
+      background: rgba(99,102,241,0.1);
+      border: 1px solid rgba(99,102,241,0.2);
+      border-radius: 8px;
+      padding: 10px 12px;
+      margin-bottom: 8px;
+    }
+    .room-id {
+      font-family: 'Consolas', 'Monaco', monospace;
+      font-size: 13px;
+      color: #6366f1;
+      cursor: pointer;
+      user-select: all;
+    }
+    .room-id:hover {
+      color: #818cf8;
+    }
+    .room-meta {
+      font-size: 11px;
+      color: #888;
+      margin-top: 4px;
+    }
+    .users-list {
+      margin-top: 8px;
+    }
+    .user-item {
+      font-size: 12px;
+      padding: 3px 0;
+      color: #ccc;
+    }
+    .user-crown {
+      color: #f59e0b;
+    }
+
+    /* Content link */
+    .content-hint {
+      background: rgba(34,197,94,0.1);
+      border: 1px solid rgba(34,197,94,0.2);
+      border-radius: 6px;
+      padding: 8px 10px;
+      font-size: 11px;
+      color: #22c55e;
+      margin-bottom: 8px;
+      line-height: 1.4;
+    }
+    .content-hint a {
+      color: #4ade80;
+      text-decoration: underline;
+    }
+
+    .info-text {
+      font-size: 11px;
+      color: #555;
+      line-height: 1.4;
+      padding: 8px 16px 12px;
+    }
+    .info-text a {
+      color: #6366f1;
+    }
+
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h3>WatchParty</h3>
+    <span class="version" id="version"></span>
+  </div>
+
+  <!-- Status -->
+  <div class="status-row">
+    <div class="dot" id="stremio-dot"></div>
+    <span id="stremio-status">Checking Stremio...</span>
+  </div>
+  <div class="status-row">
+    <div class="dot" id="ws-dot"></div>
+    <span id="ws-status">Connecting...</span>
+  </div>
+
+  <!-- Not in room: create/join -->
+  <div id="view-lobby">
+    <div class="section">
+      <div class="section-title">Your Name</div>
+      <input type="text" id="username-input" placeholder="Enter your name" maxlength="25" />
+    </div>
+    <div class="section">
+      <div class="section-title">Create a Room</div>
+      <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:#999;margin-bottom:8px;cursor:pointer">
+        <input type="checkbox" id="public-check" style="accent-color:#6366f1" />
+        <span>Public room (anyone can join)</span>
+      </label>
+      <button class="btn btn-primary" id="btn-create">Create Room</button>
+    </div>
+    <div class="section">
+      <div class="section-title">Join a Room</div>
+      <input type="text" id="room-id-input" placeholder="Paste room ID" />
+      <button class="btn btn-secondary" id="btn-join">Join Room</button>
+    </div>
+    <div class="info-text">
+      Open <a href="https://web.stremio.com" target="_blank">web.stremio.com</a>, pick something to watch, then create a room. Your friend joins with the room ID.
+    </div>
+  </div>
+
+  <!-- In room -->
+  <div id="view-room" class="hidden">
+    <div class="section">
+      <div class="room-info">
+        <div>Room: <span class="room-id" id="room-id-display" title="Click to copy"></span></div>
+        <div class="room-meta" id="room-meta"></div>
+      </div>
+
+      <div id="content-link-hint" class="content-hint hidden">
+        The host is watching: <strong id="content-name"></strong><br/>
+        <a id="content-link" href="#" target="_blank">Open in Stremio Web</a>
+      </div>
+
+      <div class="section-title">Participants</div>
+      <div class="users-list" id="users-list"></div>
+    </div>
+    <div class="section">
+      <button class="btn btn-danger" id="btn-leave">Leave Room</button>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

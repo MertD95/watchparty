@@ -1,0 +1,73 @@
+{
+  "manifest_version": 3,
+  "name": "WatchParty for Stremio",
+  "version": "2.0.0",
+  "description": "Synchronized watching with friends on Stremio Web. Create a room, share the code, watch together.",
+  "permissions": [
+    "declarativeNetRequest",
+    "declarativeNetRequestFeedback",
+    "storage"
+  ],
+  "host_permissions": [
+    "http://localhost:11470/*",
+    "http://127.0.0.1:11470/*"
+  ],
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "stremio_cors",
+        "enabled": true,
+        "path": "rules.json"
+      }
+    ]
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://web.stremio.com/*",
+        "https://web.strem.io/*",
+        "https://app.strem.io/*"
+      ],
+      "js": ["stremio-content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://watchparty.mertd.me/*",
+        "http://localhost:8080/*",
+        "http://localhost:8090/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["injected.js"],
+      "matches": [
+        "https://web.stremio.com/*",
+        "https://web.strem.io/*",
+        "https://app.strem.io/*",
+        "https://watchparty.mertd.me/*",
+        "http://localhost:8080/*",
+        "http://localhost:8090/*"
+      ]
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png"
+    },
+    "default_title": "WatchParty for Stremio",
+    "default_popup": "popup.html"
+  }
+}

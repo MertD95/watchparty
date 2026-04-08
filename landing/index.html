@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WatchParty — Watch Together on Stremio</title>
+  <meta name="description" content="Synchronized watching with friends on Stremio Web. Free, open-source browser extension.">
+  <link rel="icon" href="/favicon.ico">
+  <style>
+    :root {
+      --bg: #0a0a1a;
+      --surface: #12122a;
+      --border: rgba(255,255,255,0.08);
+      --text: #e0e0e0;
+      --muted: #666;
+      --accent: #6366f1;
+      --accent-hover: #818cf8;
+      --green: #22c55e;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      min-height: 100vh;
+    }
+    a { color: var(--accent-hover); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* Header */
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 24px;
+      border-bottom: 1px solid var(--border);
+      max-width: 960px;
+      margin: 0 auto;
+    }
+    .logo { font-size: 18px; font-weight: 700; color: #fff; }
+    .logo span { color: var(--accent); }
+    .nav { display: flex; gap: 20px; font-size: 14px; }
+
+    /* Hero */
+    .hero {
+      text-align: center;
+      padding: 80px 24px 60px;
+      max-width: 640px;
+      margin: 0 auto;
+    }
+    .hero h1 {
+      font-size: 40px;
+      font-weight: 700;
+      color: #fff;
+      margin-bottom: 16px;
+      line-height: 1.2;
+    }
+    .hero h1 span { color: var(--accent); }
+    .hero p {
+      font-size: 18px;
+      color: #999;
+      margin-bottom: 32px;
+    }
+    .cta-row {
+      display: flex;
+      gap: 12px;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 24px;
+      border-radius: 8px;
+      font-size: 15px;
+      font-weight: 500;
+      border: none;
+      cursor: pointer;
+      transition: background 0.15s, transform 0.1s;
+      text-decoration: none;
+    }
+    .btn:hover { text-decoration: none; transform: translateY(-1px); }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .btn-secondary { background: rgba(255,255,255,0.08); color: #ccc; }
+    .btn-secondary:hover { background: rgba(255,255,255,0.12); }
+
+    /* How it works */
+    .steps {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 0 24px 60px;
+    }
+    .steps h2 {
+      text-align: center;
+      font-size: 24px;
+      color: #fff;
+      margin-bottom: 32px;
+    }
+    .step-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 20px;
+    }
+    .step {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+    }
+    .step-num {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      background: var(--accent);
+      color: #fff;
+      font-size: 13px;
+      font-weight: 700;
+      margin-bottom: 10px;
+    }
+    .step h3 { font-size: 15px; color: #fff; margin-bottom: 6px; }
+    .step p { font-size: 13px; color: #999; }
+
+    /* Public rooms */
+    .rooms-section {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 0 24px 60px;
+    }
+    .rooms-section h2 {
+      text-align: center;
+      font-size: 24px;
+      color: #fff;
+      margin-bottom: 8px;
+    }
+    .rooms-subtitle {
+      text-align: center;
+      color: var(--muted);
+      font-size: 14px;
+      margin-bottom: 24px;
+    }
+    .rooms-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .room-card {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 18px;
+      transition: border-color 0.15s;
+    }
+    .room-card:hover {
+      border-color: var(--accent);
+    }
+    .room-poster {
+      width: 40px;
+      height: 56px;
+      border-radius: 4px;
+      background: rgba(255,255,255,0.05);
+      object-fit: cover;
+      flex-shrink: 0;
+    }
+    .room-info { flex: 1; min-width: 0; }
+    .room-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: #fff;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .room-meta {
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .room-users {
+      font-size: 12px;
+      color: var(--green);
+      white-space: nowrap;
+    }
+    .room-join-btn {
+      padding: 6px 14px;
+      font-size: 12px;
+      border-radius: 6px;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .room-join-btn:hover { background: var(--accent-hover); }
+    .rooms-empty {
+      text-align: center;
+      color: var(--muted);
+      font-size: 14px;
+      padding: 32px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+    }
+
+    /* Room redirect page */
+    .redirect-page {
+      display: none;
+      text-align: center;
+      padding: 120px 24px;
+    }
+    .redirect-page h2 { font-size: 24px; color: #fff; margin-bottom: 12px; }
+    .redirect-page p { color: #999; margin-bottom: 24px; }
+    .redirect-room-id {
+      font-family: 'Consolas', 'Monaco', monospace;
+      color: var(--accent);
+      font-size: 16px;
+      background: rgba(99,102,241,0.1);
+      padding: 4px 12px;
+      border-radius: 6px;
+    }
+
+    /* Footer */
+    .footer {
+      text-align: center;
+      padding: 24px;
+      border-top: 1px solid var(--border);
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    /* No extension warning */
+    .no-ext {
+      display: none;
+      background: rgba(239,68,68,0.1);
+      border: 1px solid rgba(239,68,68,0.2);
+      border-radius: 8px;
+      padding: 12px 16px;
+      text-align: center;
+      font-size: 13px;
+      color: #f87171;
+      max-width: 480px;
+      margin: 0 auto 24px;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Main landing page -->
+  <div id="page-landing">
+    <div class="header">
+      <div class="logo">Watch<span>Party</span></div>
+      <nav class="nav">
+        <a href="#rooms">Public Rooms</a>
+        <a href="https://github.com/mertd/WatchParty" target="_blank">GitHub</a>
+      </nav>
+    </div>
+
+    <div class="hero">
+      <h1>Watch Together on <span>Stremio</span></h1>
+      <p>Synchronized playback with friends. Each person streams locally — only play/pause/seek events are synced. Free and open-source.</p>
+      <div class="cta-row">
+        <a href="#" class="btn btn-primary" id="install-btn">Install Extension</a>
+        <a href="https://web.stremio.com" class="btn btn-secondary" target="_blank">Open Stremio Web</a>
+      </div>
+    </div>
+
+    <div class="steps">
+      <h2>How It Works</h2>
+      <div class="step-grid">
+        <div class="step">
+          <div class="step-num">1</div>
+          <h3>Install the extension</h3>
+          <p>Add WatchParty to your browser. Make sure Stremio desktop is running.</p>
+        </div>
+        <div class="step">
+          <div class="step-num">2</div>
+          <h3>Pick something to watch</h3>
+          <p>Browse and start playing on <a href="https://web.stremio.com" target="_blank">web.stremio.com</a> as usual.</p>
+        </div>
+        <div class="step">
+          <div class="step-num">3</div>
+          <h3>Create or join a room</h3>
+          <p>Click the extension icon to create a room. Share the code with your friend.</p>
+        </div>
+        <div class="step">
+          <div class="step-num">4</div>
+          <h3>Watch in sync</h3>
+          <p>Play, pause, seek — it all syncs automatically. Chat in the sidebar overlay.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="rooms-section" id="rooms">
+      <h2>Public Rooms</h2>
+      <p class="rooms-subtitle">Open rooms anyone can join. Create a public room from the extension.</p>
+      <div class="rooms-list" id="rooms-list">
+        <div class="rooms-empty" id="rooms-empty">No public rooms right now. Create one!</div>
+      </div>
+    </div>
+
+    <div class="footer">
+      WatchParty is open-source and free. Not affiliated with Stremio.
+    </div>
+  </div>
+
+  <!-- Room redirect page (shown when URL is /r/ROOM_ID) -->
+  <div id="page-redirect" class="redirect-page">
+    <h2>Joining WatchParty Room</h2>
+    <p>Room: <span class="redirect-room-id" id="redirect-room-id"></span></p>
+    <div class="no-ext" id="no-ext-warning">
+      WatchParty extension not detected. <a href="#" id="install-link">Install it first</a>, then refresh this page.
+    </div>
+    <p id="redirect-status">Connecting...</p>
+    <a href="https://web.stremio.com" class="btn btn-primary" id="redirect-btn" style="display:none">Open Stremio Web</a>
+  </div>
+
+  <script>
+    const WS_API = 'wss://ws.mertd.me';
+    const ROOMS_API = location.hostname === 'localhost'
+      ? 'http://localhost:8181/rooms'
+      : 'https://ws.mertd.me/rooms';
+
+    // --- Routing ---
+    const path = location.pathname;
+    const roomMatch = path.match(/^\/r\/([a-z0-9-]+)$/i);
+
+    if (roomMatch) {
+      showRedirectPage(roomMatch[1]);
+    } else {
+      showLandingPage();
+    }
+
+    // --- Landing page ---
+    function showLandingPage() {
+      document.getElementById('page-landing').style.display = 'block';
+      loadPublicRooms();
+    }
+
+    async function loadPublicRooms() {
+      try {
+        const res = await fetch(ROOMS_API);
+        if (!res.ok) return;
+        const data = await res.json();
+        const list = document.getElementById('rooms-list');
+        const empty = document.getElementById('rooms-empty');
+
+        if (!data.rooms || data.rooms.length === 0) {
+          empty.style.display = 'block';
+          return;
+        }
+
+        empty.style.display = 'none';
+        list.innerHTML = data.rooms.map(room => `
+          <div class="room-card">
+            ${room.meta.poster
+              ? `<img class="room-poster" src="${escapeAttr(room.meta.poster)}" alt="" />`
+              : `<div class="room-poster"></div>`}
+            <div class="room-info">
+              <div class="room-title">${escapeHtml(room.meta.name || 'Untitled')}</div>
+              <div class="room-meta">Hosted by ${escapeHtml(room.owner)}${room.meta.year ? ` &middot; ${room.meta.year}` : ''}</div>
+            </div>
+            <div class="room-users">${room.users} watching</div>
+            <button class="room-join-btn" onclick="joinRoom('${escapeAttr(room.id)}')">Join</button>
+          </div>
+        `).join('');
+      } catch {
+        // Server unavailable — show empty state
+      }
+    }
+
+    // Refresh rooms every 15 seconds
+    setInterval(loadPublicRooms, 15000);
+
+    function joinRoom(roomId) {
+      // Store room ID for the extension to pick up, then redirect
+      try {
+        localStorage.setItem('wp_pending_room', roomId);
+      } catch {}
+      // Also try to tell the extension via the content script
+      window.postMessage({ type: 'watchparty-join-room', roomId }, '*');
+      // Redirect to Stremio Web
+      window.location.href = 'https://web.stremio.com';
+    }
+
+    // --- Redirect page (/r/ROOM_ID) ---
+    function showRedirectPage(roomId) {
+      document.getElementById('page-landing').style.display = 'none';
+      document.getElementById('page-redirect').style.display = 'block';
+      document.getElementById('redirect-room-id').textContent = roomId;
+
+      // Store room ID for the extension
+      try {
+        localStorage.setItem('wp_pending_room', roomId);
+      } catch {}
+
+      // Check if extension is installed
+      const extCheck = setTimeout(() => {
+        // Extension didn't respond — show warning
+        document.getElementById('no-ext-warning').style.display = 'block';
+        document.getElementById('redirect-status').textContent = 'Extension not detected.';
+        document.getElementById('redirect-btn').style.display = 'inline-flex';
+        document.getElementById('redirect-btn').textContent = 'Install Extension & Retry';
+      }, 2000);
+
+      // Listen for extension presence
+      window.addEventListener('message', (e) => {
+        if (e.data?.type === 'watchparty-ext-ready') {
+          clearTimeout(extCheck);
+          document.getElementById('redirect-status').textContent = 'Extension detected! Redirecting to Stremio Web...';
+
+          // Tell extension about the pending room
+          window.postMessage({ type: 'watchparty-join-room', roomId }, '*');
+
+          setTimeout(() => {
+            window.location.href = 'https://web.stremio.com';
+          }, 500);
+        }
+      });
+
+      // Also check via attribute (content.js sets this synchronously)
+      if (document.documentElement.hasAttribute('data-watchparty-ext')) {
+        clearTimeout(extCheck);
+        window.postMessage({ type: 'watchparty-join-room', roomId }, '*');
+        document.getElementById('redirect-status').textContent = 'Redirecting to Stremio Web...';
+        setTimeout(() => {
+          window.location.href = 'https://web.stremio.com';
+        }, 500);
+      }
+    }
+
+    // --- Utilities ---
+    function escapeHtml(str) {
+      const d = document.createElement('div');
+      d.textContent = str;
+      return d.innerHTML;
+    }
+    function escapeAttr(str) {
+      return str.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+  </script>
+</body>
+</html>

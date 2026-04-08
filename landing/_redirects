@@ -1,0 +1,3 @@
+# Cloudflare Pages redirects
+# SPA fallback — all /r/* paths serve index.html
+/r/*  /index.html  200
