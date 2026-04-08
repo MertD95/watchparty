@@ -1,6 +1,6 @@
 // WatchParty — Sync Engine
 // Hooks into a <video> element and synchronizes playback via events from background.js.
-// Implements: soft drift correction (playbackRate), hard seek, echo prevention, visibility recovery.
+// Implements: soft drift correction (playbackRate), hard seek, echo prevention.
 
 const WPSync = (() => {
   'use strict';
@@ -11,8 +11,8 @@ const WPSync = (() => {
   const SOFT_RATE_SLOW = 0.95;     // When ahead of host
   const SOFT_RATE_FAST = 1.05;     // When behind host
   const SOFT_DRIFT_RESET = 0.1;    // Resume normal speed within 100ms
-  const SYNC_REPORT_INTERVAL = 500; // Report state every 500ms (via timeupdate)
-  const SEEK_COOLDOWN = 1500;       // Don't re-seek within 1.5s of a seek
+  const SYNC_REPORT_INTERVAL = 500; // Report state every 500ms
+  const SEEK_COOLDOWN = 1500;       // Don't re-seek within 1.5s
 
   let video = null;
   let isHost = false;
@@ -21,7 +21,8 @@ const WPSync = (() => {
   let lastSeekTime = 0;
   let hostSpeed = 1;
   let correcting = false;
-  let onSyncOut = null; // Callback: (state) => void — sends to background
+  let lastDrift = 0;
+  let onSyncOut = null; // Callback: (state) => void
 
   // --- Public API ---
 
@@ -36,8 +37,6 @@ const WPSync = (() => {
     video.addEventListener('seeked', onSeeked);
     video.addEventListener('ratechange', onRateChange);
     video.addEventListener('timeupdate', onTimeUpdate);
-
-    document.addEventListener('visibilitychange', onVisibility);
   }
 
   function detach() {
@@ -47,53 +46,49 @@ const WPSync = (() => {
     video.removeEventListener('seeked', onSeeked);
     video.removeEventListener('ratechange', onRateChange);
     video.removeEventListener('timeupdate', onTimeUpdate);
-    document.removeEventListener('visibilitychange', onVisibility);
     video = null;
     onSyncOut = null;
     correcting = false;
+    lastDrift = 0;
   }
 
-  function setHost(val) {
-    isHost = val;
-  }
+  function setHost(val) { isHost = val; }
+  function getLastDrift() { return lastDrift; }
+  function isAttached() { return video !== null; }
 
-  // Called when we receive sync state from the host (via background → content script)
-  function applyRemote(state) {
+  function applyRemote(player) {
     if (!video || isHost) return;
-
-    const now = Date.now();
-    hostSpeed = state.speed || 1;
+    hostSpeed = player.speed || 1;
 
     // Apply pause/play
-    if (state.paused && !video.paused) {
+    // pause() fires 'pause' synchronously — safe to reset flag immediately
+    // play() fires 'play' asynchronously — must reset flag after promise resolves
+    if (player.paused && !video.paused) {
+      isSyncing = true; video.pause(); isSyncing = false;
+    } else if (!player.paused && video.paused) {
       isSyncing = true;
-      video.pause();
-      isSyncing = false;
-    } else if (!state.paused && video.paused) {
-      isSyncing = true;
-      video.play().catch(() => {});
-      isSyncing = false;
+      video.play().then(() => { isSyncing = false; }).catch(() => { isSyncing = false; });
     }
 
     // Drift correction
-    const drift = state.time - video.currentTime; // positive = we're behind
+    const drift = player.time - video.currentTime;
+    lastDrift = drift;
+    const now = Date.now();
 
     if (Math.abs(drift) > SOFT_DRIFT_MAX) {
-      // Hard seek
       if (now - lastSeekTime > SEEK_COOLDOWN) {
         isSyncing = true;
-        video.currentTime = state.time;
+        video.currentTime = player.time;
         lastSeekTime = now;
-        isSyncing = false;
+        // seeked event fires asynchronously; use one-shot listener to clear flag
+        video.addEventListener('seeked', () => { isSyncing = false; }, { once: true });
         correcting = false;
         video.playbackRate = hostSpeed;
       }
     } else if (Math.abs(drift) > SOFT_DRIFT_MIN) {
-      // Soft correction via playbackRate
       correcting = true;
       video.playbackRate = drift > 0 ? SOFT_RATE_FAST : SOFT_RATE_SLOW;
     } else if (correcting && Math.abs(drift) < SOFT_DRIFT_RESET) {
-      // Close enough — resume normal speed
       correcting = false;
       video.playbackRate = hostSpeed;
     }
@@ -101,20 +96,9 @@ const WPSync = (() => {
 
   // --- Internal event handlers ---
 
-  function onPlay() {
-    if (isSyncing || !isHost) return;
-    report({ action: 'play' });
-  }
-
-  function onPause() {
-    if (isSyncing || !isHost) return;
-    report({ action: 'pause' });
-  }
-
-  function onSeeked() {
-    if (isSyncing || !isHost) return;
-    report({ action: 'seek' });
-  }
+  function onPlay() { if (!isSyncing && isHost) report({ action: 'play' }); }
+  function onPause() { if (!isSyncing && isHost) report({ action: 'pause' }); }
+  function onSeeked() { if (!isSyncing && isHost) report({ action: 'seek' }); }
 
   function onRateChange() {
     if (isSyncing || !isHost || correcting) return;
@@ -130,13 +114,6 @@ const WPSync = (() => {
     report({ action: 'tick' });
   }
 
-  function onVisibility() {
-    if (document.visibilityState === 'visible' && !isHost) {
-      // Force re-sync when tab becomes visible
-      if (onSyncOut) onSyncOut({ action: 'request-sync' });
-    }
-  }
-
   function report(extra) {
     if (!video || !onSyncOut) return;
     onSyncOut({
@@ -148,10 +125,10 @@ const WPSync = (() => {
     });
   }
 
-  return { attach, detach, setHost, applyRemote };
+  // --- Constants exposed for UI (sync indicator thresholds) ---
+  return {
+    attach, detach, setHost, applyRemote,
+    getLastDrift, isAttached,
+    SOFT_DRIFT_MIN, SOFT_DRIFT_MAX,
+  };
 })();
-
-// Export for content script
-if (typeof globalThis !== 'undefined') {
-  globalThis.WPSync = WPSync;
-}

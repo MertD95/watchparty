@@ -1,0 +1,14 @@
+{
+  "name": "watchparty",
+  "private": true,
+  "scripts": {
+    "dev": "node dev-reload.js",
+    "test": "node extension/test-e2e.mjs"
+  },
+  "devDependencies": {
+    "chokidar": "^4.0.0"
+  },
+  "dependencies": {
+    "ws": "^8.20.0"
+  }
+}

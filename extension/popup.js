@@ -62,7 +62,7 @@ function showRoomView(room, myUserId) {
   if (room.meta?.id && room.meta?.type && room.owner !== myUserId) {
     $('content-link-hint').classList.remove('hidden');
     $('content-name').textContent = room.meta.name || room.meta.id;
-    $('content-link').href = `https://web.stremio.com/#/detail/${room.meta.type}/${room.meta.id}`;
+    $('content-link').href = `https://web.stremio.com/#/detail/${encodeURIComponent(room.meta.type)}/${encodeURIComponent(room.meta.id)}`;
   } else {
     $('content-link-hint').classList.add('hidden');
   }
@@ -95,7 +95,7 @@ $('btn-create').addEventListener('click', () => {
     username,
     // Meta will be updated once the content script detects what's playing
     meta: { id: 'pending', type: 'movie', name: 'WatchParty Session' },
-    stream: { url: 'https://watchparty.stremio.link/sync' },
+    stream: { url: 'https://watchparty.mertd.me/sync' },
     public: isPublic,
   });
 

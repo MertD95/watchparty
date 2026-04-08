@@ -4,59 +4,10 @@
 // Signal extension is installed (synchronous, before app JS runs)
 document.documentElement.setAttribute('data-watchparty-ext', '1');
 
-// ── Inject the fetch/XHR interceptor into the page context ──
-// Content scripts run in an isolated world — to override page's fetch/XHR,
-// we inject a script tag that runs in the page's main world.
-const script = document.createElement('script');
-script.src = chrome.runtime.getURL('injected.js');
-script.onload = () => script.remove();
-(document.documentElement || document.head || document.body).appendChild(script);
-
-// ── Relay fetch requests from injected.js → background service worker ──
+// ── Relay messages between WatchParty page and background service worker ──
 
 window.addEventListener('message', async (event) => {
   if (event.source !== window) return;
-
-  if (event.data?.type === 'watchparty-ext-fetch-request') {
-    const { requestId, url, method, headers } = event.data;
-    try {
-      const response = await chrome.runtime.sendMessage({
-        type: 'watchparty-ext',
-        action: 'proxy-fetch',
-        url,
-        method,
-        headers,
-      });
-      // Decode base64 in content script and transfer ArrayBuffer to page (zero-copy)
-      if (response.body) {
-        const binary = atob(response.body);
-        const buffer = new ArrayBuffer(binary.length);
-        const view = new Uint8Array(buffer);
-        for (let i = 0; i < binary.length; i++) view[i] = binary.charCodeAt(i);
-        const msg = {
-          type: 'watchparty-ext-fetch-response',
-          requestId,
-          status: response.status,
-          statusText: response.statusText,
-          headers: response.headers,
-          buffer, // ArrayBuffer, will be transferred (zero-copy)
-        };
-        window.postMessage(msg, '*', [buffer]);
-      } else {
-        window.postMessage({
-          type: 'watchparty-ext-fetch-response',
-          requestId,
-          ...response,
-        }, '*');
-      }
-    } catch (e) {
-      window.postMessage({
-        type: 'watchparty-ext-fetch-response',
-        requestId,
-        error: e.message || 'Extension proxy failed',
-      }, '*');
-    }
-  }
 
   if (event.data?.type === 'watchparty-ext-request' && event.data.action === 'get-status') {
     try {

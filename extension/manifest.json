@@ -31,7 +31,7 @@
         "https://web.strem.io/*",
         "https://app.strem.io/*"
       ],
-      "js": ["stremio-content.js"],
+      "js": ["stremio-sync.js", "stremio-overlay.js", "stremio-profile.js", "stremio-content.js"],
       "run_at": "document_idle"
     },
     {
@@ -50,10 +50,7 @@
       "matches": [
         "https://web.stremio.com/*",
         "https://web.strem.io/*",
-        "https://app.strem.io/*",
-        "https://watchparty.mertd.me/*",
-        "http://localhost:8080/*",
-        "http://localhost:8090/*"
+        "https://app.strem.io/*"
       ]
     }
   ],

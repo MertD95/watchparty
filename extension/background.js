@@ -22,6 +22,7 @@ let reconnectTimer = null;
 let userId = null;
 let roomState = null; // Current room state from server
 let clockOffset = 0;  // Server clock - local clock (ms)
+let clockSamples = [];
 const stats = { bytesProxied: 0, requestsProxied: 0, lastLatencyMs: 0 };
 
 // ── Stremio server detection ──
@@ -122,14 +123,27 @@ function updateBadge() {
 
 // ── WebSocket relay connection ──
 
-function getWsUrl() {
-  // Use dev URL if running locally (detected via stored preference or default)
+let detectedWsUrl = null;
+
+async function getWsUrl() {
+  if (detectedWsUrl) return detectedWsUrl;
+  // Try dev server first — if it's running, use it
+  try {
+    const res = await fetch(WS_URL_DEV.replace('ws://', 'http://'), {
+      signal: AbortSignal.timeout(1000),
+    });
+    if (res.ok) {
+      detectedWsUrl = WS_URL_DEV;
+      return WS_URL_DEV;
+    }
+  } catch { /* dev server not running */ }
+  detectedWsUrl = WS_URL_PROD;
   return WS_URL_PROD;
 }
 
-function connectWs() {
+async function connectWs() {
   if (ws) return;
-  const url = getWsUrl();
+  const url = await getWsUrl();
 
   try {
     ws = new WebSocket(url);
@@ -182,7 +196,8 @@ function disconnectWs() {
 
 function scheduleReconnect() {
   if (reconnectTimer) return;
-  const delay = Math.min(RECONNECT_BASE_MS * Math.pow(2, reconnectAttempts), RECONNECT_MAX_MS);
+  const base = Math.min(RECONNECT_BASE_MS * Math.pow(2, reconnectAttempts), RECONNECT_MAX_MS);
+  const delay = base + Math.random() * base * 0.2; // Jitter to avoid thundering herd
   reconnectAttempts++;
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
@@ -199,9 +214,13 @@ function wsSend(msg) {
 // ── Server message handling ──
 
 function handleServerMessage(msg) {
+  if (!msg || !msg.type) return;
+  const p = msg.payload;
+
   switch (msg.type) {
     case 'ready':
-      userId = msg.payload.user.id;
+      if (!p?.user?.id) return;
+      userId = p.user.id;
       // If we had a pending room join from storage, attempt it
       chrome.storage.local.get('pendingRoomJoin', ({ pendingRoomJoin }) => {
         if (pendingRoomJoin) {
@@ -214,7 +233,8 @@ function handleServerMessage(msg) {
       break;
 
     case 'sync':
-      roomState = msg.payload;
+      if (!p) return;
+      roomState = p;
       broadcastToStremioTabs({
         action: 'room-sync',
         room: roomState,
@@ -224,8 +244,8 @@ function handleServerMessage(msg) {
       break;
 
     case 'room':
-      roomState = msg.payload;
-      // Save room ID so popup can read it
+      if (!p?.id) return;
+      roomState = p;
       chrome.storage.local.set({ currentRoom: roomState.id });
       broadcastToStremioTabs({
         action: 'room-joined',
@@ -235,34 +255,36 @@ function handleServerMessage(msg) {
       break;
 
     case 'message':
-      broadcastToStremioTabs({ action: 'chat-message', message: msg.payload });
+      if (!p) return;
+      broadcastToStremioTabs({ action: 'chat-message', message: p });
       break;
 
     case 'user':
-      // Our own user info was updated
-      userId = msg.payload.user.id;
+      if (!p?.user?.id) return;
+      userId = p.user.id;
       break;
 
     case 'error':
-      broadcastToStremioTabs({ action: 'error', error: msg.payload.type });
+      broadcastToStremioTabs({ action: 'error', error: p?.type });
       break;
 
     case 'typing':
-      broadcastToStremioTabs({ action: 'typing', user: msg.payload.user, typing: msg.payload.typing });
+      if (!p?.user) return;
+      broadcastToStremioTabs({ action: 'typing', user: p.user, typing: p.typing });
       break;
 
     case 'reaction':
-      broadcastToStremioTabs({ action: 'reaction', user: msg.payload.user, emoji: msg.payload.emoji });
+      if (!p?.user || !p?.emoji) return;
+      broadcastToStremioTabs({ action: 'reaction', user: p.user, emoji: p.emoji });
       break;
 
     case 'clock.pong': {
+      if (!p?.clientTime || !p?.serverTime) return;
       const now = Date.now();
-      const rtt = now - msg.payload.clientTime;
-      const serverTime = msg.payload.serverTime;
-      const offset = serverTime - msg.payload.clientTime - rtt / 2;
+      const rtt = now - p.clientTime;
+      const offset = p.serverTime - p.clientTime - rtt / 2;
       clockSamples.push({ rtt, offset });
       if (clockSamples.length >= CLOCK_SAMPLES) {
-        // Use the sample with minimum RTT for best accuracy
         clockSamples.sort((a, b) => a.rtt - b.rtt);
         clockOffset = clockSamples[0].offset;
       }
@@ -272,8 +294,6 @@ function handleServerMessage(msg) {
 }
 
 // ── Clock synchronization (Cristian's algorithm) ──
-
-let clockSamples = [];
 
 function startClockSync() {
   clockSamples = [];
@@ -398,7 +418,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         wsSend({
           type: 'room.updateStream',
           payload: {
-            stream: { url: 'https://watchparty.stremio.link/sync' }, // placeholder
+            stream: { url: 'https://watchparty.mertd.me/sync' }, // placeholder
             meta: message.meta,
           },
         });
@@ -446,6 +466,7 @@ function waitForWs(callback, timeout = 5000) {
       callback();
     } else if (Date.now() - start > timeout) {
       clearInterval(check);
+      broadcastToStremioTabs({ action: 'error', error: 'connection' });
     }
   }, 100);
 }
@@ -480,9 +501,14 @@ async function broadcastToWatchParty(message) {
   } catch { /* no matching tabs */ }
 }
 
-// ── Proxy fetch (CORS bypass, for legacy standalone client) ──
+// ── Proxy fetch (CORS bypass for Stremio localhost) ──
+
+const PROXY_ALLOWED = /^https?:\/\/(localhost|127\.0\.0\.1):11470\//;
 
 async function proxyFetch(url, method, headers) {
+  if (!PROXY_ALLOWED.test(url)) {
+    return { error: 'Proxy blocked: only Stremio localhost URLs allowed' };
+  }
   const start = Date.now();
   try {
     const res = await fetch(url, {
@@ -517,11 +543,25 @@ function arrayBufferToBase64(buffer) {
   return btoa(binary);
 }
 
+// ── Dev auto-reload (connects to dev-reload.js watcher) ──
+
+function connectDevReload() {
+  try {
+    const sse = new EventSource('http://localhost:5111/reload');
+    sse.onmessage = (e) => {
+      if (e.data === 'reload') {
+        console.log('[WatchParty] Dev reload triggered');
+        chrome.runtime.reload();
+      }
+    };
+    sse.onerror = () => { sse.close(); };
+  } catch { /* dev server not running, ignore */ }
+}
+
 // ── Start ──
 
 checkStremio();
 fetchStremioSettings();
 setInterval(checkStremio, POLL_INTERVAL_MS);
-
-// Auto-connect WS when extension loads
 connectWs();
+connectDevReload();

@@ -322,10 +322,9 @@
   </div>
 
   <script>
-    const WS_API = 'wss://ws.mertd.me';
-    const ROOMS_API = location.hostname === 'localhost'
-      ? 'http://localhost:8181/rooms'
-      : 'https://ws.mertd.me/rooms';
+    const IS_DEV = location.hostname === 'localhost';
+    const WS_API = IS_DEV ? 'ws://localhost:8181' : 'wss://ws.mertd.me';
+    const ROOMS_API = IS_DEV ? 'http://localhost:8181/rooms' : 'https://ws.mertd.me/rooms';
 
     // --- Routing ---
     const path = location.pathname;
