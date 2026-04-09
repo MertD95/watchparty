@@ -7,6 +7,15 @@ const WPOverlay = (() => {
   let overlay = null;
   let sidebarMinimized = false;
 
+  // --- Emoji picker (emoji-picker-element library) ---
+  function loadEmojiPicker() {
+    // Inject as page-context module (custom elements need the main world)
+    const script = document.createElement('script');
+    script.type = 'module';
+    script.src = chrome.runtime.getURL('vendor/emoji-loader.js');
+    document.head.appendChild(script);
+  }
+
   // --- User colors (deterministic from userId) ---
   const USER_COLORS = [
     '#6366f1', '#ec4899', '#f59e0b', '#22c55e', '#06b6d4',
@@ -19,6 +28,136 @@ const WPOverlay = (() => {
     for (let i = 0; i < uid.length; i++) hash = ((hash << 5) - hash + uid.charCodeAt(i)) | 0;
     return USER_COLORS[Math.abs(hash) % USER_COLORS.length];
   }
+
+  // --- Per-message reactions (Discord-style) ---
+  // Rules: one user = one reaction per emoji, toggle on/off, count = unique users
+  let activePopupMsg = null;
+  let reactionTarget = null; // { pills } — when set, emoji picker adds a reaction instead of inserting into chat
+
+  function buildMsgEl(nameHtml, textHtml) {
+    const div = document.createElement('div');
+    div.className = 'wp-chat-msg';
+
+    // Row: content on the left, toolbar on the right (inline, not floating)
+    const row = document.createElement('div');
+    row.className = 'wp-msg-row';
+
+    const content = document.createElement('div');
+    content.className = 'wp-msg-content';
+    content.innerHTML = `${nameHtml} ${textHtml}`;
+    row.appendChild(content);
+
+    // Toolbar: small react icon, appears on hover, INSIDE the message row
+    const toolbar = document.createElement('div');
+    toolbar.className = 'wp-msg-toolbar';
+    const reactBtn = document.createElement('button');
+    reactBtn.className = 'wp-msg-react-trigger';
+    reactBtn.innerHTML = '☺';
+    reactBtn.title = 'Add Reaction';
+    toolbar.appendChild(reactBtn);
+    row.appendChild(toolbar);
+    div.appendChild(row);
+
+    // Reaction pills (below message text)
+    const pills = document.createElement('div');
+    pills.className = 'wp-msg-pills';
+    div.appendChild(pills);
+
+    // Hover: show toolbar via class
+    div.addEventListener('mouseenter', () => div.classList.add('wp-msg-hovered'));
+    div.addEventListener('mouseleave', () => {
+      // Keep hover if popup is open for THIS message
+      if (activePopupMsg === div) return;
+      div.classList.remove('wp-msg-hovered');
+    });
+
+    // Click react button → open the shared emoji picker in "reaction mode"
+    reactBtn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const pickerEl = document.getElementById('wp-emoji-picker');
+      if (!pickerEl) return;
+
+      // If already open for this message, close it
+      if (activePopupMsg === div && !pickerEl.classList.contains('wp-hidden-el')) {
+        closeReactionPopup();
+        return;
+      }
+      closeReactionPopup();
+
+      // Set reaction mode — the emoji-click handler checks this
+      reactionTarget = { pills };
+      activePopupMsg = div;
+
+      // Reposition picker near the react button
+      const btnRect = reactBtn.getBoundingClientRect();
+      pickerEl.style.position = 'fixed';
+      pickerEl.style.bottom = 'auto';
+      pickerEl.style.top = (btnRect.bottom + 4) + 'px';
+      pickerEl.style.right = (window.innerWidth - btnRect.right) + 'px';
+      pickerEl.classList.remove('wp-hidden-el');
+    });
+
+    return div;
+  }
+
+  // Toggle reaction: one per user per emoji, no stacking
+  function toggleReaction(pillsContainer, emoji) {
+    const existing = pillsContainer.querySelector(`[data-emoji="${emoji}"]`);
+    if (existing && existing.classList.contains('wp-pill-mine')) {
+      // Already reacted with this emoji → remove own reaction
+      const countEl = existing.querySelector('.wp-pill-count');
+      const newCount = parseInt(countEl.textContent) - 1;
+      if (newCount <= 0) { existing.remove(); } else {
+        countEl.textContent = newCount;
+        existing.classList.remove('wp-pill-mine');
+      }
+      return;
+    }
+    if (existing) {
+      // Pill exists from others, add ours
+      const countEl = existing.querySelector('.wp-pill-count');
+      countEl.textContent = parseInt(countEl.textContent) + 1;
+      existing.classList.add('wp-pill-mine');
+    } else {
+      // New pill
+      const pill = document.createElement('button');
+      pill.className = 'wp-react-pill wp-pill-mine';
+      pill.dataset.emoji = emoji;
+      pill.innerHTML = `<span class="wp-pill-emoji">${emoji}</span><span class="wp-pill-count">1</span>`;
+      pill.addEventListener('click', () => toggleReaction(pillsContainer, emoji));
+      pillsContainer.appendChild(pill);
+    }
+    chrome.runtime.sendMessage({
+      type: 'watchparty-ext', action: 'send-reaction', emoji,
+    }).catch(() => {});
+  }
+
+
+  function closeReactionPopup() {
+    if (reactionTarget) {
+      const pickerEl = document.getElementById('wp-emoji-picker');
+      if (pickerEl) {
+        pickerEl.classList.add('wp-hidden-el');
+        // Reset to default chat position
+        pickerEl.style.position = 'fixed';
+        pickerEl.style.top = 'auto';
+        pickerEl.style.bottom = '60px';
+        pickerEl.style.right = '16px';
+      }
+      reactionTarget = null;
+    }
+    if (activePopupMsg) {
+      activePopupMsg.classList.remove('wp-msg-hovered');
+      activePopupMsg = null;
+    }
+  }
+
+  document.addEventListener('click', (e) => {
+    // Don't close if clicking inside the picker
+    const pickerEl = document.getElementById('wp-emoji-picker');
+    if (pickerEl && pickerEl.contains(e.target)) return;
+    closeReactionPopup();
+  });
 
   // --- Notification sound ---
   let audioCtx = null;
@@ -44,6 +183,15 @@ const WPOverlay = (() => {
     return d.innerHTML;
   }
 
+
+  // --- Push Stremio content when sidebar opens/closes ---
+  function updateContentMargin(sidebarOpen) {
+    document.body.style.transition = 'width .2s ease';
+    document.body.style.width = sidebarOpen ? 'calc(100% - 320px)' : '';
+    document.body.style.overflow = sidebarOpen ? 'hidden' : '';
+  }
+
+
   // --- Create overlay DOM ---
   function create() {
     if (overlay) return;
@@ -65,14 +213,12 @@ const WPOverlay = (() => {
           <div id="wp-status"></div>
           <div id="wp-sync-indicator" class="wp-hidden-el"></div>
           <div id="wp-content-link" class="wp-hidden-el"></div>
-          <div id="wp-controls" class="wp-hidden-el"></div>
           <div id="wp-users"></div>
           <div id="wp-typing-indicator" class="wp-hidden-el"></div>
-          <div id="wp-reactions-bar"></div>
           <div id="wp-chat-container">
             <div id="wp-chat-messages"></div>
             <div id="wp-chat-input-row">
-              <button id="wp-emoji-btn" title="React">&#x1F600;</button>
+              <button id="wp-emoji-btn" title="Insert emoji">&#x1F600;</button>
               <input id="wp-chat-input" type="text" placeholder="Type a message..." maxlength="300" autocomplete="off" />
               <button id="wp-chat-send">Send</button>
             </div>
@@ -80,26 +226,83 @@ const WPOverlay = (() => {
         </div>
       </div>
       <div id="wp-reaction-container"></div>
-      <button id="wp-toggle-btn" title="WatchParty">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
-          <circle cx="9" cy="7" r="4"/>
-          <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
-          <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
-        </svg>
-        <span id="wp-badge" class="wp-hidden-el">0</span>
-      </button>
-      <div id="wp-emoji-picker" class="wp-hidden-el">
-        ${['👍','👏','😂','😮','😢','❤️','🔥','🎉','💀','👀'].map(e =>
-          `<button class="wp-emoji-pick" data-emoji="${e}">${e}</button>`
-        ).join('')}
-      </div>
+      <div id="wp-emoji-picker" class="wp-hidden-el"></div>
     `;
 
     const style = document.createElement('style');
     style.textContent = getCSS();
     document.head.appendChild(style);
     document.body.appendChild(overlay);
+
+    // Inject toggle button INTO Stremio's nav button container
+    function createToggleBtn() {
+      const btn = document.createElement('div');
+      btn.id = 'wp-toggle-btn';
+      btn.title = 'WatchParty';
+      btn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>';
+      btn.addEventListener('click', () => {
+        const sidebar = document.getElementById('wp-sidebar');
+        sidebar.classList.toggle('wp-sidebar-hidden');
+        const nowOpen = !sidebar.classList.contains('wp-sidebar-hidden');
+        updateContentMargin(nowOpen);
+      });
+      return btn;
+    }
+
+    // Inject into ALL Stremio buttons-containers (each route has its own nav)
+    function injectToggleBtns() {
+      const fsBtns = document.querySelectorAll('[title="Enter fullscreen mode"]');
+      fsBtns.forEach(fsBtn => {
+        const container = fsBtn.parentElement;
+        if (!container || container.querySelector('.wp-toggle-injected')) return;
+        const btn = createToggleBtn();
+        // Use a class instead of id since there may be multiple copies
+        btn.removeAttribute('id');
+        btn.classList.add('wp-toggle-injected');
+        // Inherit Stremio's sizing classes from the sibling icon
+        fsBtn.className.split(' ').forEach(cls => { if (cls) btn.classList.add(cls); });
+        container.insertBefore(btn, container.firstChild);
+      });
+      return fsBtns.length > 0;
+    }
+
+    // Inject immediately if already rendered, then watch for new route containers
+    injectToggleBtns();
+    new MutationObserver(injectToggleBtns).observe(document.body, { childList: true, subtree: true });
+
+    // Load emoji-picker-element library and create the picker
+    const pickerContainer = document.getElementById('wp-emoji-picker');
+    loadEmojiPicker();
+    document.addEventListener('wp-emoji-lib-ready', () => {
+      const picker = document.createElement('emoji-picker');
+      picker.setAttribute('class', 'dark');
+      picker.setAttribute('data-source', chrome.runtime.getURL('vendor/emoji-data.json'));
+      pickerContainer.appendChild(picker);
+    }, { once: true });
+
+    // Listen for emoji selection (bridged from page world via emoji-loader.js)
+    document.addEventListener('wp-emoji-selected', (e) => {
+      const emoji = e.detail;
+      if (!emoji) return;
+
+      if (reactionTarget) {
+        // Reaction mode: add pill to the message
+        toggleReaction(reactionTarget.pills, emoji);
+        closeReactionPopup();
+      } else {
+        // Chat mode: insert emoji into input
+        const input = document.getElementById('wp-chat-input');
+        if (input) {
+          const start = input.selectionStart || input.value.length;
+          const end = input.selectionEnd || start;
+          input.value = input.value.slice(0, start) + emoji + input.value.slice(end);
+          input.selectionStart = input.selectionEnd = start + emoji.length;
+          input.focus();
+        }
+        pickerContainer.classList.add('wp-hidden-el');
+      }
+    });
+
     bindEvents();
   }
 
@@ -107,13 +310,9 @@ const WPOverlay = (() => {
   function bindEvents() {
     const $ = (id) => document.getElementById(id);
 
-    $('wp-toggle-btn').addEventListener('click', () => {
-      $('wp-sidebar').classList.remove('wp-sidebar-hidden');
-      $('wp-toggle-btn').style.display = 'none';
-    });
     $('wp-close-sidebar').addEventListener('click', () => {
       $('wp-sidebar').classList.add('wp-sidebar-hidden');
-      $('wp-toggle-btn').style.display = 'flex';
+      updateContentMargin(false);
     });
     $('wp-minimize-btn').addEventListener('click', () => {
       sidebarMinimized = true;
@@ -131,24 +330,50 @@ const WPOverlay = (() => {
     $('wp-chat-input').addEventListener('keydown', (e) => {
       if (e.key === 'Enter') sendChat();
     });
-    $('wp-emoji-btn').addEventListener('click', () => {
-      $('wp-emoji-picker').classList.toggle('wp-hidden-el');
-    });
-    document.querySelectorAll('.wp-emoji-pick').forEach(btn => {
-      btn.addEventListener('click', () => {
-        chrome.runtime.sendMessage({
-          type: 'watchparty-ext', action: 'send-reaction', emoji: btn.dataset.emoji,
-        }).catch(() => {});
-        $('wp-emoji-picker').classList.add('wp-hidden-el');
-      });
+    // --- Emoji picker toggle (library handles everything else) ---
+    $('wp-emoji-btn').addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const pickerEl = $('wp-emoji-picker');
+      // Reset to chat mode: clear any reaction target, restore default position
+      reactionTarget = null;
+      if (activePopupMsg) {
+        activePopupMsg.classList.remove('wp-msg-hovered');
+        activePopupMsg = null;
+      }
+      pickerEl.style.position = 'fixed';
+      pickerEl.style.top = 'auto';
+      pickerEl.style.bottom = '60px';
+      pickerEl.style.right = '16px';
+      pickerEl.classList.toggle('wp-hidden-el');
     });
   }
+
+  // Track locally echoed messages to deduplicate server echoes
+  const localEchoSet = new Set();
 
   function sendChat() {
     const input = document.getElementById('wp-chat-input');
     if (!input || !input.value.trim()) return;
+    const content = input.value.trim();
+
+    // Optimistic local echo — show message immediately
+    const container = document.getElementById('wp-chat-messages');
+    if (container) {
+      const div = buildMsgEl(
+        `<span class="wp-chat-name" style="color:#6366f1">You</span>`,
+        `<span class="wp-chat-text">${escapeHtml(content)}</span>`
+      );
+      div.classList.add('wp-chat-local');
+      container.appendChild(div);
+      while (container.childElementCount > 200) container.removeChild(container.firstChild);
+      container.scrollTop = container.scrollHeight;
+      // Track for dedup (expire after 10s)
+      localEchoSet.add(content);
+      setTimeout(() => localEchoSet.delete(content), 10000);
+    }
+
     chrome.runtime.sendMessage({
-      type: 'watchparty-ext', action: 'send-chat', content: input.value.trim(),
+      type: 'watchparty-ext', action: 'send-chat', content,
     }).catch(() => {});
     chrome.runtime.sendMessage({
       type: 'watchparty-ext', action: 'send-typing', typing: false,
@@ -164,20 +389,15 @@ const WPOverlay = (() => {
     const status = document.getElementById('wp-status');
     const roomCode = document.getElementById('wp-room-code');
     const usersDiv = document.getElementById('wp-users');
-    const badge = document.getElementById('wp-badge');
-    const controls = document.getElementById('wp-controls');
     const contentLink = document.getElementById('wp-content-link');
     const syncInd = document.getElementById('wp-sync-indicator');
     const minInfo = document.getElementById('wp-min-info');
 
     const chatContainer = document.getElementById('wp-chat-container');
-
     if (!inRoom || !roomState) {
       if (status) status.innerHTML = '<div class="wp-empty-state">Not in a room.<br/>Use the extension popup to create or join one.</div>';
       if (roomCode) roomCode.textContent = '';
       if (usersDiv) usersDiv.innerHTML = '';
-      if (badge) badge.classList.add('wp-hidden-el');
-      if (controls) controls.classList.add('wp-hidden-el');
       if (contentLink) contentLink.classList.add('wp-hidden-el');
       if (syncInd) syncInd.classList.add('wp-hidden-el');
       if (chatContainer) chatContainer.classList.add('wp-hidden-el');
@@ -197,27 +417,6 @@ const WPOverlay = (() => {
       status.innerHTML = `<span class="wp-status-line">${hostLabel}</span><span class="wp-status-line wp-muted">${videoStatus}</span>`;
     }
 
-    // Host controls
-    if (controls) {
-      if (isHost) {
-        controls.classList.remove('wp-hidden-el');
-        const isPublic = roomState.public || false;
-        controls.innerHTML = `
-          <label class="wp-toggle-label">
-            <input type="checkbox" id="wp-public-toggle" ${isPublic ? 'checked' : ''} />
-            <span>Public room</span>
-          </label>
-        `;
-        document.getElementById('wp-public-toggle').addEventListener('change', (e) => {
-          chrome.runtime.sendMessage({
-            type: 'watchparty-ext', action: 'toggle-public', public: e.target.checked,
-          }).catch(() => {});
-        });
-      } else {
-        controls.classList.add('wp-hidden-el');
-      }
-    }
-
     // Content link for peers
     if (contentLink) {
       if (!isHost && roomState.meta?.id && roomState.meta.id !== 'pending' && roomState.meta.id !== 'unknown') {
@@ -230,18 +429,29 @@ const WPOverlay = (() => {
       }
     }
 
-    // Users with ownership transfer
+    // Users with presence, playback status, and ownership transfer
     if (usersDiv && roomState.users) {
       usersDiv.innerHTML = roomState.users.map(u => {
         const isOwner = u.id === roomState.owner;
         const isMe = u.id === userId;
         const color = getUserColor(u.id);
+        const isAway = u.status === 'away';
         const crown = isOwner ? '<span class="wp-crown">👑</span>' : '';
         const you = isMe ? ' <span class="wp-you">(you)</span>' : '';
         const transferBtn = (isHost && !isMe && !isOwner)
           ? `<button class="wp-transfer-btn" data-uid="${u.id}" title="Transfer host">Make Host</button>`
           : '';
-        return `<div class="wp-user"><span class="wp-user-dot" style="background:${color}"></span>${crown}${escapeHtml(u.name)}${you}${transferBtn}</div>`;
+        // Playback status icon
+        let statusIcon = '';
+        if (u.playbackStatus === 'buffering') {
+          statusIcon = '<span class="wp-user-status wp-status-buffering" title="Buffering">⟳</span>';
+        } else if (u.playbackStatus === 'paused') {
+          statusIcon = '<span class="wp-user-status wp-status-paused" title="Paused">❚❚</span>';
+        } else if (u.playbackStatus === 'playing') {
+          statusIcon = '<span class="wp-user-status wp-status-playing" title="Playing">▶</span>';
+        }
+        const awayClass = isAway ? ' wp-user-away' : '';
+        return `<div class="wp-user${awayClass}"><span class="wp-user-dot" style="background:${color}"></span>${crown}${escapeHtml(u.name)}${you}${statusIcon}${transferBtn}</div>`;
       }).join('');
       usersDiv.querySelectorAll('.wp-transfer-btn').forEach(btn => {
         btn.addEventListener('click', () => {
@@ -252,10 +462,6 @@ const WPOverlay = (() => {
       });
     }
 
-    if (badge && roomState.users) {
-      badge.textContent = roomState.users.length;
-      badge.classList.remove('wp-hidden-el');
-    }
   }
 
   function updateSyncIndicator(isHost, drift) {
@@ -277,11 +483,21 @@ const WPOverlay = (() => {
   function appendChatMessage(msg, roomState, myUserId) {
     const container = document.getElementById('wp-chat-messages');
     if (!container) return;
+
+    // Deduplicate: if this is our own message that was already locally echoed, replace the local echo
+    if (msg.user === myUserId && localEchoSet.has(msg.content)) {
+      localEchoSet.delete(msg.content);
+      // Find and replace the local echo with the server-confirmed version (correct name/color)
+      const localMsg = container.querySelector('.wp-chat-local');
+      if (localMsg) localMsg.remove();
+    }
+
     const userName = roomState?.users?.find(u => u.id === msg.user)?.name || 'Unknown';
     const color = getUserColor(msg.user);
-    const div = document.createElement('div');
-    div.className = 'wp-chat-msg';
-    div.innerHTML = `<span class="wp-chat-name" style="color:${color}">${escapeHtml(userName)}</span> <span class="wp-chat-text">${escapeHtml(msg.content)}</span>`;
+    const div = buildMsgEl(
+      `<span class="wp-chat-name" style="color:${color}">${escapeHtml(userName)}</span>`,
+      `<span class="wp-chat-text">${escapeHtml(msg.content)}</span>`
+    );
     container.appendChild(div);
     // Prune old DOM nodes to prevent memory buildup
     while (container.childElementCount > 200) container.removeChild(container.firstChild);
@@ -291,6 +507,33 @@ const WPOverlay = (() => {
     if (sidebar?.classList.contains('wp-sidebar-hidden') && msg.user !== myUserId) {
       playNotifSound();
     }
+  }
+
+  // --- Reaction sound (toggleable) ---
+  let reactionSoundEnabled = true;
+  chrome.storage?.local?.get('wpReactionSound', (r) => {
+    if (r && r.wpReactionSound === false) reactionSoundEnabled = false;
+  });
+  // Live-update when toggled from popup
+  chrome.storage?.onChanged?.addListener((changes) => {
+    if (changes.wpReactionSound) reactionSoundEnabled = changes.wpReactionSound.newValue !== false;
+  });
+
+  function playReactionSound() {
+    if (!reactionSoundEnabled) return;
+    try {
+      if (!audioCtx) audioCtx = new AudioContext();
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.frequency.value = 1200;
+      osc.type = 'sine';
+      gain.gain.value = 0.05;
+      osc.start();
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.12);
+      osc.stop(audioCtx.currentTime + 0.12);
+    } catch { /* audio not available */ }
   }
 
   function showReaction(uid, emoji, roomState) {
@@ -303,6 +546,7 @@ const WPOverlay = (() => {
     el.style.left = (20 + Math.random() * 60) + '%';
     container.appendChild(el);
     setTimeout(() => el.remove(), 3000);
+    playReactionSound();
   }
 
   function updateTypingIndicator(typingUsers, myUserId, roomState) {
@@ -325,15 +569,32 @@ const WPOverlay = (() => {
 
   function openSidebar() {
     document.getElementById('wp-sidebar')?.classList.remove('wp-sidebar-hidden');
+    updateContentMargin(true);
+  }
+
+  // --- Toast notification ---
+  function showToast(message, durationMs = 3000) {
+    const existing = document.getElementById('wp-toast');
+    if (existing) existing.remove();
+    const toast = document.createElement('div');
+    toast.id = 'wp-toast';
+    toast.textContent = message;
+    document.getElementById('wp-overlay')?.appendChild(toast);
+    requestAnimationFrame(() => toast.classList.add('wp-toast-visible'));
+    setTimeout(() => {
+      toast.classList.remove('wp-toast-visible');
+      setTimeout(() => toast.remove(), 300);
+    }, durationMs);
   }
 
   function bindRoomCodeCopy(roomState) {
     const el = document.getElementById('wp-room-code');
     if (!el) return;
     el.onclick = () => {
-      navigator.clipboard.writeText(roomState?.id || el.textContent).catch(() => {});
-      el.textContent = 'Copied!';
-      setTimeout(() => { el.textContent = roomState?.id?.slice(0, 8) || ''; }, 1000);
+      const inviteUrl = `https://watchparty.mertd.me/r/${roomState?.id || el.textContent}`;
+      navigator.clipboard.writeText(inviteUrl).catch(() => {});
+      el.textContent = 'Link copied!';
+      setTimeout(() => { el.textContent = roomState?.id?.slice(0, 8) || ''; }, 1500);
     };
   }
 
@@ -355,20 +616,16 @@ const WPOverlay = (() => {
       #wp-overlay * { box-sizing:border-box; }
       .wp-hidden-el { display:none !important; }
 
-      /* Toggle button — positioned below Stremio's top nav to avoid overlap */
-      #wp-toggle-btn {
-        pointer-events:all; position:fixed; top:60px; right:16px; z-index:2147483647;
-        background:rgba(99,102,241,0.9); border:none; border-radius:50%;
-        width:40px; height:40px; display:flex; align-items:center; justify-content:center;
-        cursor:pointer; color:#fff; box-shadow:0 2px 12px rgba(0,0,0,0.4);
-        transition:transform .15s,background .15s;
+      /* Toggle button — injected into Stremio's nav, sized by inherited classes */
+      .wp-toggle-injected {
+        position:relative;
+        display:flex !important; align-items:center !important; justify-content:center !important;
+        background:rgba(99,102,241,0.85) !important; border:none !important; border-radius:50% !important;
+        cursor:pointer !important; color:#fff !important;
+        transition:background .15s !important;
       }
-      #wp-toggle-btn:hover { transform:scale(1.1); background:rgba(99,102,241,1); }
-      #wp-badge {
-        position:absolute; top:-4px; right:-4px; background:#ef4444; color:#fff;
-        font-size:10px; font-weight:bold; border-radius:50%; width:18px; height:18px;
-        display:flex; align-items:center; justify-content:center;
-      }
+      .wp-toggle-injected:hover { background:rgba(99,102,241,1) !important; }
+      .wp-toggle-injected svg { width:55%; height:55%; }
 
       /* Sidebar — top offset to sit below Stremio nav, strong shadow for separation */
       #wp-sidebar {
@@ -439,15 +696,7 @@ const WPOverlay = (() => {
       .wp-content-label { color:#888; }
       .wp-content-link-a { color:#4ade80; text-decoration:underline; }
 
-      /* Controls */
-      #wp-controls {
-        padding:8px 16px; border-bottom:1px solid rgba(255,255,255,0.08);
-        background:rgba(255,255,255,0.02);
-      }
-      .wp-toggle-label {
-        display:flex; align-items:center; gap:8px; font-size:12px; color:#ccc; cursor:pointer;
-      }
-      .wp-toggle-label input[type="checkbox"] { accent-color:#6366f1; }
+      /* (Controls moved to popup — no sidebar controls section) */
 
       /* Users — compact list, limited height to give chat more room */
       #wp-users {
@@ -460,6 +709,14 @@ const WPOverlay = (() => {
       .wp-user-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
       .wp-crown { font-size:12px; }
       .wp-you { color:#888; font-size:11px; }
+      .wp-user-away { opacity:0.4; }
+      .wp-user-away .wp-user-dot { animation:wp-pulse 2s infinite; }
+      @keyframes wp-pulse { 0%,100% { opacity:0.4; } 50% { opacity:0.8; } }
+      .wp-user-status { font-size:9px; color:#666; margin-left:2px; }
+      .wp-status-playing { color:#22c55e; }
+      .wp-status-paused { color:#f59e0b; }
+      .wp-status-buffering { color:#6366f1; animation:wp-spin 1s linear infinite; }
+      @keyframes wp-spin { from { display:inline-block; transform:rotate(0deg); } to { transform:rotate(360deg); } }
       .wp-transfer-btn {
         margin-left:auto; background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.1);
         border-radius:4px; padding:2px 8px; font-size:10px; color:#999; cursor:pointer; flex-shrink:0;
@@ -468,15 +725,52 @@ const WPOverlay = (() => {
 
       /* Typing */
       #wp-typing-indicator { padding:2px 16px 4px; font-size:11px; color:#888; font-style:italic; }
-      #wp-reactions-bar { display:flex; gap:4px; padding:0 16px 4px; flex-wrap:wrap; }
+      /* Discord-style messages + reactions */
+      .wp-chat-msg { padding:2px 16px; border-radius:4px; margin-bottom:1px; }
+      .wp-chat-msg.wp-msg-hovered { background:rgba(255,255,255,0.03); }
+
+      /* Message row: content left, toolbar right, single line */
+      .wp-msg-row { display:flex; align-items:center; gap:4px; }
+      .wp-msg-content { flex:1; min-width:0; line-height:1.5; word-break:break-word; }
+
+      /* Toolbar: inline at the right end of the message row, hidden until hover */
+      .wp-msg-toolbar {
+        flex-shrink:0; display:none; align-items:center;
+      }
+      .wp-msg-hovered .wp-msg-toolbar { display:flex; }
+      .wp-msg-react-trigger {
+        background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.08);
+        color:#888; font-size:12px; cursor:pointer;
+        padding:1px 6px; border-radius:4px; line-height:1.2;
+        transition:all .1s;
+      }
+      .wp-msg-react-trigger:hover {
+        background:rgba(99,102,241,0.15); border-color:rgba(99,102,241,0.3); color:#818cf8;
+      }
+
+      /* Reaction pills below message */
+      .wp-msg-pills { display:flex; flex-wrap:wrap; gap:4px; padding:2px 0 0 0; }
+      .wp-msg-pills:empty { display:none; }
+      .wp-react-pill {
+        display:inline-flex; align-items:center; gap:3px;
+        background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.08);
+        border-radius:10px; padding:1px 6px; cursor:pointer; font-size:11px;
+        color:#999; transition:all .12s;
+      }
+      .wp-react-pill:hover { background:rgba(255,255,255,0.1); border-color:rgba(255,255,255,0.15); }
+      .wp-react-pill.wp-pill-mine {
+        background:rgba(99,102,241,0.15); border-color:rgba(99,102,241,0.3); color:#818cf8;
+      }
+      .wp-pill-emoji { font-size:13px; line-height:1; }
+      .wp-pill-count { font-size:11px; font-weight:500; }
 
       /* Chat */
       #wp-chat-container { flex:1; display:flex; flex-direction:column; min-height:0; overflow:hidden; }
       #wp-chat-messages {
-        flex:1; overflow-y:auto; padding:8px 16px; font-size:12px; min-height:80px;
+        flex:1; overflow-y:auto; padding:8px 0; font-size:12px; min-height:80px;
         scrollbar-width:thin; scrollbar-color:rgba(255,255,255,0.15) transparent;
       }
-      .wp-chat-msg { margin-bottom:6px; line-height:1.5; word-break:break-word; }
+      /* .wp-chat-msg styles are in the reactions section above */
       .wp-chat-name { font-weight:600; }
       .wp-chat-text { color:#ccc; }
       #wp-chat-input-row {
@@ -486,8 +780,9 @@ const WPOverlay = (() => {
       }
       #wp-emoji-btn {
         background:none; border:none; font-size:16px; cursor:pointer; padding:0 4px;
-        flex-shrink:0;
+        flex-shrink:0; opacity:0.7; transition:opacity .1s;
       }
+      #wp-emoji-btn:hover { opacity:1; }
       #wp-chat-input {
         flex:1; background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.15);
         border-radius:6px; padding:6px 10px; color:#fff; font-size:12px; outline:none;
@@ -500,23 +795,36 @@ const WPOverlay = (() => {
         padding:6px 12px; font-size:12px; cursor:pointer; flex-shrink:0;
       }
       #wp-chat-send:hover { background:#5558e6; }
+      #wp-chat-send:active { transform:scale(0.96); }
 
-      /* Emoji picker — positioned relative to sidebar bottom */
+      /* Emoji picker — emoji-picker-element library */
       #wp-emoji-picker {
         pointer-events:all; position:fixed; bottom:60px; right:16px; z-index:2147483647;
-        background:rgba(20,20,40,0.98); border:1px solid rgba(255,255,255,0.15);
-        border-radius:10px; padding:8px; display:flex; gap:4px; flex-wrap:wrap; width:200px;
-        box-shadow:0 4px 16px rgba(0,0,0,0.4);
+        border-radius:12px; overflow:hidden;
+        box-shadow:0 8px 32px rgba(0,0,0,0.5);
       }
-      .wp-emoji-pick {
-        background:none; border:none; font-size:22px; cursor:pointer; padding:4px;
-        border-radius:6px; transition:background .1s;
+      #wp-emoji-picker emoji-picker {
+        --background:rgba(15,15,30,0.98);
+        --border-color:rgba(255,255,255,0.12);
+        --button-active-background:rgba(99,102,241,0.25);
+        --button-hover-background:rgba(255,255,255,0.08);
+        --category-font-color:#888;
+        --emoji-padding:0.3rem;
+        --emoji-size:1.3rem;
+        --indicator-color:#6366f1;
+        --input-border-color:rgba(255,255,255,0.12);
+        --input-font-color:#fff;
+        --input-placeholder-color:#555;
+        --num-columns:8;
+        --outline-color:#6366f1;
+        --search-background:rgba(255,255,255,0.08);
+        --text-color:#ccc;
+        width:320px; height:340px;
       }
-      .wp-emoji-pick:hover { background:rgba(255,255,255,0.1); }
 
       /* Floating reactions */
       #wp-reaction-container {
-        pointer-events:none; position:fixed; top:0; left:0; width:100vw; height:100vh; z-index:99998;
+        pointer-events:none; position:fixed; top:0; left:0; width:100vw; height:100vh; z-index:2147483647;
         overflow:hidden;
       }
       .wp-floating-reaction {
@@ -530,6 +838,16 @@ const WPOverlay = (() => {
         70% { opacity:1; }
         100% { opacity:0; transform:translateY(-200px) scale(1.3); }
       }
+
+      /* Toast notification */
+      #wp-toast {
+        pointer-events:none; position:fixed; top:70px; left:50%; transform:translateX(-50%) translateY(-10px);
+        background:rgba(15,15,30,0.95); color:#fff; font-size:13px;
+        padding:8px 20px; border-radius:8px; z-index:2147483647;
+        border:1px solid rgba(99,102,241,0.3); box-shadow:0 4px 16px rgba(0,0,0,0.4);
+        opacity:0; transition:opacity .3s, transform .3s;
+      }
+      #wp-toast.wp-toast-visible { opacity:1; transform:translateX(-50%) translateY(0); }
     `;
   }
 
@@ -537,6 +855,6 @@ const WPOverlay = (() => {
     create, updateState, updateSyncIndicator,
     appendChatMessage, showReaction, updateTypingIndicator,
     openSidebar, bindRoomCodeCopy, bindTypingIndicator,
-    playNotifSound,
+    playNotifSound, showToast,
   };
 })();

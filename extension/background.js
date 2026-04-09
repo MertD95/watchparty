@@ -278,6 +278,11 @@ function handleServerMessage(msg) {
       broadcastToStremioTabs({ action: 'reaction', user: p.user, emoji: p.emoji });
       break;
 
+    case 'autopause':
+      if (!p?.name) return;
+      broadcastToStremioTabs({ action: 'autopause', name: p.name });
+      break;
+
     case 'clock.pong': {
       if (!p?.clientTime || !p?.serverTime) return;
       const now = Date.now();
@@ -409,6 +414,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // --- Public toggle ---
     case 'toggle-public':
       wsSend({ type: 'room.updatePublic', payload: { public: message.public } });
+      break;
+
+    // --- Presence ---
+    case 'send-presence':
+      wsSend({ type: 'user.presence', payload: { status: message.status } });
+      break;
+
+    // --- Playback status ---
+    case 'send-playback-status':
+      wsSend({ type: 'user.playbackStatus', payload: { status: message.status } });
+      break;
+
+    // --- Room settings ---
+    case 'update-room-settings':
+      wsSend({ type: 'room.updateSettings', payload: message.settings });
       break;
 
     // --- Content link sharing ---

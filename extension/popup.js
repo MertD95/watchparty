@@ -74,6 +74,25 @@ function showRoomView(room, myUserId) {
     const isMe = u.id === myUserId;
     return `<div class="user-item">${isOwner ? '<span class="user-crown">👑</span> ' : ''}${escapeHtml(u.name)}${isMe ? ' (you)' : ''}</div>`;
   }).join('');
+
+  // Room settings
+  const isHost = room.owner === myUserId;
+  const publicRow = $('setting-public-row');
+  const autopauseRow = $('setting-autopause-row');
+  if (isHost) {
+    publicRow.classList.remove('hidden');
+    autopauseRow.classList.remove('hidden');
+    $('setting-public').checked = room.public || false;
+    $('setting-autopause').checked = room.settings?.autoPauseOnDisconnect || false;
+  } else {
+    publicRow.classList.add('hidden');
+    autopauseRow.classList.add('hidden');
+  }
+
+  // Load reaction sound preference
+  chrome.storage.local.get('wpReactionSound', ({ wpReactionSound }) => {
+    $('setting-reaction-sound').checked = wpReactionSound !== false;
+  });
 }
 
 // --- Actions ---
@@ -158,13 +177,42 @@ $('btn-leave').addEventListener('click', () => {
   showLobbyView();
 });
 
-// Copy room ID on click
+// --- Settings ---
+$('setting-public').addEventListener('change', (e) => {
+  chrome.runtime.sendMessage({
+    type: 'watchparty-ext', action: 'toggle-public', public: e.target.checked,
+  });
+});
+
+$('setting-autopause').addEventListener('change', (e) => {
+  chrome.runtime.sendMessage({
+    type: 'watchparty-ext', action: 'update-room-settings',
+    settings: { autoPauseOnDisconnect: e.target.checked },
+  });
+});
+
+$('setting-reaction-sound').addEventListener('change', (e) => {
+  chrome.storage.local.set({ wpReactionSound: e.target.checked });
+});
+
+// Share invite link
+$('btn-share').addEventListener('click', () => {
+  const roomId = $('room-id-display').textContent;
+  if (!roomId) return;
+  navigator.clipboard.writeText(`https://watchparty.mertd.me/r/${roomId}`).then(() => {
+    $('btn-share').textContent = '✅ Link Copied!';
+    setTimeout(() => { $('btn-share').textContent = '📋 Copy Invite Link'; }, 1500);
+  }).catch(() => {});
+});
+
+// Copy room ID on click (also copies invite link)
 document.addEventListener('click', (e) => {
   if (e.target.id === 'room-id-display') {
-    navigator.clipboard.writeText(e.target.textContent).then(() => {
+    const roomId = e.target.textContent;
+    navigator.clipboard.writeText(`https://watchparty.mertd.me/r/${roomId}`).then(() => {
       const original = e.target.textContent;
-      e.target.textContent = 'Copied!';
-      setTimeout(() => { e.target.textContent = original; }, 1000);
+      e.target.textContent = 'Link copied!';
+      setTimeout(() => { e.target.textContent = original; }, 1500);
     }).catch(() => {});
   }
 });

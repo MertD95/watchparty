@@ -32,7 +32,7 @@
         "https://app.strem.io/*"
       ],
       "js": ["stremio-sync.js", "stremio-overlay.js", "stremio-profile.js", "stremio-content.js"],
-      "run_at": "document_idle"
+      "run_at": "document_end"
     },
     {
       "matches": [
@@ -46,7 +46,7 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["injected.js"],
+      "resources": ["injected.js", "vendor/emoji-loader.js", "vendor/emoji-picker-element.js", "vendor/database.js", "vendor/emoji-data.json"],
       "matches": [
         "https://web.stremio.com/*",
         "https://web.strem.io/*",

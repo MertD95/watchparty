@@ -21,6 +21,9 @@
   script.onload = () => script.remove();
   (document.documentElement || document.head || document.body).appendChild(script);
 
+  // CORS bypass handled by declarativeNetRequest rules (rules.json) —
+  // no fetch relay needed. Direct fetch/XHR to localhost:11470 works natively.
+
   // --- Video element detection ---
   function startVideoObserver() {
     if (observer) return;
@@ -103,7 +106,8 @@
         WPOverlay.openSidebar();
         break;
 
-      case 'room-sync':
+      case 'room-sync': {
+        const prevTime = roomState?.player?.time || 0;
         roomState = message.room;
         userId = message.userId;
         const wasHost = isHost;
@@ -111,11 +115,19 @@
         WPSync.setHost(isHost);
         refreshOverlay();
         if (!isHost && roomState.player) {
+          // Detect host seek: large time jump (>5s) in a single sync update
+          const newTime = roomState.player.time || 0;
+          if (Math.abs(newTime - prevTime) > 5) {
+            const mins = Math.floor(newTime / 60);
+            const secs = Math.floor(newTime % 60).toString().padStart(2, '0');
+            WPOverlay.showToast(`Host seeked to ${mins}:${secs}`);
+          }
           WPSync.applyRemote(roomState.player);
           WPOverlay.updateSyncIndicator(isHost, WPSync.getLastDrift());
         }
         if (!wasHost && isHost) WPOverlay.playNotifSound();
         break;
+      }
 
       case 'room-left':
         inRoom = false; roomState = null; isHost = false;
@@ -150,6 +162,10 @@
         WPOverlay.showReaction(message.user, message.emoji, roomState);
         break;
 
+      case 'autopause':
+        WPOverlay.showToast(`Paused \u2014 ${message.name} disconnected`);
+        break;
+
       case 'error':
         if (message.error === 'room') {
           inRoom = false; roomState = null;
@@ -160,14 +176,44 @@
     }
   });
 
-  // Visibility recovery
+  // --- Presence + visibility recovery (single listener) ---
+  let presenceTimeout = null;
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && inRoom && !isHost) {
+    if (!inRoom) return;
+    clearTimeout(presenceTimeout);
+    if (document.visibilityState === 'hidden') {
+      presenceTimeout = setTimeout(() => {
+        chrome.runtime.sendMessage({
+          type: 'watchparty-ext', action: 'send-presence', status: 'away',
+        }).catch(() => {});
+      }, 10000);
+    } else {
       chrome.runtime.sendMessage({
-        type: 'watchparty-ext', action: 'request-sync',
+        type: 'watchparty-ext', action: 'send-presence', status: 'active',
       }).catch(() => {});
+      // Non-host: request sync to catch up after tab was hidden
+      if (!isHost) {
+        chrome.runtime.sendMessage({
+          type: 'watchparty-ext', action: 'request-sync',
+        }).catch(() => {});
+      }
     }
   });
+
+  // --- Playback status: report video state every 3s ---
+  let lastPlaybackStatus = '';
+  setInterval(() => {
+    if (!inRoom) return;
+    const video = document.querySelector('video');
+    if (!video) return;
+    const status = video.paused ? 'paused' : video.readyState < 3 ? 'buffering' : 'playing';
+    if (status !== lastPlaybackStatus) {
+      lastPlaybackStatus = status;
+      chrome.runtime.sendMessage({
+        type: 'watchparty-ext', action: 'send-playback-status', status,
+      }).catch(() => {});
+    }
+  }, 3000);
 
   // --- Initialize ---
   function init() {
