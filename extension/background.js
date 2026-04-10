@@ -283,6 +283,18 @@ function handleServerMessage(msg) {
       broadcastToStremioTabs({ action: 'autopause', name: p.name });
       break;
 
+    case 'readyCheck':
+      broadcastToStremioTabs({ action: 'readyCheck', ...p });
+      break;
+
+    case 'countdown':
+      broadcastToStremioTabs({ action: 'countdown', seconds: p.seconds });
+      break;
+
+    case 'bookmark':
+      broadcastToStremioTabs({ action: 'bookmark', ...p });
+      break;
+
     case 'clock.pong': {
       if (!p?.clientTime || !p?.serverTime) return;
       const now = Date.now();
@@ -314,6 +326,9 @@ function startClockSync() {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type !== 'watchparty-ext') return false;
 
+  // Ensure WS is connected on every wake-up (service worker may have been suspended)
+  if (!ws || ws.readyState !== WebSocket.OPEN) connectWs();
+
   switch (message.action) {
     // --- Status queries ---
     case 'get-status':
@@ -338,14 +353,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (message.username) {
           wsSend({ type: 'user.update', payload: { username: message.username } });
         }
-        wsSend({
-          type: 'room.new',
-          payload: {
-            meta: message.meta || { id: 'unknown', type: 'movie', name: 'WatchParty Session' },
-            stream: message.stream || { url: 'https://example.com/placeholder' },
-            public: message.public || false,
-          },
-        });
+        const payload = {
+          meta: message.meta || { id: 'unknown', type: 'movie', name: 'WatchParty Session' },
+          stream: message.stream || { url: 'https://example.com/placeholder' },
+          public: message.public || false,
+        };
+        if (message.roomName) payload.name = message.roomName;
+        wsSend({ type: 'room.new', payload });
       });
       sendResponse({ ok: true });
       return false;
@@ -431,6 +445,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       wsSend({ type: 'room.updateSettings', payload: message.settings });
       break;
 
+    // --- Ready check ---
+    case 'ready-check':
+      wsSend({ type: 'room.readyCheck', payload: { action: message.readyAction } });
+      break;
+
+    // --- Bookmarks ---
+    case 'send-bookmark':
+      wsSend({ type: 'room.bookmark', payload: { time: message.time, label: message.label } });
+      break;
+
     // --- Content link sharing ---
     case 'share-content-link':
       // Host shares what they're watching so peers can navigate to it
@@ -450,7 +474,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       wsSend({ type: 'user.update', payload: { username: message.username } });
       break;
 
-    // --- Legacy proxy support (for standalone WatchParty client) ---
+    // --- CORS proxy for future WatchParty client (not used by extension) ---
     case 'proxy-fetch':
       proxyFetch(message.url, message.method, message.headers)
         .then(sendResponse)
@@ -565,23 +589,33 @@ function arrayBufferToBase64(buffer) {
 
 // ── Dev auto-reload (connects to dev-reload.js watcher) ──
 
+// Dev auto-reload (EventSource not available in MV3 service workers, use fetch + ReadableStream)
 function connectDevReload() {
-  try {
-    const sse = new EventSource('http://localhost:5111/reload');
-    sse.onmessage = (e) => {
-      if (e.data === 'reload') {
-        console.log('[WatchParty] Dev reload triggered');
-        chrome.runtime.reload();
+  (async () => {
+    try {
+      const res = await fetch('http://localhost:5111/reload');
+      if (!res.ok || !res.body) return;
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const text = decoder.decode(value, { stream: true });
+        if (text.includes('data: reload')) {
+          console.log('[WatchParty] Dev reload triggered');
+          chrome.runtime.reload();
+          return;
+        }
       }
-    };
-    sse.onerror = () => { sse.close(); };
-  } catch { /* dev server not running, ignore */ }
+    } catch { /* dev server not running, silently ignore */ }
+  })();
 }
 
 // ── Start ──
+// Don't connect WS eagerly — service worker gets suspended before connection completes,
+// causing ERR_NETWORK_IO_SUSPENDED. WS connects on first actual use (onMessage handler).
 
 checkStremio();
 fetchStremioSettings();
 setInterval(checkStremio, POLL_INTERVAL_MS);
-connectWs();
 connectDevReload();

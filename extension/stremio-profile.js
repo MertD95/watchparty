@@ -46,13 +46,19 @@ const WPProfile = (() => {
     } catch { /* localStorage read failed or JSON parse error */ }
   }
 
+  let intervalId = null;
+
   function start() {
     readAndCache();
-    setInterval(readAndCache, READ_INTERVAL_MS);
+    intervalId = setInterval(readAndCache, READ_INTERVAL_MS);
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') readAndCache();
     });
   }
 
-  return { start, readAndCache };
+  function stop() {
+    if (intervalId) { clearInterval(intervalId); intervalId = null; }
+  }
+
+  return { start, stop, readAndCache };
 })();

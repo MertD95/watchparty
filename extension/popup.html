@@ -187,6 +187,13 @@
     }
     .setting-row input[type="checkbox"] { accent-color: #6366f1; }
 
+    .color-btn {
+      width: 28px; height: 28px; border-radius: 50%; border: 2px solid transparent;
+      cursor: pointer; transition: border-color 0.15s, transform 0.1s;
+    }
+    .color-btn:hover { transform: scale(1.1); }
+    .color-btn.active { border-color: #fff; }
+
     .hidden { display: none !important; }
   </style>
 </head>
@@ -214,6 +221,7 @@
     </div>
     <div class="section">
       <div class="section-title">Create a Room</div>
+      <input type="text" id="room-name-input" placeholder="Room name (optional, e.g. movie-night)" maxlength="30" style="margin-bottom:6px" />
       <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:#999;margin-bottom:8px;cursor:pointer">
         <input type="checkbox" id="public-check" style="accent-color:#6366f1" />
         <span>Public room (anyone can join)</span>
@@ -261,6 +269,22 @@
       <label class="setting-row">
         <input type="checkbox" id="setting-reaction-sound" checked />
         <span>Reaction sounds</span>
+      </label>
+    </div>
+
+    <div class="section" id="theme-settings">
+      <div class="section-title">Appearance</div>
+      <div style="display:flex;gap:6px;margin-bottom:8px">
+        <button class="color-btn" data-color="#6366f1" style="background:#6366f1" title="Indigo"></button>
+        <button class="color-btn" data-color="#ec4899" style="background:#ec4899" title="Pink"></button>
+        <button class="color-btn" data-color="#22c55e" style="background:#22c55e" title="Green"></button>
+        <button class="color-btn" data-color="#f59e0b" style="background:#f59e0b" title="Amber"></button>
+        <button class="color-btn" data-color="#06b6d4" style="background:#06b6d4" title="Cyan"></button>
+        <button class="color-btn" data-color="#ef4444" style="background:#ef4444" title="Red"></button>
+      </div>
+      <label class="setting-row">
+        <input type="checkbox" id="setting-compact" />
+        <span>Compact chat</span>
       </label>
     </div>
 

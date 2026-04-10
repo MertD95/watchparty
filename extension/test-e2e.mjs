@@ -95,8 +95,7 @@ async function testServerConnection() {
   console.log('\n── Test: Server connection ──');
   const ws = await connect();
   const ready = await waitFor(ws, 'ready');
-  assert(ready.payload?.user?.id, 'Server sends ready with user ID');
-  assert(typeof ready.payload.user.id === 'string', 'User ID is a string');
+  assert(typeof ready.payload?.user?.id === 'string' && ready.payload.user.id.length > 10, 'Server sends ready with valid UUID');
   ws.close();
 }
 
@@ -139,17 +138,18 @@ async function testChat() {
   const room = await createRoom(ws1, { id: 'tt0111161', type: 'movie', name: 'The Shawshank Redemption' });
 
   const ws2 = await connect();
-  await waitFor(ws2, 'ready');
+  const ws2Ready = await waitFor(ws2, 'ready');
+  const user2Id = ws2Ready.payload.user.id;
   await setUsername(ws2, 'Bob');
   await joinRoom(ws2, room.payload.id);
-  // Server has 3s cooldown between room actions and chat
   await new Promise(r => setTimeout(r, 3100));
 
   const chatPromise = waitFor(ws1, 'message');
   send(ws2, { type: 'room.message', payload: { content: 'Hello Alice!' } });
   const chatMsg = await chatPromise;
   assert(chatMsg.payload.content === 'Hello Alice!', 'Alice receives Bob\'s message');
-  assert(typeof chatMsg.payload.date === 'number', 'Message has timestamp');
+  assert(chatMsg.payload.user === user2Id, 'Message sender is Bob\'s ID');
+  assert(typeof chatMsg.payload.date === 'number' && chatMsg.payload.date > Date.now() - 5000, 'Message has recent timestamp');
 
   // Alice sends chat back (wait for cooldown)
   await new Promise(r => setTimeout(r, 3100));
@@ -220,7 +220,8 @@ async function testReactions() {
   const room = await createRoom(ws1, { id: 'tt0133093', type: 'movie', name: 'The Matrix' });
 
   const ws2 = await connect();
-  await waitFor(ws2, 'ready');
+  const r2 = await waitFor(ws2, 'ready');
+  const bobId = r2.payload.user.id;
   await setUsername(ws2, 'Bob');
   await joinRoom(ws2, room.payload.id);
 
@@ -229,7 +230,7 @@ async function testReactions() {
 
   const reaction = await waitFor(ws1, 'reaction');
   assert(reaction.payload.emoji === '🔥', 'Alice receives 🔥 reaction');
-  assert(typeof reaction.payload.user === 'string', 'Reaction has user ID');
+  assert(reaction.payload.user === bobId, 'Reaction sender is Bob\'s ID');
 
   ws1.close();
   ws2.close();
@@ -566,6 +567,366 @@ async function testAutoLeaveOnNewRoom() {
   ws1.close(); ws2.close();
 }
 
+// ── Phase 2: Presence, playback status, auto-pause, room settings ──
+
+async function testPresenceIndicators() {
+  console.log('\n── Test: Presence indicators (AFK) ──');
+  const ws1 = await connect();
+  await waitFor(ws1, 'ready');
+  await setUsername(ws1, 'Alice');
+  const room = await createRoom(ws1, { id: 'tt2001', type: 'movie', name: 'Presence Test' });
+
+  const ws2 = await connect();
+  await waitFor(ws2, 'ready');
+  await setUsername(ws2, 'Bob');
+  await joinRoom(ws2, room.payload.id);
+
+  // Bob goes AFK
+  send(ws2, { type: 'user.presence', payload: { status: 'away' } });
+  const sync = await waitFor(ws1, 'sync');
+  const bob = sync.payload.users.find(u => u.name === 'Bob');
+  assert(bob?.status === 'away', 'Bob shows as away');
+
+  // Bob comes back
+  send(ws2, { type: 'user.presence', payload: { status: 'active' } });
+  const sync2 = await waitFor(ws1, 'sync');
+  const bob2 = sync2.payload.users.find(u => u.name === 'Bob');
+  assert(bob2?.status === 'active', 'Bob shows as active again');
+
+  ws1.close(); ws2.close();
+}
+
+async function testPlaybackStatus() {
+  console.log('\n── Test: Playback status per user ──');
+  const ws1 = await connect();
+  await waitFor(ws1, 'ready');
+  await setUsername(ws1, 'Alice');
+  const room = await createRoom(ws1, { id: 'tt2002', type: 'movie', name: 'Playback Test' });
+
+  const ws2 = await connect();
+  await waitFor(ws2, 'ready');
+  await setUsername(ws2, 'Bob');
+  await joinRoom(ws2, room.payload.id);
+
+  // Bob reports playing
+  send(ws2, { type: 'user.playbackStatus', payload: { status: 'playing' } });
+  const sync = await waitFor(ws1, 'sync');
+  const bob = sync.payload.users.find(u => u.name === 'Bob');
+  assert(bob?.playbackStatus === 'playing', 'Bob shows as playing');
+
+  // Bob reports buffering
+  send(ws2, { type: 'user.playbackStatus', payload: { status: 'buffering' } });
+  const sync2 = await waitFor(ws1, 'sync');
+  const bob2 = sync2.payload.users.find(u => u.name === 'Bob');
+  assert(bob2?.playbackStatus === 'buffering', 'Bob shows as buffering');
+
+  // Bob reports paused
+  send(ws2, { type: 'user.playbackStatus', payload: { status: 'paused' } });
+  const sync3 = await waitFor(ws1, 'sync');
+  const bob3 = sync3.payload.users.find(u => u.name === 'Bob');
+  assert(bob3?.playbackStatus === 'paused', 'Bob shows as paused');
+
+  ws1.close(); ws2.close();
+}
+
+async function testRoomSettings() {
+  console.log('\n── Test: Room settings (owner-only) ──');
+  const ws1 = await connect();
+  await waitFor(ws1, 'ready');
+  await setUsername(ws1, 'Alice');
+  const room = await createRoom(ws1, { id: 'tt2003', type: 'movie', name: 'Settings Test' });
+
+  const ws2 = await connect();
+  await waitFor(ws2, 'ready');
+  await setUsername(ws2, 'Bob');
+  await joinRoom(ws2, room.payload.id);
+
+  // Alice enables auto-pause
+  send(ws1, { type: 'room.updateSettings', payload: { autoPauseOnDisconnect: true } });
+  const sync = await waitFor(ws2, 'sync');
+  assert(sync.payload.settings?.autoPauseOnDisconnect === true, 'Auto-pause enabled');
+
+  // Bob (non-owner) tries to change settings
+  send(ws2, { type: 'room.updateSettings', payload: { autoPauseOnDisconnect: false } });
+  const err = await waitFor(ws2, 'error');
+  assert(err.payload.type === 'owner', 'Non-owner cannot change settings');
+
+  ws1.close(); ws2.close();
+}
+
+async function testAutoPauseOnDisconnect() {
+  console.log('\n── Test: Auto-pause on disconnect ──');
+  const ws1 = await connect();
+  await waitFor(ws1, 'ready');
+  await setUsername(ws1, 'Alice');
+  const room = await createRoom(ws1, { id: 'tt2004', type: 'movie', name: 'AutoPause Test' });
+
+  // Enable auto-pause
+  send(ws1, { type: 'room.updateSettings', payload: { autoPauseOnDisconnect: true } });
+  await waitFor(ws1, 'sync');
+
+  // Set player to playing
+  send(ws1, { type: 'player.sync', payload: { paused: false, buffering: false, time: 60 } });
+
+  const ws2 = await connect();
+  await waitFor(ws2, 'ready');
+  await setUsername(ws2, 'Bob');
+  await joinRoom(ws2, room.payload.id);
+  await new Promise(r => setTimeout(r, 300));
+
+  // Collect messages on Alice's side
+  const msgPromise = collectMessages(ws1, 3000);
+
+  // Bob disconnects
+  ws2.close();
+
+  const msgs = await msgPromise;
+  const autopause = msgs.find(m => m.type === 'autopause');
+  const syncAfter = msgs.filter(m => m.type === 'sync').pop();
+
+  assert(autopause !== undefined, 'Alice receives autopause event');
+  assert(autopause?.payload?.name === 'Bob', 'Autopause names Bob');
+  assert(syncAfter?.payload?.player?.paused === true, 'Player is now paused');
+
+  ws1.close();
+}
+
+// ── Phase 3: Ready check, bookmarks ──
+
+async function testReadyCheckFlow() {
+  console.log('\n── Test: Ready check full flow ──');
+  const ws1 = await connect();
+  await waitFor(ws1, 'ready');
+  await setUsername(ws1, 'Alice');
+  const room = await createRoom(ws1, { id: 'tt3001', type: 'movie', name: 'Ready Test' });
+
+  // Set player to paused
+  send(ws1, { type: 'player.sync', payload: { paused: true, buffering: false, time: 0 } });
+
+  const ws2 = await connect();
+  await waitFor(ws2, 'ready');
+  await setUsername(ws2, 'Bob');
+  await joinRoom(ws2, room.payload.id);
+  await new Promise(r => setTimeout(r, 300));
+
+  // Alice initiates ready check
+  send(ws1, { type: 'room.readyCheck', payload: { action: 'initiate' } });
+  const rc1 = await waitFor(ws2, 'readyCheck');
+  assert(rc1.payload.action === 'started', 'Bob receives ready check started');
+  assert(rc1.payload.total === 2, 'Total is 2 users');
+  assert(rc1.payload.confirmed.length === 0, 'No one confirmed yet');
+
+  // Alice confirms
+  send(ws1, { type: 'room.readyCheck', payload: { action: 'confirm' } });
+  const rc2 = await waitFor(ws2, 'readyCheck');
+  assert(rc2.payload.action === 'updated', 'Updated after Alice confirms');
+  assert(rc2.payload.confirmed.length === 1, '1 confirmed');
+
+  // Bob confirms — should trigger countdown
+  const msgPromise = collectMessages(ws1, 5000);
+  send(ws2, { type: 'room.readyCheck', payload: { action: 'confirm' } });
+
+  const msgs = await msgPromise;
+  const countdowns = msgs.filter(m => m.type === 'countdown');
+  const syncs = msgs.filter(m => m.type === 'sync');
+
+  const countdownValues = countdowns.map(c => c.payload.seconds);
+  assert(countdowns.length === 4, `Received exactly 4 countdown events (3,2,1,0), got ${countdowns.length}`);
+  assert(countdownValues[0] === 3, 'First countdown is 3');
+  assert(countdownValues[1] === 2, 'Second countdown is 2');
+  assert(countdownValues[2] === 1, 'Third countdown is 1');
+  assert(countdownValues[3] === 0, 'Fourth countdown is 0');
+
+  // After countdown, player should be unpaused
+  const finalSync = syncs.pop();
+  assert(finalSync?.payload?.player?.paused === false, 'Player auto-plays after countdown');
+
+  ws1.close(); ws2.close();
+}
+
+async function testReadyCheckCancel() {
+  console.log('\n── Test: Ready check cancel ──');
+  const ws1 = await connect();
+  await waitFor(ws1, 'ready');
+  await setUsername(ws1, 'Alice');
+  const room = await createRoom(ws1, { id: 'tt3002', type: 'movie', name: 'Cancel Test' });
+
+  const ws2 = await connect();
+  await waitFor(ws2, 'ready');
+  await setUsername(ws2, 'Bob');
+  await joinRoom(ws2, room.payload.id);
+  await new Promise(r => setTimeout(r, 300));
+
+  // Alice initiates
+  send(ws1, { type: 'room.readyCheck', payload: { action: 'initiate' } });
+  await waitFor(ws2, 'readyCheck');
+
+  // Alice cancels
+  send(ws1, { type: 'room.readyCheck', payload: { action: 'cancel' } });
+  const rc = await waitFor(ws2, 'readyCheck');
+  assert(rc.payload.action === 'cancelled', 'Ready check cancelled');
+
+  ws1.close(); ws2.close();
+}
+
+async function testReadyCheckNonOwnerCannotInitiate() {
+  console.log('\n── Test: Non-owner cannot initiate ready check ──');
+  const ws1 = await connect();
+  await waitFor(ws1, 'ready');
+  await setUsername(ws1, 'Alice');
+  const room = await createRoom(ws1, { id: 'tt3003', type: 'movie', name: 'Auth Test' });
+
+  const ws2 = await connect();
+  await waitFor(ws2, 'ready');
+  await setUsername(ws2, 'Bob');
+  await joinRoom(ws2, room.payload.id);
+
+  // Bob tries to initiate
+  send(ws2, { type: 'room.readyCheck', payload: { action: 'initiate' } });
+  const err = await waitFor(ws2, 'error');
+  assert(err.payload.type === 'owner', 'Non-owner cannot initiate ready check');
+
+  ws1.close(); ws2.close();
+}
+
+async function testBookmarks() {
+  console.log('\n── Test: Shared bookmarks ──');
+  const ws1 = await connect();
+  await waitFor(ws1, 'ready');
+  await setUsername(ws1, 'Alice');
+  const room = await createRoom(ws1, { id: 'tt3004', type: 'movie', name: 'Bookmark Test' });
+
+  const ws2 = await connect();
+  await waitFor(ws2, 'ready');
+  await setUsername(ws2, 'Bob');
+  await joinRoom(ws2, room.payload.id);
+  await new Promise(r => setTimeout(r, 300));
+
+  // Bob bookmarks at 1:23:45 (5025 seconds)
+  send(ws2, { type: 'room.bookmark', payload: { time: 5025, label: 'Epic scene!' } });
+  const bm = await waitFor(ws1, 'bookmark');
+  assert(bm.payload.time === 5025, 'Bookmark time is 5025');
+  assert(bm.payload.label === 'Epic scene!', 'Bookmark has correct label');
+  assert(bm.payload.userName === 'Bob', 'Bookmark shows Bob as creator');
+  assert(typeof bm.payload.date === 'number', 'Bookmark has timestamp');
+
+  ws1.close(); ws2.close();
+}
+
+async function testBookmarkAutoLabel() {
+  console.log('\n── Test: Bookmark auto-generates label ──');
+  const ws1 = await connect();
+  await waitFor(ws1, 'ready');
+  await setUsername(ws1, 'Alice');
+  const room = await createRoom(ws1, { id: 'tt3005', type: 'movie', name: 'AutoLabel Test' });
+
+  const ws2 = await connect();
+  await waitFor(ws2, 'ready');
+  await setUsername(ws2, 'Bob');
+  await joinRoom(ws2, room.payload.id);
+  await new Promise(r => setTimeout(r, 300));
+
+  // Bookmark without label
+  send(ws2, { type: 'room.bookmark', payload: { time: 90 } });
+  const bm = await waitFor(ws1, 'bookmark');
+  assert(bm.payload.label === 'Bookmark at 1:30', `Auto-label is exact "Bookmark at 1:30", got "${bm.payload.label}"`);
+
+  ws1.close(); ws2.close();
+}
+
+async function testPublicRoomEnhancedData() {
+  console.log('\n── Test: Public room listing with enhanced data ──');
+  const ws = await connect();
+  await waitFor(ws, 'ready');
+  await setUsername(ws, 'Alice');
+  const room = await createRoom(ws, { id: 'tt4001', type: 'movie', name: 'Enhanced Listing' }, { public: true });
+
+  // Set player state
+  send(ws, { type: 'player.sync', payload: { paused: false, buffering: false, time: 300 } });
+  await new Promise(r => setTimeout(r, 300));
+
+  // Add a bookmark
+  send(ws, { type: 'room.bookmark', payload: { time: 120, label: 'Cool part' } });
+  await waitFor(ws, 'bookmark');
+  await new Promise(r => setTimeout(r, 300));
+
+  const res = await fetch('http://localhost:8181/rooms');
+  const data = await res.json();
+  const found = data.rooms?.find(r => r.id === room.payload.id);
+
+  assert(found !== undefined, 'Room in listing');
+  assert(found.paused === false, 'Listing shows playing state');
+  assert(found.time === 300, 'Listing shows current time');
+  assert(found.bookmarks === 1, 'Listing shows bookmark count');
+
+  ws.close();
+}
+
+async function testThreeUserSync() {
+  console.log('\n── Test: Three-user sync ──');
+  const ws1 = await connect();
+  await waitFor(ws1, 'ready');
+  await setUsername(ws1, 'Alice');
+  const room = await createRoom(ws1, { id: 'tt5001', type: 'movie', name: '3-User Test' });
+
+  const ws2 = await connect();
+  await waitFor(ws2, 'ready');
+  await setUsername(ws2, 'Bob');
+  await joinRoom(ws2, room.payload.id);
+
+  const ws3 = await connect();
+  await waitFor(ws3, 'ready');
+  await setUsername(ws3, 'Charlie');
+  await joinRoom(ws3, room.payload.id);
+  await new Promise(r => setTimeout(r, 300));
+
+  // Alice (host) plays at 100s
+  send(ws1, { type: 'player.sync', payload: { paused: false, buffering: false, time: 100 } });
+
+  const sync2 = await waitFor(ws2, 'sync');
+  const sync3 = await waitFor(ws3, 'sync');
+
+  assert(sync2.payload.player.time === 100, 'Bob receives time=100');
+  assert(sync3.payload.player.time === 100, 'Charlie receives time=100');
+  assert(sync2.payload.users.length === 3, 'Room has 3 users');
+
+  ws1.close(); ws2.close(); ws3.close();
+}
+
+async function testDisconnectReconnectFlow() {
+  console.log('\n── Test: Disconnect + reconnect rejoins room ──');
+  const ws1 = await connect();
+  await waitFor(ws1, 'ready');
+  await setUsername(ws1, 'Alice');
+  const room = await createRoom(ws1, { id: 'tt5002', type: 'movie', name: 'Reconnect Test' });
+  const roomId = room.payload.id;
+
+  const ws2 = await connect();
+  await waitFor(ws2, 'ready');
+  await setUsername(ws2, 'Bob');
+  await joinRoom(ws2, roomId);
+
+  // Bob disconnects — drain Alice's sync about Bob leaving
+  ws2.close();
+  await collectMessages(ws1, 1000);
+
+  // Bob reconnects and rejoins
+  const ws3 = await connect();
+  await waitFor(ws3, 'ready');
+  await setUsername(ws3, 'Bob');
+
+  // Set up listener BEFORE joining
+  const syncPromise = waitFor(ws1, 'sync');
+  send(ws3, { type: 'room.join', payload: { id: roomId } });
+  await waitFor(ws3, 'sync');
+
+  const sync = await syncPromise;
+  assert(sync.payload.users.some(u => u.name === 'Bob'), 'Bob is back in room');
+  assert(sync.payload.users.length === 2, 'Room has 2 users again');
+
+  ws1.close(); ws3.close();
+}
+
 // ── MCP pairing mode: join an existing room created from the browser ──
 
 async function testMCPPairing(roomId) {
@@ -642,11 +1003,26 @@ async function main() {
       // Edge cases
       testUnicodeInChat,
       testAutoLeaveOnNewRoom,
+      // Phase 2: Presence, playback status, auto-pause, settings
+      testPresenceIndicators,
+      testPlaybackStatus,
+      testRoomSettings,
+      testAutoPauseOnDisconnect,
+      // Phase 3: Ready check, bookmarks
+      testReadyCheckFlow,
+      testReadyCheckCancel,
+      testReadyCheckNonOwnerCannotInitiate,
+      testBookmarks,
+      testBookmarkAutoLabel,
+      // Enhanced features
+      testPublicRoomEnhancedData,
+      testThreeUserSync,
+      testDisconnectReconnectFlow,
     ];
     for (const test of tests) {
       try { await test(); } catch (e) { console.error('  ✗ FATAL:', e.message); failed++; }
       // Pause between tests to let server release closed connections (per-IP limit is 10)
-      await new Promise(r => setTimeout(r, 1000));
+      await new Promise(r => setTimeout(r, 1500));
     }
 
     console.log(`\n${'='.repeat(30)}`);

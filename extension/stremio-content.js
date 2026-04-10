@@ -15,14 +15,8 @@
   let observer = null;
   let typingUsers = new Map();
 
-  // --- Inject fetch/XHR interceptor into page context ---
-  const script = document.createElement('script');
-  script.src = chrome.runtime.getURL('injected.js');
-  script.onload = () => script.remove();
-  (document.documentElement || document.head || document.body).appendChild(script);
-
   // CORS bypass handled by declarativeNetRequest rules (rules.json) —
-  // no fetch relay needed. Direct fetch/XHR to localhost:11470 works natively.
+  // no fetch/XHR interception needed. Direct requests to localhost:11470 work natively.
 
   // --- Video element detection ---
   function startVideoObserver() {
@@ -123,8 +117,12 @@
             WPOverlay.showToast(`Host seeked to ${mins}:${secs}`);
           }
           WPSync.applyRemote(roomState.player);
-          WPOverlay.updateSyncIndicator(isHost, WPSync.getLastDrift());
+          const drift = WPSync.getLastDrift();
+          WPOverlay.updateSyncIndicator(isHost, drift);
+          if (!isHost) WPOverlay.showCatchUpButton(drift);
         }
+        // Update presence bar with user statuses
+        WPOverlay.updatePresenceBar(roomState.users);
         if (!wasHost && isHost) WPOverlay.playNotifSound();
         break;
       }
@@ -139,6 +137,12 @@
         chatMessages.push(message.message);
         if (chatMessages.length > 200) chatMessages.shift();
         WPOverlay.appendChatMessage(message.message, roomState, userId);
+        // Unread badge + bubble for messages from others
+        if (message.message.user !== userId) {
+          WPOverlay.incrementUnread();
+          const sender = roomState?.users?.find(u => u.id === message.message.user);
+          WPOverlay.showChatBubble(sender?.name || 'Unknown', message.message.content, message.message.user);
+        }
         break;
 
       case 'typing': {
@@ -164,6 +168,18 @@
 
       case 'autopause':
         WPOverlay.showToast(`Paused \u2014 ${message.name} disconnected`);
+        break;
+
+      case 'readyCheck':
+        WPOverlay.showReadyCheck(message.action, message.confirmed, message.total, userId);
+        break;
+
+      case 'countdown':
+        WPOverlay.showCountdown(message.seconds);
+        break;
+
+      case 'bookmark':
+        WPOverlay.appendBookmark(message);
         break;
 
       case 'error':
@@ -218,6 +234,7 @@
   // --- Initialize ---
   function init() {
     WPOverlay.create();
+    WPOverlay.initKeyboardShortcuts();
     WPOverlay.bindTypingIndicator(
       () => {
         if (!inRoom) return;

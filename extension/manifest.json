@@ -22,7 +22,14 @@
     ]
   },
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "background.js",
+    "scripts": ["background.js"]
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "watchparty@mertd.me",
+      "strict_min_version": "115.0"
+    }
   },
   "content_scripts": [
     {
@@ -46,7 +53,7 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["injected.js", "vendor/emoji-loader.js", "vendor/emoji-picker-element.js", "vendor/database.js", "vendor/emoji-data.json"],
+      "resources": ["vendor/emoji-loader.js", "vendor/emoji-picker-element.js", "vendor/database.js", "vendor/emoji-data.json"],
       "matches": [
         "https://web.stremio.com/*",
         "https://web.strem.io/*",

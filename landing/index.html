@@ -356,19 +356,26 @@
         }
 
         empty.style.display = 'none';
-        list.innerHTML = data.rooms.map(room => `
-          <div class="room-card">
-            ${room.meta.poster
-              ? `<img class="room-poster" src="${escapeAttr(room.meta.poster)}" alt="" />`
-              : `<div class="room-poster"></div>`}
-            <div class="room-info">
-              <div class="room-title">${escapeHtml(room.meta.name || 'Untitled')}</div>
-              <div class="room-meta">Hosted by ${escapeHtml(room.owner)}${room.meta.year ? ` &middot; ${room.meta.year}` : ''}</div>
+        list.innerHTML = data.rooms.map(room => {
+          const mins = Math.floor((room.time || 0) / 60);
+          const secs = Math.floor((room.time || 0) % 60).toString().padStart(2, '0');
+          const statusIcon = room.paused ? '⏸' : '▶';
+          const statusColor = room.paused ? '#f59e0b' : '#22c55e';
+          return `
+            <div class="room-card">
+              ${room.meta.poster
+                ? `<img class="room-poster" src="${escapeAttr(room.meta.poster)}" alt="" />`
+                : `<div class="room-poster"></div>`}
+              <div class="room-info">
+                <div class="room-title">${escapeHtml(room.meta.name || 'Untitled')}</div>
+                <div class="room-meta">Hosted by ${escapeHtml(room.owner)}${room.meta.year ? ` &middot; ${room.meta.year}` : ''}</div>
+                <div class="room-meta"><span style="color:${statusColor}">${statusIcon}</span> ${mins}:${secs}${room.bookmarks ? ` &middot; 📌 ${room.bookmarks}` : ''}</div>
+              </div>
+              <div class="room-users">${room.users} watching</div>
+              <button class="room-join-btn" onclick="joinRoom('${escapeAttr(room.id)}')">Join</button>
             </div>
-            <div class="room-users">${room.users} watching</div>
-            <button class="room-join-btn" onclick="joinRoom('${escapeAttr(room.id)}')">Join</button>
-          </div>
-        `).join('');
+          `;
+        }).join('');
       } catch {
         // Server unavailable — show empty state
       }

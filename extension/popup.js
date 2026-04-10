@@ -107,15 +107,16 @@ $('btn-create').addEventListener('click', () => {
   chrome.storage.local.set({ wpUsername: username });
 
   const isPublic = $('public-check')?.checked || false;
+  const roomName = $('room-name-input')?.value.trim().toLowerCase().replace(/[^a-z0-9-]/g, '') || undefined;
 
   chrome.runtime.sendMessage({
     type: 'watchparty-ext',
     action: 'create-room',
     username,
-    // Meta will be updated once the content script detects what's playing
     meta: { id: 'pending', type: 'movie', name: 'WatchParty Session' },
     stream: { url: 'https://watchparty.mertd.me/sync' },
     public: isPublic,
+    roomName,
   });
 
   // Close popup and wait for room-joined event
@@ -193,6 +194,27 @@ $('setting-autopause').addEventListener('change', (e) => {
 
 $('setting-reaction-sound').addEventListener('change', (e) => {
   chrome.storage.local.set({ wpReactionSound: e.target.checked });
+});
+
+// Theme: accent color
+document.querySelectorAll('.color-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.color-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    chrome.storage.local.set({ wpAccentColor: btn.dataset.color });
+  });
+});
+// Load saved accent
+chrome.storage.local.get('wpAccentColor', ({ wpAccentColor }) => {
+  const color = wpAccentColor || '#6366f1';
+  document.querySelector(`.color-btn[data-color="${color}"]`)?.classList.add('active');
+});
+// Compact chat
+$('setting-compact').addEventListener('change', (e) => {
+  chrome.storage.local.set({ wpCompactChat: e.target.checked });
+});
+chrome.storage.local.get('wpCompactChat', ({ wpCompactChat }) => {
+  $('setting-compact').checked = !!wpCompactChat;
 });
 
 // Share invite link

@@ -5,3 +5,8 @@ node_modules/
 .DS_Store
 Thumbs.db
 extension/_metadata/
+
+# Claude Code
+CLAUDE.md
+CLAUDE.local.md
+.claude/

@@ -6,7 +6,8 @@
     "test": "node extension/test-e2e.mjs"
   },
   "devDependencies": {
-    "chokidar": "^4.0.0"
+    "chokidar": "^4.0.0",
+    "playwright": "^1.59.1"
   },
   "dependencies": {
     "emoji-picker-element": "^1.29.1",
