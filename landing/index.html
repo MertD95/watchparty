@@ -385,11 +385,7 @@
     setInterval(loadPublicRooms, 15000);
 
     function joinRoom(roomId) {
-      // Store room ID for the extension to pick up, then redirect
-      try {
-        localStorage.setItem('wp_pending_room', roomId);
-      } catch {}
-      // Also try to tell the extension via the content script
+      // Tell the content script to store the room ID in chrome.storage
       window.postMessage({ type: 'watchparty-join-room', roomId }, '*');
       // Redirect to Stremio Web
       window.location.href = 'https://web.stremio.com';
@@ -401,10 +397,8 @@
       document.getElementById('page-redirect').style.display = 'block';
       document.getElementById('redirect-room-id').textContent = roomId;
 
-      // Store room ID for the extension
-      try {
-        localStorage.setItem('wp_pending_room', roomId);
-      } catch {}
+      // Tell content script to store room ID
+      window.postMessage({ type: 'watchparty-join-room', roomId }, '*');
 
       // Check if extension is installed
       const extCheck = setTimeout(() => {

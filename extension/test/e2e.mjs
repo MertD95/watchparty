@@ -1022,7 +1022,7 @@ async function main() {
     for (const test of tests) {
       try { await test(); } catch (e) { console.error('  ✗ FATAL:', e.message); failed++; }
       // Pause between tests to let server release closed connections (per-IP limit is 10)
-      await new Promise(r => setTimeout(r, 1500));
+      await new Promise(r => setTimeout(r, 2000));
     }
 
     console.log(`\n${'='.repeat(30)}`);

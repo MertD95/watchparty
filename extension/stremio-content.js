@@ -218,7 +218,7 @@
 
   // --- Playback status: report video state every 3s ---
   let lastPlaybackStatus = '';
-  setInterval(() => {
+  const playbackInterval = setInterval(() => {
     if (!inRoom) return;
     const video = document.querySelector('video');
     if (!video) return;
@@ -230,6 +230,12 @@
       }).catch(() => {});
     }
   }, 3000);
+
+  // Cleanup on page unload
+  window.addEventListener('beforeunload', () => {
+    clearInterval(playbackInterval);
+    WPProfile.stop();
+  });
 
   // --- Initialize ---
   function init() {

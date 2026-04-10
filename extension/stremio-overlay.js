@@ -11,6 +11,8 @@ const WPOverlay = (() => {
   const LOCAL_ECHO_TTL_MS = 10000;
 
   let overlay = null;
+  let cachedUsername = 'You';
+  let cachedUserId = null;
 
   // --- Emoji picker (emoji-picker-element library) ---
   function loadEmojiPicker() {
@@ -253,10 +255,11 @@ const WPOverlay = (() => {
     // Toggle button — Shadow DOM, fixed position, independent of Stremio's DOM
     const toggleHost = document.createElement('div');
     toggleHost.id = 'wp-toggle-host';
+    toggleHost.style.cssText = 'position:fixed;top:14px;right:14px;z-index:2147483647;width:42px;height:42px;';
     const shadow = toggleHost.attachShadow({ mode: 'closed' });
     shadow.innerHTML = `
       <style>
-        :host { position:fixed; top:14px; right:14px; z-index:2147483647; }
+        :host { display:block; }
         button {
           width:42px; height:42px; border-radius:50%; border:none;
           background:rgba(99,102,241,0.85); color:#fff;
@@ -271,6 +274,8 @@ const WPOverlay = (() => {
         <svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
       </button>
     `;
+    // Store ref to shadow button for theme updates (shadow is closed, can't access externally)
+    toggleHost._wpShadowBtn = shadow.querySelector('button');
     // Unread badge (outside shadow so we can query it)
     const unreadBadge = document.createElement('span');
     unreadBadge.id = 'wp-unread-badge';
@@ -282,6 +287,8 @@ const WPOverlay = (() => {
       sidebar.classList.toggle('wp-sidebar-hidden');
       const nowOpen = !sidebar.classList.contains('wp-sidebar-hidden');
       updateContentMargin(nowOpen);
+      // Hide toggle button when sidebar is open to prevent overlap with close button
+      toggleHost.style.display = nowOpen ? 'none' : '';
       if (nowOpen) clearUnread();
     }
     // Listen on host for programmatic clicks, inner button handles real user clicks
@@ -324,13 +331,49 @@ const WPOverlay = (() => {
 
     bindEvents();
 
+    // Re-evaluate content margin on resize (handles switch between push and overlay mode)
+    window.addEventListener('resize', () => {
+      const sidebarOpen = !document.getElementById('wp-sidebar')?.classList.contains('wp-sidebar-hidden');
+      updateContentMargin(sidebarOpen);
+    });
+
     // --- Theme application ---
+    function hexToRgb(hex) {
+      const r = parseInt(hex.slice(1, 3), 16);
+      const g = parseInt(hex.slice(3, 5), 16);
+      const b = parseInt(hex.slice(5, 7), 16);
+      return `${r},${g},${b}`;
+    }
+    function darkenHex(hex, amount) {
+      const r = Math.max(0, parseInt(hex.slice(1, 3), 16) - amount);
+      const g = Math.max(0, parseInt(hex.slice(3, 5), 16) - amount);
+      const b = Math.max(0, parseInt(hex.slice(5, 7), 16) - amount);
+      return `#${r.toString(16).padStart(2,'0')}${g.toString(16).padStart(2,'0')}${b.toString(16).padStart(2,'0')}`;
+    }
+    function lightenHex(hex, amount) {
+      const r = Math.min(255, parseInt(hex.slice(1, 3), 16) + amount);
+      const g = Math.min(255, parseInt(hex.slice(3, 5), 16) + amount);
+      const b = Math.min(255, parseInt(hex.slice(5, 7), 16) + amount);
+      return `#${r.toString(16).padStart(2,'0')}${g.toString(16).padStart(2,'0')}${b.toString(16).padStart(2,'0')}`;
+    }
     function applyTheme() {
       chrome.storage?.local?.get(['wpAccentColor', 'wpCompactChat'], (r) => {
         const accent = r.wpAccentColor || '#6366f1';
         const sidebar = document.getElementById('wp-sidebar');
         if (sidebar) {
           sidebar.style.setProperty('--wp-accent', accent);
+          sidebar.style.setProperty('--wp-accent-hover', darkenHex(accent, 14));
+          sidebar.style.setProperty('--wp-accent-light', lightenHex(accent, 26));
+          sidebar.style.setProperty('--wp-accent-rgb', hexToRgb(accent));
+        }
+        // Update toggle button in Shadow DOM (closed — use stored ref)
+        const toggleHost = document.getElementById('wp-toggle-host');
+        const btn = toggleHost?._wpShadowBtn;
+        if (btn) {
+          const rgb = hexToRgb(accent);
+          btn.style.background = `rgba(${rgb},0.85)`;
+          btn.onmouseenter = () => { btn.style.background = `rgba(${rgb},1)`; };
+          btn.onmouseleave = () => { btn.style.background = `rgba(${rgb},0.85)`; };
         }
         const overlay = document.getElementById('wp-overlay');
         if (overlay) {
@@ -351,6 +394,11 @@ const WPOverlay = (() => {
     $('wp-close-sidebar').addEventListener('click', () => {
       $('wp-sidebar').classList.add('wp-sidebar-hidden');
       updateContentMargin(false);
+      // Re-show toggle button
+      $('wp-toggle-host').style.display = '';
+      // Close any open pickers
+      $('wp-emoji-picker')?.classList.add('wp-hidden-el');
+      $('wp-gif-picker')?.classList.add('wp-hidden-el');
     });
     $('wp-minimize-btn').addEventListener('click', () => {
       $('wp-body').classList.add('wp-hidden-el');
@@ -403,14 +451,17 @@ const WPOverlay = (() => {
     async function searchGifs(query) {
       const results = $('wp-gif-results');
       try {
+        // Tenor API browser key (public, restricted by HTTP referrer — standard for client-side GIF search)
+        const TENOR_KEY = 'AIzaSyAyimkuYQYF_FXVALexPuGQctUWRURdCYQ';
         const endpoint = query === 'trending'
-          ? 'https://tenor.googleapis.com/v2/featured?key=AIzaSyAyimkuYQYF_FXVALexPuGQctUWRURdCYQ&limit=20&media_filter=tinygif'
-          : `https://tenor.googleapis.com/v2/search?key=AIzaSyAyimkuYQYF_FXVALexPuGQctUWRURdCYQ&q=${encodeURIComponent(query)}&limit=20&media_filter=tinygif`;
+          ? `https://tenor.googleapis.com/v2/featured?key=${TENOR_KEY}&limit=20&media_filter=tinygif`
+          : `https://tenor.googleapis.com/v2/search?key=${TENOR_KEY}&q=${encodeURIComponent(query)}&limit=20&media_filter=tinygif`;
         const res = await fetch(endpoint);
+        if (!res.ok) throw new Error(`Tenor API ${res.status}`);
         const data = await res.json();
         results.innerHTML = (data.results || []).map(g => {
           const url = g.media_formats?.tinygif?.url || g.media_formats?.gif?.url || '';
-          return url ? `<img class="wp-gif-item" src="${url}" data-url="${url}" loading="lazy" />` : '';
+          return url ? `<img class="wp-gif-item" src="${escapeHtml(url)}" data-url="${escapeHtml(url)}" loading="lazy" />` : '';
         }).join('');
         results.querySelectorAll('.wp-gif-item').forEach(img => {
           img.addEventListener('click', () => {
@@ -422,7 +473,7 @@ const WPOverlay = (() => {
             const container = document.getElementById('wp-chat-messages');
             if (container) {
               const div = buildMsgEl(
-                `<span class="wp-chat-name" style="color:#6366f1">You</span>`,
+                `<span class="wp-chat-name" style="color:${getUserColor(cachedUserId)}">${escapeHtml(cachedUsername)}</span>`,
                 `<img class="wp-chat-gif" src="${escapeHtml(img.dataset.url)}" alt="GIF" />`
               );
               div.classList.add('wp-chat-local');
@@ -448,7 +499,7 @@ const WPOverlay = (() => {
     const container = document.getElementById('wp-chat-messages');
     if (container) {
       const div = buildMsgEl(
-        `<span class="wp-chat-name" style="color:#6366f1">You</span>`,
+        `<span class="wp-chat-name" style="color:${getUserColor(cachedUserId)}">${escapeHtml(cachedUsername)}</span>`,
         `<span class="wp-chat-text">${escapeHtml(content)}</span>`
       );
       div.classList.add('wp-chat-local');
@@ -472,6 +523,12 @@ const WPOverlay = (() => {
   // --- State updates ---
 
   function updateState({ inRoom, isHost, userId, roomState, hasVideo }) {
+    // Cache username for local echo
+    if (userId && roomState?.users) {
+      cachedUserId = userId;
+      const me = roomState.users.find(u => u.id === userId);
+      if (me) cachedUsername = me.name;
+    }
     if (!overlay) return;
 
     const status = document.getElementById('wp-status');
@@ -518,7 +575,10 @@ const WPOverlay = (() => {
       document.getElementById('wp-bookmark-btn')?.addEventListener('click', () => {
         const video = document.querySelector('video');
         if (!video) return;
-        chrome.runtime.sendMessage({ type: 'watchparty-ext', action: 'send-bookmark', time: video.currentTime }).catch(() => {});
+        const time = video.currentTime;
+        chrome.runtime.sendMessage({ type: 'watchparty-ext', action: 'send-bookmark', time }).catch(() => {});
+        // Local echo — show bookmark immediately (server broadcast also arrives but appendBookmark deduplicates by checking last message)
+        appendBookmark({ user: cachedUserId, userName: cachedUsername, time, label: '' });
         showToast('Bookmark saved!', 1500);
       });
     }
@@ -648,6 +708,8 @@ const WPOverlay = (() => {
   }
 
   function showReaction(uid, emoji, roomState) {
+    // Don't play sound for own reactions
+    if (uid !== cachedUserId) playReactionSound();
     const container = document.getElementById('wp-reaction-container');
     if (!container) return;
     const userName = roomState?.users?.find(u => u.id === uid)?.name || '';
@@ -657,7 +719,6 @@ const WPOverlay = (() => {
     el.style.left = (20 + Math.random() * 60) + '%';
     container.appendChild(el);
     setTimeout(() => el.remove(), 3000);
-    playReactionSound();
   }
 
   function updateTypingIndicator(typingUsers, myUserId, roomState) {
@@ -715,6 +776,7 @@ const WPOverlay = (() => {
           <div class="wp-ready-status" id="wp-ready-status">Waiting for everyone...</div>
           <div class="wp-ready-count" id="wp-ready-count">0 / ${total}</div>
           <button class="wp-ready-btn" id="wp-ready-confirm">I'm Ready!</button>
+          <button class="wp-ready-cancel" id="wp-ready-dismiss">Dismiss</button>
         </div>
       `;
       document.getElementById('wp-overlay')?.appendChild(modal);
@@ -722,6 +784,9 @@ const WPOverlay = (() => {
         chrome.runtime.sendMessage({ type: 'watchparty-ext', action: 'ready-check', readyAction: 'confirm' }).catch(() => {});
         document.getElementById('wp-ready-confirm').disabled = true;
         document.getElementById('wp-ready-confirm').textContent = 'Waiting...';
+      });
+      document.getElementById('wp-ready-dismiss').addEventListener('click', () => {
+        modal.remove();
       });
     }
     if (action === 'updated' && modal) {
@@ -759,9 +824,15 @@ const WPOverlay = (() => {
   }
 
   // --- Bookmarks ---
+  let lastBookmarkKey = '';
   function appendBookmark(msg) {
     const container = document.getElementById('wp-chat-messages');
     if (!container) return;
+    // Deduplicate: skip if same user+time within short window (local echo + server broadcast)
+    const key = `${msg.user}:${Math.floor(msg.time)}`;
+    if (key === lastBookmarkKey) return;
+    lastBookmarkKey = key;
+    setTimeout(() => { if (lastBookmarkKey === key) lastBookmarkKey = ''; }, 3000);
     const mins = Math.floor(msg.time / 60);
     const secs = Math.floor(msg.time % 60).toString().padStart(2, '0');
     const timeStr = `${mins}:${secs}`;
@@ -769,7 +840,13 @@ const WPOverlay = (() => {
     div.className = 'wp-chat-msg wp-bookmark-msg';
     div.innerHTML = `<span class="wp-bookmark-icon">📌</span> <span class="wp-chat-name" style="color:${getUserColor(msg.user)}">${escapeHtml(msg.userName)}</span> bookmarked <button class="wp-bookmark-time" data-time="${msg.time}">${timeStr}</button> <span class="wp-chat-text">${msg.label ? escapeHtml(msg.label) : ''}</span>`;
     div.querySelector('.wp-bookmark-time')?.addEventListener('click', () => {
-      showToast(`Bookmark: ${escapeHtml(msg.label || timeStr)}`, 1500);
+      const video = document.querySelector('video');
+      if (video) {
+        video.currentTime = msg.time;
+        showToast(`Seeking to ${timeStr}`, 1500);
+      } else {
+        showToast(`Bookmark: ${timeStr}`, 1500);
+      }
     });
     container.appendChild(div);
     while (container.childElementCount > MAX_CHAT_MESSAGES) container.removeChild(container.firstChild);
@@ -908,391 +985,13 @@ const WPOverlay = (() => {
     while (container.children.length > 3) container.removeChild(container.firstChild);
   }
 
-  // --- CSS ---
+  // --- CSS loaded from stremio-overlay.css via manifest.json ---
   function getCSS() {
-    return `
-      #wp-overlay { position:fixed; top:0; right:0; z-index:2147483646; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; pointer-events:none; }
-      #wp-overlay * { box-sizing:border-box; }
-      .wp-hidden-el { display:none !important; }
-
-      /* Sidebar — top offset to sit below Stremio nav, strong shadow for separation */
-      #wp-sidebar {
-        --wp-accent:#6366f1;
-        pointer-events:all; position:fixed; top:0; right:0; width:320px; height:100vh;
-        max-height:100vh; overflow:hidden;
-        background:#0f0f1e; border-left:1px solid color-mix(in srgb, var(--wp-accent) 30%, transparent);
-        box-shadow:-4px 0 20px rgba(0,0,0,0.5);
-        display:flex; flex-direction:column; transition:transform .2s ease;
-        z-index:2147483647; isolation:isolate;
-      }
-      #wp-sidebar.wp-sidebar-hidden { transform:translateX(100%); pointer-events:none; }
-      #wp-header {
-        display:flex; align-items:center; gap:8px; padding:12px 16px;
-        border-bottom:1px solid rgba(255,255,255,0.1);
-        background:rgba(99,102,241,0.08);
-      }
-      #wp-title { font-weight:600; font-size:14px; color:#fff; flex-shrink:0; }
-      #wp-room-code {
-        font-family:'Consolas','Monaco',monospace; font-size:11px; color:#6366f1;
-        background:rgba(99,102,241,0.15); padding:2px 6px; border-radius:4px; cursor:pointer;
-      }
-      #wp-room-code:hover { background:rgba(99,102,241,0.25); }
-      #wp-room-code:empty { display:none; }
-      #wp-minimize-btn, #wp-close-sidebar {
-        background:none; border:none; color:#666; font-size:18px;
-        cursor:pointer; padding:0 4px; line-height:1;
-      }
-      #wp-minimize-btn { margin-left:auto; }
-      #wp-close-sidebar { margin-left:4px; }
-      #wp-minimize-btn:hover, #wp-close-sidebar:hover { color:#fff; }
-
-      /* Minimized bar */
-      #wp-minimized-bar {
-        display:flex; align-items:center; justify-content:space-between;
-        padding:10px 16px; border-bottom:1px solid rgba(255,255,255,0.05);
-      }
-      #wp-min-info { font-size:12px; color:#999; }
-      #wp-expand-btn {
-        background:rgba(99,102,241,0.2); color:#818cf8; border:none; border-radius:4px;
-        padding:4px 10px; font-size:11px; cursor:pointer;
-      }
-      #wp-expand-btn:hover { background:rgba(99,102,241,0.3); }
-
-      /* Body */
-      #wp-body { display:flex; flex-direction:column; flex:1; min-height:0; }
-      #wp-status {
-        padding:10px 16px; font-size:12px; color:#ccc;
-        border-bottom:1px solid rgba(255,255,255,0.08);
-        background:rgba(255,255,255,0.02);
-      }
-      .wp-status-line { display:block; margin-bottom:2px; }
-      .wp-muted { color:#666; }
-
-      /* Not-in-room empty state */
-      .wp-empty-state { padding:32px 20px; text-align:center; color:#888; font-size:13px; line-height:1.7; }
-
-      /* Sync indicator */
-      #wp-sync-indicator { padding:6px 16px; font-size:11px; border-bottom:1px solid rgba(255,255,255,0.05); }
-      .wp-sync-ok { color:#22c55e; }
-      .wp-sync-drift { color:#f59e0b; }
-      .wp-sync-seek { color:#ef4444; }
-
-      /* Content link */
-      #wp-content-link {
-        padding:8px 16px; font-size:12px;
-        background:rgba(34,197,94,0.06); border-bottom:1px solid rgba(255,255,255,0.08);
-      }
-      .wp-content-label { color:#888; }
-      .wp-content-link-a { color:#4ade80; text-decoration:underline; }
-
-      /* (Controls moved to popup — no sidebar controls section) */
-
-      /* Users — compact list, limited height to give chat more room */
-      #wp-users {
-        padding:6px 16px; border-bottom:1px solid rgba(255,255,255,0.08);
-        max-height:120px; overflow-y:auto;
-      }
-      .wp-user {
-        display:flex; align-items:center; gap:6px; font-size:12px; color:#ddd; padding:2px 0;
-      }
-      .wp-user-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
-      .wp-crown { font-size:12px; }
-      .wp-you { color:#888; font-size:11px; }
-      .wp-user-away { opacity:0.4; }
-      .wp-user-away .wp-user-dot { animation:wp-pulse 2s infinite; }
-      @keyframes wp-pulse { 0%,100% { opacity:0.4; } 50% { opacity:0.8; } }
-      .wp-user-status { font-size:9px; color:#666; margin-left:2px; }
-      .wp-status-playing { color:#22c55e; }
-      .wp-status-paused { color:#f59e0b; }
-      .wp-status-buffering { color:#6366f1; animation:wp-spin 1s linear infinite; }
-      @keyframes wp-spin { from { display:inline-block; transform:rotate(0deg); } to { transform:rotate(360deg); } }
-      .wp-transfer-btn {
-        margin-left:auto; background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.1);
-        border-radius:4px; padding:2px 8px; font-size:10px; color:#999; cursor:pointer; flex-shrink:0;
-      }
-      .wp-transfer-btn:hover { background:rgba(99,102,241,0.2); color:#818cf8; border-color:rgba(99,102,241,0.3); }
-
-      /* Typing */
-      #wp-typing-indicator { padding:2px 16px 4px; font-size:11px; color:#888; font-style:italic; }
-      /* Discord-style messages + reactions */
-      .wp-chat-msg { padding:2px 16px; border-radius:4px; margin-bottom:1px; }
-      .wp-chat-msg.wp-msg-hovered { background:rgba(255,255,255,0.03); }
-
-      /* Message row: content left, toolbar right, single line */
-      .wp-msg-row { display:flex; align-items:center; gap:4px; }
-      .wp-msg-content { flex:1; min-width:0; line-height:1.5; word-break:break-word; }
-
-      /* Toolbar: inline at the right end of the message row, hidden until hover */
-      .wp-msg-toolbar {
-        flex-shrink:0; display:none; align-items:center;
-      }
-      .wp-msg-hovered .wp-msg-toolbar { display:flex; }
-      .wp-msg-react-trigger {
-        background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.08);
-        color:#888; font-size:12px; cursor:pointer;
-        padding:1px 6px; border-radius:4px; line-height:1.2;
-        transition:all .1s;
-      }
-      .wp-msg-react-trigger:hover {
-        background:rgba(99,102,241,0.15); border-color:rgba(99,102,241,0.3); color:#818cf8;
-      }
-
-      /* Reaction pills below message */
-      .wp-msg-pills { display:flex; flex-wrap:wrap; gap:4px; padding:2px 0 0 0; }
-      .wp-msg-pills:empty { display:none; }
-      .wp-react-pill {
-        display:inline-flex; align-items:center; gap:3px;
-        background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.08);
-        border-radius:10px; padding:1px 6px; cursor:pointer; font-size:11px;
-        color:#999; transition:all .12s;
-      }
-      .wp-react-pill:hover { background:rgba(255,255,255,0.1); border-color:rgba(255,255,255,0.15); }
-      .wp-react-pill.wp-pill-mine {
-        background:rgba(99,102,241,0.15); border-color:rgba(99,102,241,0.3); color:#818cf8;
-      }
-      .wp-pill-emoji { font-size:13px; line-height:1; }
-      .wp-pill-count { font-size:11px; font-weight:500; }
-
-      /* Chat */
-      #wp-chat-container { flex:1; display:flex; flex-direction:column; min-height:0; overflow:hidden; }
-      #wp-chat-messages {
-        flex:1; overflow-y:auto; padding:8px 0; font-size:12px; min-height:80px;
-        scrollbar-width:thin; scrollbar-color:rgba(255,255,255,0.15) transparent;
-      }
-      /* .wp-chat-msg styles are in the reactions section above */
-      .wp-chat-name { font-weight:600; }
-      .wp-chat-text { color:#ccc; }
-      #wp-chat-input-row {
-        display:flex; padding:8px 12px; gap:6px;
-        border-top:1px solid rgba(255,255,255,0.1);
-        background:rgba(0,0,0,0.15);
-      }
-      #wp-emoji-btn {
-        background:none; border:none; font-size:16px; cursor:pointer; padding:0 4px;
-        flex-shrink:0; opacity:0.7; transition:opacity .1s;
-      }
-      #wp-emoji-btn:hover { opacity:1; }
-      #wp-chat-input {
-        flex:1; background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.15);
-        border-radius:6px; padding:6px 10px; color:#fff; font-size:12px; outline:none;
-        min-width:0;
-      }
-      #wp-chat-input:focus { border-color:#6366f1; }
-      #wp-chat-input::placeholder { color:#555; }
-      #wp-chat-send {
-        background:#6366f1; color:#fff; border:none; border-radius:6px;
-        padding:6px 12px; font-size:12px; cursor:pointer; flex-shrink:0;
-      }
-      #wp-chat-send:hover { background:#5558e6; }
-      #wp-chat-send:active { transform:scale(0.96); }
-
-      /* Emoji picker — emoji-picker-element library */
-      #wp-emoji-picker {
-        pointer-events:all; position:fixed; bottom:60px; right:16px; z-index:2147483647;
-        border-radius:12px; overflow:hidden;
-        box-shadow:0 8px 32px rgba(0,0,0,0.5);
-      }
-      #wp-emoji-picker emoji-picker {
-        --background:rgba(15,15,30,0.98);
-        --border-color:rgba(255,255,255,0.12);
-        --button-active-background:rgba(99,102,241,0.25);
-        --button-hover-background:rgba(255,255,255,0.08);
-        --category-font-color:#888;
-        --emoji-padding:0.3rem;
-        --emoji-size:1.3rem;
-        --indicator-color:#6366f1;
-        --input-border-color:rgba(255,255,255,0.12);
-        --input-font-color:#fff;
-        --input-placeholder-color:#555;
-        --num-columns:8;
-        --outline-color:#6366f1;
-        --search-background:rgba(255,255,255,0.08);
-        --text-color:#ccc;
-        width:320px; height:340px;
-      }
-
-      /* Floating reactions */
-      #wp-reaction-container {
-        pointer-events:none; position:fixed; top:0; left:0; width:100vw; height:100vh; z-index:2147483647;
-        overflow:hidden;
-      }
-      .wp-floating-reaction {
-        position:absolute; bottom:80px; display:flex; flex-direction:column; align-items:center;
-        animation:wp-float-up 3s ease-out forwards; opacity:0;
-      }
-      .wp-reaction-emoji { font-size:32px; }
-      .wp-reaction-name { font-size:10px; color:rgba(255,255,255,0.7); margin-top:2px; }
-      @keyframes wp-float-up {
-        0% { opacity:1; transform:translateY(0) scale(1); }
-        70% { opacity:1; }
-        100% { opacity:0; transform:translateY(-200px) scale(1.3); }
-      }
-
-      /* Toast notification */
-      #wp-toast {
-        pointer-events:none; position:fixed; top:70px; left:50%; transform:translateX(-50%) translateY(-10px);
-        background:rgba(15,15,30,0.95); color:#fff; font-size:13px;
-        padding:8px 20px; border-radius:8px; z-index:2147483647;
-        border:1px solid rgba(99,102,241,0.3); box-shadow:0 4px 16px rgba(0,0,0,0.4);
-        opacity:0; transition:opacity .3s, transform .3s;
-      }
-      #wp-toast.wp-toast-visible { opacity:1; transform:translateX(-50%) translateY(0); }
-
-      /* Responsive: small viewports — sidebar becomes full-width overlay */
-      @media (max-width: 640px) {
-        #wp-sidebar { width:100vw; }
-        #wp-emoji-picker emoji-picker { width:100%; }
-      }
-
-      /* Action buttons (ready check, bookmark) */
-      .wp-action-row { display:flex; gap:6px; margin-top:6px; }
-      .wp-action-btn {
-        background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.1);
-        border-radius:6px; padding:3px 10px; font-size:11px; color:#ccc;
-        cursor:pointer; transition:all .12s;
-      }
-      .wp-action-btn:hover { background:rgba(99,102,241,0.15); border-color:rgba(99,102,241,0.3); color:#818cf8; }
-
-      /* Ready check modal */
-      #wp-ready-modal {
-        pointer-events:all; position:fixed; inset:0; z-index:2147483647;
-        background:rgba(0,0,0,0.6); display:flex; align-items:center; justify-content:center;
-      }
-      .wp-ready-box {
-        background:#1a1a2e; border:1px solid rgba(99,102,241,0.3); border-radius:16px;
-        padding:28px 36px; text-align:center; box-shadow:0 8px 32px rgba(0,0,0,0.5);
-        min-width:260px;
-      }
-      .wp-ready-title { font-size:18px; font-weight:600; color:#fff; margin-bottom:8px; }
-      .wp-ready-status { font-size:13px; color:#888; margin-bottom:12px; }
-      .wp-ready-count { font-size:28px; font-weight:700; color:#6366f1; margin-bottom:16px; }
-      .wp-ready-btn {
-        background:#6366f1; color:#fff; border:none; border-radius:8px;
-        padding:10px 28px; font-size:14px; font-weight:500; cursor:pointer;
-        transition:background .15s;
-      }
-      .wp-ready-btn:hover { background:#5558e6; }
-      .wp-ready-btn:disabled { opacity:0.5; cursor:default; }
-
-      /* Countdown overlay */
-      #wp-countdown {
-        pointer-events:none; position:fixed; inset:0; z-index:2147483647;
-        display:flex; align-items:center; justify-content:center;
-        font-size:120px; font-weight:700; color:#fff;
-        text-shadow:0 0 40px rgba(99,102,241,0.6);
-      }
-      .wp-countdown-active { animation:wp-count-pop .8s ease-out; }
-      @keyframes wp-count-pop {
-        0% { transform:scale(2); opacity:0; }
-        30% { transform:scale(1); opacity:1; }
-        100% { opacity:0.3; }
-      }
-
-      /* Bookmark messages in chat */
-      .wp-bookmark-msg { background:rgba(99,102,241,0.06); border-left:2px solid #6366f1; padding-left:14px !important; }
-      .wp-bookmark-icon { font-size:12px; }
-      .wp-bookmark-time {
-        background:rgba(99,102,241,0.2); border:none; border-radius:4px;
-        padding:1px 6px; color:#818cf8; font-size:11px; font-family:monospace;
-        cursor:pointer; transition:background .1s;
-      }
-      .wp-bookmark-time:hover { background:rgba(99,102,241,0.35); }
-
-      /* GIF button */
-      #wp-gif-btn {
-        background:none; border:1px solid rgba(255,255,255,0.15); font-size:10px;
-        color:#818cf8; cursor:pointer; padding:2px 6px; border-radius:4px;
-        font-weight:600; flex-shrink:0; transition:background .1s;
-      }
-      #wp-gif-btn:hover { background:rgba(99,102,241,0.15); }
-
-      /* GIF picker */
-      #wp-gif-picker {
-        position:absolute; bottom:50px; left:0; right:0;
-        background:rgba(15,15,30,0.98); border-top:1px solid rgba(255,255,255,0.1);
-        max-height:250px; display:flex; flex-direction:column; z-index:2;
-      }
-      #wp-gif-search {
-        width:100%; background:rgba(255,255,255,0.08); border:none;
-        border-bottom:1px solid rgba(255,255,255,0.1);
-        padding:8px 12px; color:#fff; font-size:12px; outline:none;
-      }
-      #wp-gif-search::placeholder { color:#555; }
-      #wp-gif-results {
-        flex:1; overflow-y:auto; display:flex; flex-wrap:wrap; gap:4px; padding:6px;
-        scrollbar-width:thin; scrollbar-color:rgba(255,255,255,0.15) transparent;
-      }
-      .wp-gif-item {
-        width:calc(50% - 2px); height:80px; object-fit:cover; border-radius:6px;
-        cursor:pointer; transition:transform .1s;
-      }
-      .wp-gif-item:hover { transform:scale(1.03); }
-
-      /* GIF in chat */
-      .wp-chat-gif {
-        max-width:180px; max-height:120px; border-radius:6px; margin-top:4px;
-        display:block;
-      }
-
-      /* Unread badge on toggle host */
-      #wp-unread-badge {
-        position:absolute; top:-4px; right:-4px;
-        background:#ef4444; color:#fff; font-size:10px; font-weight:700;
-        border-radius:10px; min-width:18px; height:18px; padding:0 4px;
-        display:flex; align-items:center; justify-content:center;
-        pointer-events:none; z-index:1;
-      }
-      #wp-toggle-host { position:relative; }
-
-      /* Catch-up button */
-      #wp-catchup-btn {
-        pointer-events:all; position:fixed; bottom:80px; left:50%; transform:translateX(-50%);
-        z-index:2147483647;
-        background:rgba(99,102,241,0.9); color:#fff; border:none; border-radius:8px;
-        padding:8px 20px; font-size:13px; font-weight:500; cursor:pointer;
-        box-shadow:0 4px 16px rgba(0,0,0,0.4);
-        transition:background .15s;
-      }
-      #wp-catchup-btn:hover { background:rgba(99,102,241,1); }
-
-      /* Presence avatar bar */
-      #wp-presence-bar {
-        pointer-events:none; position:fixed; top:68px; left:50%; transform:translateX(-50%);
-        z-index:2147483646; display:flex; gap:6px; padding:4px 12px;
-        background:rgba(0,0,0,0.4); border-radius:20px;
-        opacity:0.8; transition:opacity .3s;
-      }
-      #wp-presence-bar:hover { opacity:1; }
-      .wp-avatar {
-        width:28px; height:28px; border-radius:50%; display:flex; align-items:center;
-        justify-content:center; font-size:12px; font-weight:600; color:#fff;
-        position:relative; border:2px solid rgba(255,255,255,0.3);
-      }
-      .wp-avatar-away { opacity:0.4; }
-      .wp-avatar-status {
-        position:absolute; bottom:-2px; right:-2px; font-size:8px;
-        background:rgba(0,0,0,0.6); border-radius:50%; padding:1px;
-      }
-
-      /* Ephemeral chat bubbles on video */
-      #wp-bubble-container {
-        pointer-events:none; position:fixed; bottom:100px; left:20px; z-index:2147483646;
-        display:flex; flex-direction:column; gap:6px; max-width:350px;
-      }
-      .wp-chat-bubble {
-        background:rgba(15,15,30,0.85); color:#ccc; font-size:12px;
-        padding:6px 12px; border-radius:10px; line-height:1.4;
-        box-shadow:0 2px 8px rgba(0,0,0,0.3);
-        opacity:0; transform:translateY(10px); transition:opacity .3s, transform .3s;
-      }
-      .wp-chat-bubble.wp-bubble-visible { opacity:1; transform:translateY(0); }
-
-      /* Compact chat mode */
-      .wp-compact .wp-chat-msg { padding:1px 16px; margin-bottom:0; }
-      .wp-compact .wp-msg-content { line-height:1.3; font-size:11px; }
-      .wp-compact .wp-chat-gif { max-width:120px; max-height:80px; }
-    `;
+    // All styles extracted to stremio-overlay.css (injected by Chrome via manifest content_scripts.css)
+    return '';
   }
+
+
 
   return {
     create, updateState, updateSyncIndicator,

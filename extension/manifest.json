@@ -22,14 +22,7 @@
     ]
   },
   "background": {
-    "service_worker": "background.js",
-    "scripts": ["background.js"]
-  },
-  "browser_specific_settings": {
-    "gecko": {
-      "id": "watchparty@mertd.me",
-      "strict_min_version": "115.0"
-    }
+    "service_worker": "background.js"
   },
   "content_scripts": [
     {
@@ -39,6 +32,7 @@
         "https://app.strem.io/*"
       ],
       "js": ["stremio-sync.js", "stremio-overlay.js", "stremio-profile.js", "stremio-content.js"],
+      "css": ["stremio-overlay.css"],
       "run_at": "document_end"
     },
     {

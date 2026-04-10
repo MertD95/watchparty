@@ -12,7 +12,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const EXT_PATH = path.resolve(__dirname);
+const EXT_PATH = path.resolve(__dirname, '..');
 const STREMIO_URL = 'https://web.stremio.com';
 const TIMEOUT = 15000;
 

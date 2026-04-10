@@ -47,6 +47,11 @@ chrome.runtime.sendMessage(
 function showLobbyView() {
   $('view-lobby').classList.remove('hidden');
   $('view-room').classList.add('hidden');
+  // Reset button states in case we came from a room
+  $('btn-create').disabled = false;
+  $('btn-create').textContent = 'Create Room';
+  $('btn-join').disabled = false;
+  $('btn-join').textContent = 'Join Room';
 }
 
 function showRoomView(room, myUserId) {
@@ -146,6 +151,7 @@ $('btn-join').addEventListener('click', () => {
   if (!username) { $('username-input').focus(); return; }
   if (!roomId) { $('room-id-input').focus(); return; }
 
+  $('join-error').classList.add('hidden');
   chrome.storage.local.set({ wpUsername: username });
 
   chrome.runtime.sendMessage({
@@ -167,6 +173,8 @@ $('btn-join').addEventListener('click', () => {
         } else {
           $('btn-join').disabled = false;
           $('btn-join').textContent = 'Join Room';
+          $('join-error').textContent = 'Room not found. Check the ID and try again.';
+          $('join-error').classList.remove('hidden');
         }
       }
     );
