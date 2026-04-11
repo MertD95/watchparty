@@ -129,6 +129,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // --- Room commands (from popup → relay to content script or store for later) ---
     case 'create-room':
       // Store intent so content script picks it up even if tab isn't open yet
+      // Wait for storage write to complete before forwarding to content script
       chrome.storage.local.set({
         pendingRoomCreate: {
           username: message.username,
@@ -137,14 +138,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           public: message.public,
           roomName: message.roomName,
         },
-      });
-      forwardToStremioTab(message);
+      }, () => forwardToStremioTab(message));
       sendResponse({ ok: true });
       return false;
 
     case 'join-room':
-      chrome.storage.local.set({ pendingRoomJoin: message.roomId, wpUsername: message.username });
-      forwardToStremioTab(message);
+      chrome.storage.local.set(
+        { pendingRoomJoin: message.roomId, wpUsername: message.username },
+        () => forwardToStremioTab(message)
+      );
       sendResponse({ ok: true });
       return false;
 
