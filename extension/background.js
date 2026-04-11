@@ -157,6 +157,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'update-username':
     case 'ready-check':
     case 'send-bookmark':
+    case 'send-chat':
+    case 'send-typing':
+    case 'send-reaction':
+    case 'send-presence':
+    case 'send-playback-status':
+    case 'request-sync':
       forwardToStremioTab(message);
       sendResponse({ ok: true });
       return false;

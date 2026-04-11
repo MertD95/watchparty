@@ -5,6 +5,7 @@
     "dev": "node dev-reload.js",
     "test": "node extension/test/e2e.mjs",
     "test:10user": "node extension/test/ten-user.mjs",
+    "test:routing": "node extension/test/routing.mjs",
     "syntax": "for f in extension/*.js; do node -e \"new Function(require('fs').readFileSync('$f','utf8'))\"; done"
   },
   "devDependencies": {

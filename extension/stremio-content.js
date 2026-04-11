@@ -138,30 +138,20 @@
 
   // --- Process pending create/join actions from storage ---
   function processPendingActions() {
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
-      console.log('[WP] processPendingActions: WS not open');
-      return;
-    }
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
     chrome.storage.local.get(['pendingRoomCreate', 'pendingRoomJoin', 'currentRoom', 'wpUsername'], (stored) => {
-      console.log('[WP] processPendingActions storage:', JSON.stringify({
-        hasPendingCreate: !!stored.pendingRoomCreate,
-        hasPendingJoin: !!stored.pendingRoomJoin,
-        hasCurrentRoom: !!stored.currentRoom
-      }));
       if (stored.pendingRoomCreate) {
         chrome.storage.local.remove('pendingRoomCreate');
         const rc = stored.pendingRoomCreate;
         if (rc.username) wsSend({ type: 'user.update', payload: { username: rc.username } });
         const payload = { meta: rc.meta, stream: rc.stream, public: rc.public || false };
         if (rc.roomName) payload.name = rc.roomName;
-        console.log('[WP] Sending room.new:', JSON.stringify(payload));
         wsSend({ type: 'room.new', payload });
       } else {
         const roomToJoin = stored.pendingRoomJoin || stored.currentRoom;
         if (stored.pendingRoomJoin) chrome.storage.local.remove('pendingRoomJoin');
         if (roomToJoin) {
           if (stored.wpUsername) wsSend({ type: 'user.update', payload: { username: stored.wpUsername } });
-          console.log('[WP] Sending room.join:', roomToJoin);
           wsSend({ type: 'room.join', payload: { id: roomToJoin } });
         }
       }
@@ -200,7 +190,6 @@
 
       case 'message':
         if (!p) return;
-        console.log('[WP] Got message:', p.content?.substring(0, 30), 'from:', p.user);
         onChatMessage(p);
         break;
 
@@ -371,7 +360,10 @@
         const v = document.querySelector('video');
         if (v && v !== video) {
           video = v;
-          if (inRoom) attachSync();
+          if (inRoom) {
+            attachSync();
+            if (isHost) shareContentLink();
+          }
           refreshOverlay();
         } else if (!v && video) {
           WPSync.detach();
@@ -428,7 +420,6 @@
     switch (message.action) {
       case 'create-room':
       case 'join-room':
-        console.log('[WP] Received', message.action, 'wsOpen:', !!(ws && ws.readyState === WebSocket.OPEN));
         if (ws && ws.readyState === WebSocket.OPEN) {
           processPendingActions();
         } else {
@@ -513,6 +504,18 @@
       wsSend({ type: 'user.playbackStatus', payload: { status } });
     }
   }, 3000);
+
+  // Update stream info when host navigates to a different movie (SPA hashchange)
+  let lastSharedContentId = null;
+  window.addEventListener('hashchange', () => {
+    if (inRoom && isHost) {
+      const info = getCurrentContentInfo();
+      if (info && info.id !== lastSharedContentId) {
+        lastSharedContentId = info.id;
+        shareContentLink();
+      }
+    }
+  });
 
   // Cleanup on page unload — don't close WS cleanly on navigation
   // (server will detect the stale connection; the new page will reconnect and rejoin)

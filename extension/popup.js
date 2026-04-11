@@ -133,7 +133,7 @@ $('btn-create').addEventListener('click', () => {
   $('btn-create').disabled = true;
   $('btn-create').textContent = 'Creating...';
 
-  // Poll for room state — retry a few times (production WS may take longer to connect)
+  // Poll for room state — retry up to 8 times (production WS may need time to connect)
   let attempts = 0;
   function pollForRoom() {
     attempts++;
@@ -142,18 +142,18 @@ $('btn-create').addEventListener('click', () => {
       (response) => {
         if (response?.room) {
           showRoomView(response.room, response.userId);
-        } else if (attempts < 5) {
+        } else if (attempts < 8) {
           setTimeout(pollForRoom, 1500);
         } else {
           $('btn-create').disabled = false;
           $('btn-create').textContent = 'Create Room';
-          $('create-error').textContent = 'Failed to create room. Check server connection.';
+          $('create-error').textContent = 'Failed to create room. Make sure web.stremio.com is open.';
           $('create-error').classList.remove('hidden');
         }
       }
     );
   }
-  setTimeout(pollForRoom, 1500);
+  setTimeout(pollForRoom, 2000);
 });
 
 $('btn-join').addEventListener('click', () => {
@@ -183,18 +183,18 @@ $('btn-join').addEventListener('click', () => {
       (response) => {
         if (response?.room) {
           showRoomView(response.room, response.userId);
-        } else if (joinAttempts < 5) {
+        } else if (joinAttempts < 8) {
           setTimeout(pollForJoin, 1500);
         } else {
           $('btn-join').disabled = false;
           $('btn-join').textContent = 'Join Room';
-          $('join-error').textContent = 'Room not found. Check the ID and try again.';
+          $('join-error').textContent = 'Room not found. Make sure web.stremio.com is open.';
           $('join-error').classList.remove('hidden');
         }
       }
     );
   }
-  setTimeout(pollForJoin, 1500);
+  setTimeout(pollForJoin, 2000);
 });
 
 $('btn-leave').addEventListener('click', () => {
