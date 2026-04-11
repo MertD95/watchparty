@@ -31,6 +31,7 @@
   let wsConnected = false;
   let reconnectAttempts = 0;
   let reconnectTimer = null;
+  let keepAliveTimer = null;
   let clockOffset = 0;
   let clockSamples = [];
   let detectedWsUrl = null;
@@ -65,9 +66,9 @@
       wsConnected = true;
       reconnectAttempts = 0;
       notifyBackground({ action: 'ws-status-changed', connected: true });
-      // Server-side keepalive ping every 25s (not for service worker — just to prevent server timeout)
-      clearInterval(ws._keepAlive);
-      ws._keepAlive = setInterval(() => {
+      // Server-side keepalive ping every 25s
+      clearInterval(keepAliveTimer);
+      keepAliveTimer = setInterval(() => {
         if (ws?.readyState === WebSocket.OPEN) wsSend({ type: 'clock.ping', payload: { clientTime: Date.now() } });
       }, 25000);
     };
@@ -77,7 +78,7 @@
     };
 
     ws.onclose = () => {
-      clearInterval(ws?._keepAlive);
+      clearInterval(keepAliveTimer);
       ws = null;
       wsConnected = false;
       notifyBackground({ action: 'ws-status-changed', connected: false });
@@ -135,6 +136,28 @@
     } catch { /* context invalidated */ }
   }
 
+  // --- Process pending create/join actions from storage ---
+  function processPendingActions() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    chrome.storage.local.get(['pendingRoomCreate', 'pendingRoomJoin', 'currentRoom', 'wpUsername'], (stored) => {
+      if (stored.pendingRoomCreate) {
+        chrome.storage.local.remove('pendingRoomCreate');
+        const rc = stored.pendingRoomCreate;
+        if (rc.username) wsSend({ type: 'user.update', payload: { username: rc.username } });
+        const payload = { meta: rc.meta, stream: rc.stream, public: rc.public || false };
+        if (rc.roomName) payload.name = rc.roomName;
+        wsSend({ type: 'room.new', payload });
+      } else {
+        const roomToJoin = stored.pendingRoomJoin || stored.currentRoom;
+        if (stored.pendingRoomJoin) chrome.storage.local.remove('pendingRoomJoin');
+        if (roomToJoin) {
+          if (stored.wpUsername) wsSend({ type: 'user.update', payload: { username: stored.wpUsername } });
+          wsSend({ type: 'room.join', payload: { id: roomToJoin } });
+        }
+      }
+    });
+  }
+
   // --- Server message handling (merged from background.js + old handleMessage) ---
   function handleServerMessage(msg) {
     if (!msg || !msg.type) return;
@@ -144,24 +167,7 @@
       case 'ready':
         if (!p?.user?.id) return;
         userId = p.user.id;
-        // Handle pending actions: create room, join room, or rejoin after reconnect
-        chrome.storage.local.get(['pendingRoomCreate', 'pendingRoomJoin', 'currentRoom', 'wpUsername'], (stored) => {
-          if (stored.pendingRoomCreate) {
-            chrome.storage.local.remove('pendingRoomCreate');
-            const rc = stored.pendingRoomCreate;
-            if (rc.username) wsSend({ type: 'user.update', payload: { username: rc.username } });
-            const payload = { meta: rc.meta, stream: rc.stream, public: rc.public || false };
-            if (rc.roomName) payload.name = rc.roomName;
-            wsSend({ type: 'room.new', payload });
-          } else {
-            const roomToJoin = stored.pendingRoomJoin || stored.currentRoom;
-            if (stored.pendingRoomJoin) chrome.storage.local.remove('pendingRoomJoin');
-            if (roomToJoin) {
-              if (stored.wpUsername) wsSend({ type: 'user.update', payload: { username: stored.wpUsername } });
-              wsSend({ type: 'room.join', payload: { id: roomToJoin } });
-            }
-          }
-        });
+        processPendingActions();
         startClockSync();
         persistState();
         break;
@@ -344,17 +350,23 @@
   // --- Video element detection ---
   function startVideoObserver() {
     if (observer) return;
+    let videoCheckTimer = null;
     observer = new MutationObserver(() => {
-      const v = document.querySelector('video');
-      if (v && v !== video) {
-        video = v;
-        if (inRoom) attachSync();
-        refreshOverlay();
-      } else if (!v && video) {
-        WPSync.detach();
-        video = null;
-        refreshOverlay();
-      }
+      // Debounce — Stremio's SPA triggers many mutations per navigation
+      if (videoCheckTimer) return;
+      videoCheckTimer = setTimeout(() => {
+        videoCheckTimer = null;
+        const v = document.querySelector('video');
+        if (v && v !== video) {
+          video = v;
+          if (inRoom) attachSync();
+          refreshOverlay();
+        } else if (!v && video) {
+          WPSync.detach();
+          video = null;
+          refreshOverlay();
+        }
+      }, 200);
     });
     observer.observe(document.body, { childList: true, subtree: true });
     const v = document.querySelector('video');
@@ -403,30 +415,11 @@
     if (message.type !== 'watchparty-ext') return;
     switch (message.action) {
       case 'create-room':
-        // Background.js already stored pendingRoomCreate in chrome.storage.
-        // If WS is connected, process it now. Otherwise connectWs() will
-        // trigger the ready handler which reads pendingRoomCreate from storage.
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          if (message.username) wsSend({ type: 'user.update', payload: { username: message.username } });
-          const createPayload = {
-            meta: message.meta || { id: 'unknown', type: 'movie', name: 'WatchParty Session' },
-            stream: message.stream || { url: 'https://example.com/placeholder' },
-            public: message.public || false,
-          };
-          if (message.roomName) createPayload.name = message.roomName;
-          wsSend({ type: 'room.new', payload: createPayload });
-          // Clear storage since we handled it directly
-          chrome.storage.local.remove('pendingRoomCreate');
-        } else {
-          // Not connected — storage has the intent, connect and let ready handler pick it up
-          connectWs();
-        }
-        break;
       case 'join-room':
+        // Background.js already stored the intent (pendingRoomCreate / pendingRoomJoin)
+        // in chrome.storage. Process it now if connected, or connect first.
         if (ws && ws.readyState === WebSocket.OPEN) {
-          if (message.username) wsSend({ type: 'user.update', payload: { username: message.username } });
-          wsSend({ type: 'room.join', payload: { id: message.roomId } });
-          chrome.storage.local.remove('pendingRoomJoin');
+          processPendingActions();
         } else {
           connectWs();
         }
