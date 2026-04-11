@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+    tags-ignore: ['**']
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # Syntax-check all extension JS files
+      - name: Syntax check
+        run: |
+          for f in extension/*.js; do
+            node -e "new Function(require('fs').readFileSync('$f','utf8'))" || exit 1
+          done
+
+      # E2E tests need the WS server running
+      - uses: actions/checkout@v5
+        with:
+          repository: MertD95/watchparty-server
+          path: watchparty-server
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Install server deps
+        run: cd watchparty-server && npm install
+
+      - name: Start server
+        run: cd watchparty-server && node src/index.ts &
+        env:
+          NODE_ENV: test
+          LOG_LEVEL: warn
+
+      - name: Wait for server
+        run: |
+          for i in $(seq 1 10); do
+            curl -s http://localhost:8181/rooms && break
+            sleep 1
+          done
+
+      - name: Install extension deps
+        run: npm install
+
+      - name: Run E2E tests
+        run: npm test
+
+  deploy-landing:
+    needs: check
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      deployments: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy landing --project-name=watchparty

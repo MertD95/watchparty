@@ -286,7 +286,6 @@
       WPOverlay.updateSyncIndicator(isHost, drift);
       if (!isHost) WPOverlay.showCatchUpButton(drift);
     }
-    WPOverlay.updatePresenceBar(roomState.users);
     if (!wasHost && isHost) WPOverlay.playNotifSound();
   }
 
@@ -296,8 +295,6 @@
     WPOverlay.appendChatMessage(message, roomState, userId);
     if (message.user !== userId) {
       WPOverlay.incrementUnread();
-      const sender = roomState?.users?.find(u => u.id === message.user);
-      WPOverlay.showChatBubble(sender?.name || 'Unknown', message.content, message.user);
     }
   }
 
@@ -453,6 +450,10 @@
         break;
       case 'send-playback-status':
         wsSend({ type: 'user.playbackStatus', payload: { status: message.status } });
+        break;
+      case 'request-sync':
+        // Catch-up button: request fresh sync state from server
+        wsSend({ type: 'player.sync', payload: roomState?.player || { paused: true, time: 0, buffering: false } });
         break;
       case 'get-ws-status':
         // Background or popup querying WS status

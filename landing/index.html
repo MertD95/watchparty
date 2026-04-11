@@ -418,8 +418,10 @@
           const badge = isPublic
             ? '<span class="room-badge room-badge-public">Public</span>'
             : '<span class="room-badge room-badge-private">Private</span>';
+          const metaId = room.meta?.id || '';
+          const metaType = room.meta?.type || '';
           const joinAction = isPublic
-            ? `joinRoom('${escapeAttr(room.id)}')`
+            ? `joinRoom('${escapeAttr(room.id)}','${escapeAttr(metaId)}','${escapeAttr(metaType)}')`
             : `showUuidModal()`;
           return `
             <div class="room-card">
@@ -445,11 +447,15 @@
     // Refresh rooms every 15 seconds
     setInterval(loadPublicRooms, 15000);
 
-    function joinRoom(roomId) {
+    function joinRoom(roomId, metaId, metaType) {
       // Tell the content script to store the room ID in chrome.storage
       window.postMessage({ type: 'watchparty-join-room', roomId }, '*');
-      // Redirect to Stremio Web
-      window.location.href = 'https://web.stremio.com';
+      // Redirect to the movie page on Stremio Web (or home if no meta)
+      if (metaId && metaId !== 'pending' && metaId !== 'unknown' && metaType) {
+        window.location.href = `https://web.stremio.com/#/detail/${encodeURIComponent(metaType)}/${encodeURIComponent(metaId)}`;
+      } else {
+        window.location.href = 'https://web.stremio.com';
+      }
     }
 
     // --- Private room UUID modal ---

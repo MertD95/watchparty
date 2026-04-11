@@ -14,13 +14,34 @@ const TIMEOUT = 10000;
 
 // ── WebSocket helpers ──
 
+// Track all open connections so we can force-close leaked ones between tests
+const _openSockets = new Set();
+
+/** Connect and wait for the server's 'ready' event before resolving. */
 function connect(url = WS_URL) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(url);
+    _openSockets.add(ws);
+    ws.on('close', () => _openSockets.delete(ws));
     const timer = setTimeout(() => reject(new Error('WS connect timeout')), TIMEOUT);
-    ws.on('open', () => { clearTimeout(timer); resolve(ws); });
+    ws.on('message', function onReady(data) {
+      const msg = JSON.parse(data.toString());
+      if (msg.type === 'ready') {
+        clearTimeout(timer);
+        ws.off('message', onReady);
+        ws._ready = msg; // Stash for tests that need the ready payload
+        resolve(ws);
+      }
+    });
     ws.on('error', (e) => { clearTimeout(timer); reject(e); });
   });
+}
+
+function closeAllSockets() {
+  for (const ws of _openSockets) {
+    try { ws.terminate(); } catch {}
+  }
+  _openSockets.clear();
 }
 
 function send(ws, msg) {
@@ -28,6 +49,12 @@ function send(ws, msg) {
 }
 
 function waitFor(ws, type, timeout = TIMEOUT) {
+  // connect() already consumed the 'ready' event — return the stashed copy
+  if (type === 'ready' && ws._ready) {
+    const msg = ws._ready;
+    ws._ready = null;
+    return Promise.resolve(msg);
+  }
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`Timeout waiting for "${type}"`)), timeout);
     const handler = (data) => {
@@ -469,8 +496,8 @@ async function testOwnerAutoTransferOnDisconnect() {
   ws2.close();
 }
 
-async function testRoomDeletedWhenEmpty() {
-  console.log('\n── Test: Room deleted when last user leaves ──');
+async function testEmptyRoomGracePeriod() {
+  console.log('\n── Test: Empty room kept during grace period ──');
   const ws1 = await connect();
   await waitFor(ws1, 'ready');
   await setUsername(ws1, 'Alice');
@@ -481,13 +508,14 @@ async function testRoomDeletedWhenEmpty() {
   // Wait for server to process disconnect
   await new Promise(r => setTimeout(r, 500));
 
-  // Try to join the now-empty room
+  // Room should still exist (5-min grace period) — Bob can rejoin
   const ws2 = await connect();
   await waitFor(ws2, 'ready');
   await setUsername(ws2, 'Bob');
   send(ws2, { type: 'room.join', payload: { id: roomId } });
-  const err = await waitFor(ws2, 'error');
-  assert(err.payload.type === 'room', 'Joining deleted room returns error');
+  const sync = await waitFor(ws2, 'sync');
+  assert(sync.payload.users.length === 1, 'Bob is alone in the room');
+  assert(sync.payload.users[0].name === 'Bob', 'Bob joined the empty room');
   ws2.close();
 }
 
@@ -997,7 +1025,7 @@ async function main() {
       testOversizedMessageRejected,
       // Lifecycle
       testOwnerAutoTransferOnDisconnect,
-      testRoomDeletedWhenEmpty,
+      testEmptyRoomGracePeriod,
       testClockPingPong,
       testPublicRoomListing,
       // Edge cases
@@ -1021,8 +1049,8 @@ async function main() {
     ];
     for (const test of tests) {
       try { await test(); } catch (e) { console.error('  ✗ FATAL:', e.message); failed++; }
-      // Pause between tests to let server release closed connections (per-IP limit is 10)
-      await new Promise(r => setTimeout(r, 2000));
+      // Force-close any leaked connections from failed tests
+      closeAllSockets();
     }
 
     console.log(`\n${'='.repeat(30)}`);

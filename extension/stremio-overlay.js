@@ -252,24 +252,37 @@ const WPOverlay = (() => {
     // Toggle button — Shadow DOM, fixed position, independent of Stremio's DOM
     const toggleHost = document.createElement('div');
     toggleHost.id = 'wp-toggle-host';
-    toggleHost.style.cssText = 'position:fixed;top:18px;right:128px;z-index:2147483647;width:42px;height:42px;';
-    // Position toggle to the left of Stremio's buttons — measure once, cache result
-    let cachedToggleRight = 128; // fallback
+    // Hidden until positioned — avoids visible shift when Stremio's nav renders
+    toggleHost.style.cssText = 'position:fixed;top:18px;right:128px;z-index:2147483647;width:42px;height:42px;visibility:hidden;';
+    let positioned = false;
     function positionToggle() {
       const container = document.querySelector('[class*="buttons-container"]');
       if (container) {
         const r = container.getBoundingClientRect();
         if (r.width > 0) {
-          cachedToggleRight = Math.round(window.innerWidth - r.left + 8);
           toggleHost.style.top = Math.round(r.top + (r.height - 42) / 2) + 'px';
-          toggleHost.style.right = cachedToggleRight + 'px';
+          toggleHost.style.right = Math.round(window.innerWidth - r.left + 8) + 'px';
+          if (!positioned) {
+            toggleHost.style.visibility = 'visible';
+            positioned = true;
+          }
+          return true;
         }
       }
+      return false;
     }
-    // Measure after DOM settles, then only on resize
-    setTimeout(positionToggle, 500);
-    setTimeout(positionToggle, 1500);
-    window.addEventListener('resize', positionToggle);
+    // Poll rapidly until Stremio's nav renders (every 100ms, up to 3s)
+    let posAttempts = 0;
+    const posInterval = setInterval(() => {
+      if (positionToggle() || ++posAttempts >= 30) {
+        clearInterval(posInterval);
+        if (!positioned) {
+          // Fallback: show at hardcoded position if nav never appeared
+          toggleHost.style.visibility = 'visible';
+        }
+      }
+    }, 100);
+    window.addEventListener('resize', () => positionToggle());
     const shadow = toggleHost.attachShadow({ mode: 'closed' });
     shadow.innerHTML = `
       <style>
@@ -617,23 +630,19 @@ const WPOverlay = (() => {
       });
     }
 
-    // Content link for peers — show what the host is watching with a button to navigate
+    // Content link for peers — show what the host is watching
     if (contentLink) {
       if (!isHost && roomState.meta?.id && roomState.meta.id !== 'pending' && roomState.meta.id !== 'unknown') {
-        contentLink.classList.remove('wp-hidden-el');
         const name = escapeHtml(roomState.meta.name || roomState.meta.id);
         const link = `https://web.stremio.com/#/detail/${encodeURIComponent(roomState.meta.type)}/${encodeURIComponent(roomState.meta.id)}`;
         const hasVideo = !!document.querySelector('video');
         if (hasVideo) {
-          // Already watching — just show what's playing
-          contentLink.innerHTML = `<span class="wp-content-label">Watching:</span> <span style="color:#fff;font-weight:500">${name}</span>`;
+          // Already watching — hide the link, not needed
+          contentLink.classList.add('wp-hidden-el');
         } else {
-          // Not watching yet — show prominent button to go to the movie
-          contentLink.innerHTML = `
-            <div style="text-align:center">
-              <div style="color:#fff;font-weight:500;margin-bottom:6px">${name}</div>
-              <a href="${link}" class="wp-action-btn" style="display:inline-block;padding:6px 16px;color:var(--wp-accent-light);text-decoration:none">Pick a stream to watch</a>
-            </div>`;
+          // Not watching yet — show movie name as a link to navigate
+          contentLink.classList.remove('wp-hidden-el');
+          contentLink.innerHTML = `<span class="wp-content-label">Host is watching:</span> <a href="${link}" class="wp-content-link-a">${name}</a>`;
         }
       } else {
         contentLink.classList.add('wp-hidden-el');
@@ -885,11 +894,10 @@ const WPOverlay = (() => {
       document.getElementById('wp-overlay')?.appendChild(el);
     }
     el.textContent = seconds;
-    el.className = 'wp-countdown-pulse';
-    // Force re-trigger animation
+    // Re-trigger pop animation by toggling the active class
+    el.classList.remove('wp-countdown-active');
     void el.offsetHeight;
-    el.className = 'wp-countdown-pulse wp-countdown-active';
-    if (seconds <= 0) setTimeout(() => el.remove(), 1000);
+    el.classList.add('wp-countdown-active');
   }
 
   // --- Bookmarks ---
@@ -1009,50 +1017,6 @@ const WPOverlay = (() => {
     btn.textContent = `⚡ Catch up (${secs}s behind)`;
   }
 
-  // --- Presence avatar bar on video ---
-  function updatePresenceBar(users) {
-    let bar = document.getElementById('wp-presence-bar');
-    if (!users || users.length === 0) {
-      if (bar) bar.remove();
-      return;
-    }
-    if (!bar) {
-      bar = document.createElement('div');
-      bar.id = 'wp-presence-bar';
-      document.getElementById('wp-overlay')?.appendChild(bar);
-    }
-    bar.innerHTML = users.map(u => {
-      const color = getUserColor(u.id);
-      const isAway = u.status === 'away';
-      const initial = (u.name || '?')[0].toUpperCase();
-      const statusDot = u.playbackStatus === 'buffering' ? '⟳' : u.playbackStatus === 'paused' ? '⏸' : '';
-      return `<div class="wp-avatar${isAway ? ' wp-avatar-away' : ''}" style="background:${color}" title="${escapeHtml(u.name)}">${initial}${statusDot ? `<span class="wp-avatar-status">${statusDot}</span>` : ''}</div>`;
-    }).join('');
-  }
-
-  // --- Ephemeral chat bubble on video ---
-  function showChatBubble(userName, content, userId) {
-    if (content.length > 60) return; // Only short messages
-    const sidebar = document.getElementById('wp-sidebar');
-    if (sidebar && !sidebar.classList.contains('wp-sidebar-hidden')) return; // Sidebar open, no need
-    let container = document.getElementById('wp-bubble-container');
-    if (!container) {
-      container = document.createElement('div');
-      container.id = 'wp-bubble-container';
-      document.getElementById('wp-overlay')?.appendChild(container);
-    }
-    const bubble = document.createElement('div');
-    bubble.className = 'wp-chat-bubble';
-    bubble.innerHTML = `<strong style="color:${getUserColor(userId)}">${escapeHtml(userName)}</strong> ${escapeHtml(content)}`;
-    container.appendChild(bubble);
-    requestAnimationFrame(() => bubble.classList.add('wp-bubble-visible'));
-    setTimeout(() => {
-      bubble.classList.remove('wp-bubble-visible');
-      setTimeout(() => bubble.remove(), 300);
-    }, 4000);
-    // Max 3 bubbles at once
-    while (container.children.length > 3) container.removeChild(container.firstChild);
-  }
 
   // --- CSS loaded from stremio-overlay.css via manifest.json ---
 
@@ -1065,6 +1029,6 @@ const WPOverlay = (() => {
     playNotifSound, showToast,
     showReadyCheck, showCountdown, appendBookmark,
     incrementUnread, clearUnread, initKeyboardShortcuts,
-    showCatchUpButton, updatePresenceBar, showChatBubble,
+    showCatchUpButton,
   };
 })();

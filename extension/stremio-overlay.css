@@ -313,36 +313,6 @@
 }
 #wp-catchup-btn:hover { background:rgba(var(--wp-accent-rgb),1); }
 
-/* Presence avatar bar */
-#wp-presence-bar {
-  pointer-events:none; position:fixed; top:68px; left:50%; transform:translateX(-50%);
-  z-index:2147483646; display:flex; gap:6px; padding:4px 12px;
-  background:rgba(0,0,0,0.4); border-radius:20px; opacity:0.8; transition:opacity .3s;
-}
-#wp-presence-bar:hover { opacity:1; }
-.wp-avatar {
-  width:28px; height:28px; border-radius:50%; display:flex; align-items:center;
-  justify-content:center; font-size:12px; font-weight:600; color:#fff;
-  position:relative; border:2px solid rgba(255,255,255,0.3);
-}
-.wp-avatar-away { opacity:0.4; }
-.wp-avatar-status {
-  position:absolute; bottom:-2px; right:-2px; font-size:8px;
-  background:rgba(0,0,0,0.6); border-radius:50%; padding:1px;
-}
-
-/* Ephemeral chat bubbles */
-#wp-bubble-container {
-  pointer-events:none; position:fixed; bottom:100px; left:20px; z-index:2147483646;
-  display:flex; flex-direction:column; gap:6px; max-width:350px;
-}
-.wp-chat-bubble {
-  background:rgba(15,15,30,0.85); color:#ccc; font-size:12px;
-  padding:6px 12px; border-radius:10px; line-height:1.4;
-  box-shadow:0 2px 8px rgba(0,0,0,0.3);
-  opacity:0; transform:translateY(10px); transition:opacity .3s, transform .3s;
-}
-.wp-chat-bubble.wp-bubble-visible { opacity:1; transform:translateY(0); }
 
 /* Compact chat mode */
 .wp-compact .wp-chat-msg { padding:1px 16px; margin-bottom:0; }
