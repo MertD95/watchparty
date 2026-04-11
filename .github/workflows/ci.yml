@@ -45,20 +45,3 @@ jobs:
           SERVER_TOKEN: ${{ secrets.SERVER_REPO_TOKEN }}
           NODE_ENV: test
           LOG_LEVEL: warn
-
-  deploy-landing:
-    needs: check
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
-    permissions:
-      contents: read
-      deployments: write
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Deploy to Cloudflare Pages
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy landing --project-name=watchparty
