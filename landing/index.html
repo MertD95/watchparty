@@ -199,6 +199,45 @@
       flex-shrink: 0;
     }
     .room-join-btn:hover { background: var(--accent-hover); }
+    .room-badge {
+      font-size: 10px;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      flex-shrink: 0;
+    }
+    .room-badge-public { background: rgba(34,197,94,0.15); color: #22c55e; }
+    .room-badge-private { background: rgba(239,68,68,0.15); color: #ef4444; }
+    /* UUID prompt modal */
+    .modal-overlay {
+      position: fixed; inset: 0; z-index: 9999;
+      background: rgba(0,0,0,0.6);
+      display: flex; align-items: center; justify-content: center;
+    }
+    .modal-box {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; padding: 28px 32px; min-width: 340px;
+      text-align: center;
+    }
+    .modal-box h3 { color: #fff; font-size: 16px; margin-bottom: 6px; }
+    .modal-box p { color: var(--muted); font-size: 13px; margin-bottom: 16px; }
+    .modal-box input {
+      width: 100%; background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.12); border-radius: 6px;
+      padding: 10px 12px; color: #fff; font-size: 13px; outline: none;
+      margin-bottom: 12px; font-family: 'Consolas','Monaco',monospace;
+    }
+    .modal-box input:focus { border-color: var(--accent); }
+    .modal-box input::placeholder { color: #444; }
+    .modal-actions { display: flex; gap: 8px; }
+    .modal-actions button { flex: 1; padding: 8px; border-radius: 6px; border: none; cursor: pointer; font-size: 13px; }
+    .modal-actions .btn-primary { background: var(--accent); color: #fff; }
+    .modal-actions .btn-primary:hover { background: var(--accent-hover); }
+    .modal-actions .btn-cancel { background: rgba(255,255,255,0.08); color: #ccc; }
+    .modal-actions .btn-cancel:hover { background: rgba(255,255,255,0.12); }
+    .modal-error { color: #ef4444; font-size: 12px; margin-bottom: 8px; }
     .rooms-empty {
       text-align: center;
       color: var(--muted);
@@ -298,10 +337,10 @@
     </div>
 
     <div class="rooms-section" id="rooms">
-      <h2>Public Rooms</h2>
-      <p class="rooms-subtitle">Open rooms anyone can join. Create a public room from the extension.</p>
+      <h2>Active Rooms</h2>
+      <p class="rooms-subtitle">Join a public room instantly, or enter a room ID for private rooms.</p>
       <div class="rooms-list" id="rooms-list">
-        <div class="rooms-empty" id="rooms-empty">No public rooms right now. Create one!</div>
+        <div class="rooms-empty" id="rooms-empty">No active rooms right now. Create one from the extension!</div>
       </div>
     </div>
 
@@ -319,6 +358,20 @@
     </div>
     <p id="redirect-status">Connecting...</p>
     <a href="https://web.stremio.com" class="btn btn-primary" id="redirect-btn" style="display:none">Open Stremio Web</a>
+  </div>
+
+  <!-- UUID modal for private rooms -->
+  <div id="uuid-modal" class="modal-overlay" style="display:none">
+    <div class="modal-box">
+      <h3>Private Room</h3>
+      <p>Enter the room ID shared by the host to join.</p>
+      <div class="modal-error" id="uuid-error" style="display:none"></div>
+      <input type="text" id="uuid-input" placeholder="Paste room ID (e.g. a1b2c3d4-...)" />
+      <div class="modal-actions">
+        <button class="btn-cancel" onclick="closeUuidModal()">Cancel</button>
+        <button class="btn-primary" onclick="submitUuid()">Join Room</button>
+      </div>
+    </div>
   </div>
 
   <script>
@@ -361,6 +414,13 @@
           const secs = Math.floor((room.time || 0) % 60).toString().padStart(2, '0');
           const statusIcon = room.paused ? '⏸' : '▶';
           const statusColor = room.paused ? '#f59e0b' : '#22c55e';
+          const isPublic = room.public;
+          const badge = isPublic
+            ? '<span class="room-badge room-badge-public">Public</span>'
+            : '<span class="room-badge room-badge-private">Private</span>';
+          const joinAction = isPublic
+            ? `joinRoom('${escapeAttr(room.id)}')`
+            : `showUuidModal()`;
           return `
             <div class="room-card">
               ${room.meta.poster
@@ -371,8 +431,9 @@
                 <div class="room-meta">Hosted by ${escapeHtml(room.owner)}${room.meta.year ? ` &middot; ${room.meta.year}` : ''}</div>
                 <div class="room-meta"><span style="color:${statusColor}">${statusIcon}</span> ${mins}:${secs}${room.bookmarks ? ` &middot; 📌 ${room.bookmarks}` : ''}</div>
               </div>
+              ${badge}
               <div class="room-users">${room.users} watching</div>
-              <button class="room-join-btn" onclick="joinRoom('${escapeAttr(room.id)}')">Join</button>
+              <button class="room-join-btn" onclick="${joinAction}">Join</button>
             </div>
           `;
         }).join('');
@@ -390,6 +451,36 @@
       // Redirect to Stremio Web
       window.location.href = 'https://web.stremio.com';
     }
+
+    // --- Private room UUID modal ---
+    function showUuidModal() {
+      document.getElementById('uuid-modal').style.display = 'flex';
+      document.getElementById('uuid-input').value = '';
+      document.getElementById('uuid-error').style.display = 'none';
+      document.getElementById('uuid-input').focus();
+    }
+    function closeUuidModal() {
+      document.getElementById('uuid-modal').style.display = 'none';
+    }
+    function submitUuid() {
+      const input = document.getElementById('uuid-input');
+      const id = input.value.trim();
+      if (!id) {
+        input.focus();
+        return;
+      }
+      // Join with the UUID
+      joinRoom(id);
+    }
+    // Allow Enter key in modal
+    document.getElementById('uuid-input').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') submitUuid();
+      if (e.key === 'Escape') closeUuidModal();
+    });
+    // Close modal on overlay click
+    document.getElementById('uuid-modal').addEventListener('click', (e) => {
+      if (e.target === e.currentTarget) closeUuidModal();
+    });
 
     // --- Redirect page (/r/ROOM_ID) ---
     function showRedirectPage(roomId) {

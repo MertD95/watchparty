@@ -52,6 +52,9 @@ function showLobbyView() {
   $('btn-create').textContent = 'Create Room';
   $('btn-join').disabled = false;
   $('btn-join').textContent = 'Join Room';
+  // Clear any error messages
+  $('join-error').classList.add('hidden');
+  $('create-error').classList.add('hidden');
 }
 
 function showRoomView(room, myUserId) {
@@ -108,6 +111,7 @@ $('btn-create').addEventListener('click', () => {
     $('username-input').focus();
     return;
   }
+  $('create-error').classList.add('hidden');
 
   chrome.storage.local.set({ wpUsername: username });
 
@@ -139,6 +143,8 @@ $('btn-create').addEventListener('click', () => {
         } else {
           $('btn-create').disabled = false;
           $('btn-create').textContent = 'Create Room';
+          $('create-error').textContent = 'Failed to create room. Check server connection.';
+          $('create-error').classList.remove('hidden');
         }
       }
     );

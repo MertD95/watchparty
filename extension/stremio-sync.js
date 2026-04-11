@@ -58,7 +58,7 @@ const WPSync = (() => {
 
   function applyRemote(player) {
     if (!video || isHost) return;
-    hostSpeed = player.speed || 1;
+    hostSpeed = (typeof player.speed === 'number' && isFinite(player.speed) && player.speed >= 0.25 && player.speed <= 4) ? player.speed : 1;
 
     // Apply pause/play
     // pause() fires 'pause' synchronously — safe to reset flag immediately

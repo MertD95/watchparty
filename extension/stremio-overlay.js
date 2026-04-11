@@ -33,7 +33,7 @@ const WPOverlay = (() => {
     if (!uid) return USER_COLORS[0];
     let hash = 0;
     for (let i = 0; i < uid.length; i++) hash = ((hash << 5) - hash + uid.charCodeAt(i)) | 0;
-    return USER_COLORS[Math.abs(hash) % USER_COLORS.length];
+    return USER_COLORS[((hash % USER_COLORS.length) + USER_COLORS.length) % USER_COLORS.length];
   }
 
   // --- Per-message reactions (Discord-style) ---
@@ -247,15 +247,29 @@ const WPOverlay = (() => {
       <div id="wp-emoji-picker" class="wp-hidden-el"></div>
     `;
 
-    const style = document.createElement('style');
-    style.textContent = getCSS();
-    document.head.appendChild(style);
     document.body.appendChild(overlay);
 
     // Toggle button — Shadow DOM, fixed position, independent of Stremio's DOM
     const toggleHost = document.createElement('div');
     toggleHost.id = 'wp-toggle-host';
-    toggleHost.style.cssText = 'position:fixed;top:14px;right:14px;z-index:2147483647;width:42px;height:42px;';
+    toggleHost.style.cssText = 'position:fixed;top:18px;right:128px;z-index:2147483647;width:42px;height:42px;';
+    // Position toggle to the left of Stremio's buttons — measure once, cache result
+    let cachedToggleRight = 128; // fallback
+    function positionToggle() {
+      const container = document.querySelector('[class*="buttons-container"]');
+      if (container) {
+        const r = container.getBoundingClientRect();
+        if (r.width > 0) {
+          cachedToggleRight = Math.round(window.innerWidth - r.left + 8);
+          toggleHost.style.top = Math.round(r.top + (r.height - 42) / 2) + 'px';
+          toggleHost.style.right = cachedToggleRight + 'px';
+        }
+      }
+    }
+    // Measure after DOM settles, then only on resize
+    setTimeout(positionToggle, 500);
+    setTimeout(positionToggle, 1500);
+    window.addEventListener('resize', positionToggle);
     const shadow = toggleHost.attachShadow({ mode: 'closed' });
     shadow.innerHTML = `
       <style>
@@ -335,6 +349,16 @@ const WPOverlay = (() => {
     window.addEventListener('resize', () => {
       const sidebarOpen = !document.getElementById('wp-sidebar')?.classList.contains('wp-sidebar-hidden');
       updateContentMargin(sidebarOpen);
+    });
+
+    // Re-apply content margin on SPA navigation (Stremio rebuilds DOM, resets body.style.width)
+    window.addEventListener('hashchange', () => {
+      const sidebarOpen = !document.getElementById('wp-sidebar')?.classList.contains('wp-sidebar-hidden');
+      if (sidebarOpen) {
+        // Stremio's DOM rebuild is async — re-apply after a short delay
+        setTimeout(() => updateContentMargin(true), 100);
+        setTimeout(() => updateContentMargin(true), 500);
+      }
     });
 
     // --- Theme application ---
@@ -447,6 +471,26 @@ const WPOverlay = (() => {
       const q = e.target.value.trim();
       gifDebounce = setTimeout(() => searchGifs(q || 'trending'), 300);
     });
+    // Event delegation for GIF clicks (avoids per-element listeners on every search)
+    $('wp-gif-results').addEventListener('click', (e) => {
+      const img = e.target.closest('.wp-gif-item');
+      if (!img?.dataset.url) return;
+      chrome.runtime.sendMessage({
+        type: 'watchparty-ext', action: 'send-chat', content: `[gif:${img.dataset.url}]`,
+      }).catch(() => {});
+      // Local echo
+      const container = document.getElementById('wp-chat-messages');
+      if (container) {
+        const div = buildMsgEl(
+          `<span class="wp-chat-name" style="color:${getUserColor(cachedUserId)}">${escapeHtml(cachedUsername)}</span>`,
+          `<img class="wp-chat-gif" src="${escapeHtml(img.dataset.url)}" alt="GIF" />`
+        );
+        div.classList.add('wp-chat-local');
+        container.appendChild(div);
+        container.scrollTop = container.scrollHeight;
+      }
+      $('wp-gif-picker').classList.add('wp-hidden-el');
+    });
 
     async function searchGifs(query) {
       const results = $('wp-gif-results');
@@ -463,26 +507,6 @@ const WPOverlay = (() => {
           const url = g.media_formats?.tinygif?.url || g.media_formats?.gif?.url || '';
           return url ? `<img class="wp-gif-item" src="${escapeHtml(url)}" data-url="${escapeHtml(url)}" loading="lazy" />` : '';
         }).join('');
-        results.querySelectorAll('.wp-gif-item').forEach(img => {
-          img.addEventListener('click', () => {
-            // Send GIF as a special chat message
-            chrome.runtime.sendMessage({
-              type: 'watchparty-ext', action: 'send-chat', content: `[gif:${img.dataset.url}]`,
-            }).catch(() => {});
-            // Local echo
-            const container = document.getElementById('wp-chat-messages');
-            if (container) {
-              const div = buildMsgEl(
-                `<span class="wp-chat-name" style="color:${getUserColor(cachedUserId)}">${escapeHtml(cachedUsername)}</span>`,
-                `<img class="wp-chat-gif" src="${escapeHtml(img.dataset.url)}" alt="GIF" />`
-              );
-              div.classList.add('wp-chat-local');
-              container.appendChild(div);
-              container.scrollTop = container.scrollHeight;
-            }
-            $('wp-gif-picker').classList.add('wp-hidden-el');
-          });
-        });
       } catch { results.innerHTML = '<div style="text-align:center;color:#666;padding:16px">Search failed</div>'; }
     }
   }
@@ -531,6 +555,10 @@ const WPOverlay = (() => {
     }
     if (!overlay) return;
 
+    // Re-apply content margin if sidebar is open (Stremio SPA navigation can reset body width)
+    const sidebarOpen = !document.getElementById('wp-sidebar')?.classList.contains('wp-sidebar-hidden');
+    if (sidebarOpen) updateContentMargin(true);
+
     const status = document.getElementById('wp-status');
     const roomCode = document.getElementById('wp-room-code');
     const usersDiv = document.getElementById('wp-users');
@@ -560,7 +588,7 @@ const WPOverlay = (() => {
       const hostLabel = isHost ? 'You are the host' : 'Synced to host';
       const videoStatus = hasVideo ? 'Video detected' : 'No video detected';
       let actions = '';
-      if (isHost) {
+      if (hasVideo && isHost) {
         actions += `<button class="wp-action-btn" id="wp-ready-check-btn" title="Ready Check">✋ Ready?</button>`;
       }
       if (hasVideo) {
@@ -571,6 +599,12 @@ const WPOverlay = (() => {
       // Bind action buttons
       document.getElementById('wp-ready-check-btn')?.addEventListener('click', () => {
         chrome.runtime.sendMessage({ type: 'watchparty-ext', action: 'ready-check', readyAction: 'initiate' }).catch(() => {});
+        // Pause video during ready check
+        const video = document.querySelector('video');
+        if (video && !video.paused) video.pause();
+        // Local echo — show ready check modal immediately for the host
+        const userCount = document.getElementById('wp-users')?.children.length || 1;
+        showReadyCheck('started', [], userCount, cachedUserId);
       });
       document.getElementById('wp-bookmark-btn')?.addEventListener('click', () => {
         const video = document.querySelector('video');
@@ -583,13 +617,24 @@ const WPOverlay = (() => {
       });
     }
 
-    // Content link for peers
+    // Content link for peers — show what the host is watching with a button to navigate
     if (contentLink) {
       if (!isHost && roomState.meta?.id && roomState.meta.id !== 'pending' && roomState.meta.id !== 'unknown') {
         contentLink.classList.remove('wp-hidden-el');
         const name = escapeHtml(roomState.meta.name || roomState.meta.id);
         const link = `https://web.stremio.com/#/detail/${encodeURIComponent(roomState.meta.type)}/${encodeURIComponent(roomState.meta.id)}`;
-        contentLink.innerHTML = `<span class="wp-content-label">Watching:</span> <a href="${link}" class="wp-content-link-a">${name}</a>`;
+        const hasVideo = !!document.querySelector('video');
+        if (hasVideo) {
+          // Already watching — just show what's playing
+          contentLink.innerHTML = `<span class="wp-content-label">Watching:</span> <span style="color:#fff;font-weight:500">${name}</span>`;
+        } else {
+          // Not watching yet — show prominent button to go to the movie
+          contentLink.innerHTML = `
+            <div style="text-align:center">
+              <div style="color:#fff;font-weight:500;margin-bottom:6px">${name}</div>
+              <a href="${link}" class="wp-action-btn" style="display:inline-block;padding:6px 16px;color:var(--wp-accent-light);text-decoration:none">Pick a stream to watch</a>
+            </div>`;
+        }
       } else {
         contentLink.classList.add('wp-hidden-el');
       }
@@ -768,6 +813,9 @@ const WPOverlay = (() => {
     }
     if (action === 'started') {
       if (modal) modal.remove();
+      // Pause video during ready check
+      const video = document.querySelector('video');
+      if (video && !video.paused) video.pause();
       modal = document.createElement('div');
       modal.id = 'wp-ready-modal';
       modal.innerHTML = `
@@ -784,6 +832,24 @@ const WPOverlay = (() => {
         chrome.runtime.sendMessage({ type: 'watchparty-ext', action: 'ready-check', readyAction: 'confirm' }).catch(() => {});
         document.getElementById('wp-ready-confirm').disabled = true;
         document.getElementById('wp-ready-confirm').textContent = 'Waiting...';
+        // Local echo: update count
+        const countEl = document.getElementById('wp-ready-count');
+        if (countEl) {
+          const parts = countEl.textContent.split('/').map(s => parseInt(s.trim()));
+          const newConfirmed = (parts[0] || 0) + 1;
+          const total = parts[1] || 1;
+          countEl.textContent = `${newConfirmed} / ${total}`;
+          // If all confirmed, remove modal and trigger local countdown
+          if (newConfirmed >= total) {
+            document.getElementById('wp-ready-modal')?.remove();
+            let count = 3;
+            const timer = setInterval(() => {
+              showCountdown(count);
+              count--;
+              if (count < 0) { clearInterval(timer); showCountdown(0); }
+            }, 1000);
+          }
+        }
       });
       document.getElementById('wp-ready-dismiss').addEventListener('click', () => {
         modal.remove();
@@ -803,11 +869,14 @@ const WPOverlay = (() => {
 
   // --- Countdown overlay ---
   function showCountdown(seconds) {
+    // Remove ready modal as soon as countdown starts
+    document.getElementById('wp-ready-modal')?.remove();
     let el = document.getElementById('wp-countdown');
     if (seconds <= 0) {
       if (el) el.remove();
-      // Also remove ready modal
-      document.getElementById('wp-ready-modal')?.remove();
+      // Play the video when countdown finishes
+      const video = document.querySelector('video');
+      if (video && video.paused) video.play().catch(() => {});
       return;
     }
     if (!el) {
@@ -986,10 +1055,6 @@ const WPOverlay = (() => {
   }
 
   // --- CSS loaded from stremio-overlay.css via manifest.json ---
-  function getCSS() {
-    // All styles extracted to stremio-overlay.css (injected by Chrome via manifest content_scripts.css)
-    return '';
-  }
 
 
 
