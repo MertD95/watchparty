@@ -1,3 +1,2 @@
-# Cloudflare Pages redirects
-# SPA fallback — all /r/* paths serve index.html
-/r/*  /index.html  200
+# Cloudflare Pages — serve index.html for /r/:roomId paths
+/r/:id  /  200
