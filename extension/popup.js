@@ -133,13 +133,17 @@ $('btn-create').addEventListener('click', () => {
   $('btn-create').disabled = true;
   $('btn-create').textContent = 'Creating...';
 
-  // Poll for room state
-  setTimeout(() => {
+  // Poll for room state — retry a few times (production WS may take longer to connect)
+  let attempts = 0;
+  function pollForRoom() {
+    attempts++;
     chrome.runtime.sendMessage(
       { type: 'watchparty-ext', action: 'get-status' },
       (response) => {
         if (response?.room) {
           showRoomView(response.room, response.userId);
+        } else if (attempts < 5) {
+          setTimeout(pollForRoom, 1500);
         } else {
           $('btn-create').disabled = false;
           $('btn-create').textContent = 'Create Room';
@@ -148,7 +152,8 @@ $('btn-create').addEventListener('click', () => {
         }
       }
     );
-  }, 1500);
+  }
+  setTimeout(pollForRoom, 1500);
 });
 
 $('btn-join').addEventListener('click', () => {
@@ -170,12 +175,16 @@ $('btn-join').addEventListener('click', () => {
   $('btn-join').disabled = true;
   $('btn-join').textContent = 'Joining...';
 
-  setTimeout(() => {
+  let joinAttempts = 0;
+  function pollForJoin() {
+    joinAttempts++;
     chrome.runtime.sendMessage(
       { type: 'watchparty-ext', action: 'get-status' },
       (response) => {
         if (response?.room) {
           showRoomView(response.room, response.userId);
+        } else if (joinAttempts < 5) {
+          setTimeout(pollForJoin, 1500);
         } else {
           $('btn-join').disabled = false;
           $('btn-join').textContent = 'Join Room';
@@ -184,7 +193,8 @@ $('btn-join').addEventListener('click', () => {
         }
       }
     );
-  }, 1500);
+  }
+  setTimeout(pollForJoin, 1500);
 });
 
 $('btn-leave').addEventListener('click', () => {

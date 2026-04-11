@@ -40,12 +40,18 @@
 
   // --- WebSocket connection (moved from background.js) ---
 
+  // Detect dev mode: extensions loaded unpacked have installType 'development'
+  const isDev = !('update_url' in chrome.runtime.getManifest());
+
   async function getWsUrl() {
     if (detectedWsUrl) return detectedWsUrl;
-    try {
-      const res = await fetch(WS_URL_DEV.replace('ws://', 'http://'), { signal: AbortSignal.timeout(1000) });
-      if (res.ok) { detectedWsUrl = WS_URL_DEV; return WS_URL_DEV; }
-    } catch { /* dev server not running */ }
+    // Only try localhost in dev (unpacked extension) — production goes straight to wss://
+    if (isDev) {
+      try {
+        const res = await fetch(WS_URL_DEV.replace('ws://', 'http://'), { signal: AbortSignal.timeout(1000) });
+        if (res.ok) { detectedWsUrl = WS_URL_DEV; return WS_URL_DEV; }
+      } catch { /* dev server not running */ }
+    }
     detectedWsUrl = WS_URL_PROD;
     return WS_URL_PROD;
   }
@@ -397,18 +403,33 @@
     if (message.type !== 'watchparty-ext') return;
     switch (message.action) {
       case 'create-room':
-        if (message.username) wsSend({ type: 'user.update', payload: { username: message.username } });
-        const createPayload = {
-          meta: message.meta || { id: 'unknown', type: 'movie', name: 'WatchParty Session' },
-          stream: message.stream || { url: 'https://example.com/placeholder' },
-          public: message.public || false,
-        };
-        if (message.roomName) createPayload.name = message.roomName;
-        wsSend({ type: 'room.new', payload: createPayload });
+        // Background.js already stored pendingRoomCreate in chrome.storage.
+        // If WS is connected, process it now. Otherwise connectWs() will
+        // trigger the ready handler which reads pendingRoomCreate from storage.
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          if (message.username) wsSend({ type: 'user.update', payload: { username: message.username } });
+          const createPayload = {
+            meta: message.meta || { id: 'unknown', type: 'movie', name: 'WatchParty Session' },
+            stream: message.stream || { url: 'https://example.com/placeholder' },
+            public: message.public || false,
+          };
+          if (message.roomName) createPayload.name = message.roomName;
+          wsSend({ type: 'room.new', payload: createPayload });
+          // Clear storage since we handled it directly
+          chrome.storage.local.remove('pendingRoomCreate');
+        } else {
+          // Not connected — storage has the intent, connect and let ready handler pick it up
+          connectWs();
+        }
         break;
       case 'join-room':
-        if (message.username) wsSend({ type: 'user.update', payload: { username: message.username } });
-        wsSend({ type: 'room.join', payload: { id: message.roomId } });
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          if (message.username) wsSend({ type: 'user.update', payload: { username: message.username } });
+          wsSend({ type: 'room.join', payload: { id: message.roomId } });
+          chrome.storage.local.remove('pendingRoomJoin');
+        } else {
+          connectWs();
+        }
         break;
       case 'leave-room':
         wsSend({ type: 'room.leave', payload: {} });
