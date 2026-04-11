@@ -80,7 +80,17 @@ chrome.runtime.onMessage.addListener((message) => {
 window.addEventListener('message', (event) => {
   if (event.source !== window) return;
   if (event.data?.type === 'watchparty-join-room' && event.data.roomId) {
-    // Store pending room join for the extension to pick up when Stremio Web loads
     chrome.storage.local.set({ pendingRoomJoin: event.data.roomId });
+  }
+  if (event.data?.type === 'watchparty-create-room' && event.data.username) {
+    chrome.runtime.sendMessage({
+      type: 'watchparty-ext',
+      action: 'create-room',
+      username: event.data.username,
+      meta: event.data.meta || { id: 'pending', type: 'movie', name: 'WatchParty Session' },
+      stream: event.data.stream || { url: 'https://watchparty.mertd.me/sync' },
+      public: event.data.public || false,
+      roomName: event.data.roomName,
+    });
   }
 });

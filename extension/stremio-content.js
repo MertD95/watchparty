@@ -200,6 +200,7 @@
 
       case 'message':
         if (!p) return;
+        console.log('[WP] Got message:', p.content?.substring(0, 30), 'from:', p.user);
         onChatMessage(p);
         break;
 
