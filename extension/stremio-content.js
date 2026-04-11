@@ -138,20 +138,30 @@
 
   // --- Process pending create/join actions from storage ---
   function processPendingActions() {
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      console.log('[WP] processPendingActions: WS not open');
+      return;
+    }
     chrome.storage.local.get(['pendingRoomCreate', 'pendingRoomJoin', 'currentRoom', 'wpUsername'], (stored) => {
+      console.log('[WP] processPendingActions storage:', JSON.stringify({
+        hasPendingCreate: !!stored.pendingRoomCreate,
+        hasPendingJoin: !!stored.pendingRoomJoin,
+        hasCurrentRoom: !!stored.currentRoom
+      }));
       if (stored.pendingRoomCreate) {
         chrome.storage.local.remove('pendingRoomCreate');
         const rc = stored.pendingRoomCreate;
         if (rc.username) wsSend({ type: 'user.update', payload: { username: rc.username } });
         const payload = { meta: rc.meta, stream: rc.stream, public: rc.public || false };
         if (rc.roomName) payload.name = rc.roomName;
+        console.log('[WP] Sending room.new:', JSON.stringify(payload));
         wsSend({ type: 'room.new', payload });
       } else {
         const roomToJoin = stored.pendingRoomJoin || stored.currentRoom;
         if (stored.pendingRoomJoin) chrome.storage.local.remove('pendingRoomJoin');
         if (roomToJoin) {
           if (stored.wpUsername) wsSend({ type: 'user.update', payload: { username: stored.wpUsername } });
+          console.log('[WP] Sending room.join:', roomToJoin);
           wsSend({ type: 'room.join', payload: { id: roomToJoin } });
         }
       }
@@ -417,8 +427,7 @@
     switch (message.action) {
       case 'create-room':
       case 'join-room':
-        // Background.js already stored the intent (pendingRoomCreate / pendingRoomJoin)
-        // in chrome.storage. Process it now if connected, or connect first.
+        console.log('[WP] Received', message.action, 'wsOpen:', !!(ws && ws.readyState === WebSocket.OPEN));
         if (ws && ws.readyState === WebSocket.OPEN) {
           processPendingActions();
         } else {
