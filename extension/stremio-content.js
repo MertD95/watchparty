@@ -170,6 +170,7 @@
         processPendingActions();
         startClockSync();
         persistState();
+        refreshOverlay();
         break;
 
       case 'sync':
