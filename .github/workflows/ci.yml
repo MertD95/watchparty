@@ -11,44 +11,40 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # Syntax-check all extension JS files
-      - name: Syntax check
-        run: |
-          for f in extension/*.js; do
-            node -e "new Function(require('fs').readFileSync('$f','utf8'))" || exit 1
-          done
-
-      # E2E tests need the WS server running
-      - uses: actions/checkout@v5
-        with:
-          repository: MertD95/watchparty-server
-          path: watchparty-server
-
       - uses: actions/setup-node@v5
         with:
           node-version: 24
 
-      - name: Install server deps
-        run: cd watchparty-server && npm install
+      # Syntax-check all extension JS files (no build step — plain JS)
+      - name: Syntax check extension
+        run: |
+          for f in extension/*.js; do
+            echo "Checking $f..."
+            node -e "new Function(require('fs').readFileSync('$f','utf8'))" || exit 1
+          done
+          echo "All files OK"
 
-      - name: Start server
-        run: cd watchparty-server && node src/index.ts &
+      # E2E tests require the WS server — run them if server repo token is available
+      - name: Checkout server
+        if: ${{ env.SERVER_TOKEN != '' }}
+        uses: actions/checkout@v5
+        with:
+          repository: MertD95/watchparty-server
+          token: ${{ env.SERVER_TOKEN }}
+          path: watchparty-server
         env:
+          SERVER_TOKEN: ${{ secrets.SERVER_REPO_TOKEN }}
+
+      - name: Start server & run E2E tests
+        if: ${{ env.SERVER_TOKEN != '' }}
+        run: |
+          cd watchparty-server && npm install && node src/index.ts &
+          for i in $(seq 1 10); do curl -s http://localhost:8181/rooms && break; sleep 1; done
+          cd "$GITHUB_WORKSPACE" && npm install && npm test
+        env:
+          SERVER_TOKEN: ${{ secrets.SERVER_REPO_TOKEN }}
           NODE_ENV: test
           LOG_LEVEL: warn
-
-      - name: Wait for server
-        run: |
-          for i in $(seq 1 10); do
-            curl -s http://localhost:8181/rooms && break
-            sleep 1
-          done
-
-      - name: Install extension deps
-        run: npm install
-
-      - name: Run E2E tests
-        run: npm test
 
   deploy-landing:
     needs: check
