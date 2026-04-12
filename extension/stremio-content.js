@@ -1,165 +1,62 @@
-// WatchParty for Stremio — Content Script for Stremio Web
-// Owns: WebSocket connection, room state, sync engine, overlay UI, profile reading.
-// Modules: stremio-sync.js (WPSync), stremio-overlay.js (WPOverlay), stremio-profile.js (WPProfile)
+// WatchParty for Stremio — Content Script Orchestrator
+// Wires together: WPWS (WebSocket), WPSync (sync engine), WPOverlay (UI), WPProfile (profile reader).
+// Owns: Room state, video detection, action dispatch, presence, playback status.
 //
-// Architecture: The WS connection lives HERE (not in the background service worker) because
-// MV3 service workers suspend after ~30s, permanently killing WS event handlers.
-// Content scripts stay alive as long as the tab is open — no suspension issues.
+// Module load order (manifest.json):
+//   stremio-sync.js → stremio-ws.js → stremio-overlay.js → stremio-profile.js → stremio-content.js
 
 (() => {
   'use strict';
 
-  // --- Constants ---
-  const WS_URL_PROD = 'wss://ws.mertd.me';
-  const WS_URL_DEV = 'ws://localhost:8181';
-  const RECONNECT_BASE_MS = 1000;
-  const RECONNECT_MAX_MS = 30000;
-  const CLOCK_SAMPLES = 6;
-
-  // --- State ---
+  // --- Room + video state ---
   let video = null;
   let inRoom = false;
   let isHost = false;
   let userId = null;
   let roomState = null;
+  let prevPlayerTime = 0;
   let chatMessages = [];
   let observer = null;
   let typingUsers = new Map();
 
-  // WS state (previously in background.js)
-  let ws = null;
-  let wsConnected = false;
-  let reconnectAttempts = 0;
-  let reconnectTimer = null;
-  let keepAliveTimer = null;
-  let clockOffset = 0;
-  let clockSamples = [];
-  let detectedWsUrl = null;
-
-  // CORS bypass handled by declarativeNetRequest rules (rules.json) —
-  // no fetch/XHR interception needed. Direct requests to localhost:11470 work natively.
-
-  // --- WebSocket connection (moved from background.js) ---
-
-  // Detect dev mode: extensions loaded unpacked have installType 'development'
-  const isDev = !('update_url' in chrome.runtime.getManifest());
-
-  async function getWsUrl() {
-    if (detectedWsUrl) return detectedWsUrl;
-    // Only try localhost in dev (unpacked extension) — production goes straight to wss://
-    if (isDev) {
-      try {
-        const res = await fetch(WS_URL_DEV.replace('ws://', 'http://'), { signal: AbortSignal.timeout(1000) });
-        if (res.ok) { detectedWsUrl = WS_URL_DEV; return WS_URL_DEV; }
-      } catch { /* dev server not running */ }
-    }
-    detectedWsUrl = WS_URL_PROD;
-    return WS_URL_PROD;
-  }
-
-  async function connectWs() {
-    if (ws) return;
-    const url = await getWsUrl();
-    try { ws = new WebSocket(url); } catch { scheduleReconnect(); return; }
-
-    ws.onopen = () => {
-      wsConnected = true;
-      reconnectAttempts = 0;
-      notifyBackground({ action: 'ws-status-changed', connected: true });
-      // Server-side keepalive ping every 25s
-      clearInterval(keepAliveTimer);
-      keepAliveTimer = setInterval(() => {
-        if (ws?.readyState === WebSocket.OPEN) wsSend({ type: 'clock.ping', payload: { clientTime: Date.now() } });
-      }, 25000);
-    };
-
-    ws.onmessage = (event) => {
-      try { handleServerMessage(JSON.parse(event.data)); } catch { /* malformed */ }
-    };
-
-    ws.onclose = () => {
-      clearInterval(keepAliveTimer);
-      ws = null;
-      wsConnected = false;
-      notifyBackground({ action: 'ws-status-changed', connected: false });
-      scheduleReconnect();
-    };
-
-    ws.onerror = () => { /* onclose fires after */ };
-  }
-
-  function disconnectWs() {
-    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-    reconnectAttempts = 0;
-    if (ws) {
-      clearInterval(ws._keepAlive);
-      ws.onclose = null;
-      ws.close();
-      ws = null;
-      wsConnected = false;
-    }
-  }
-
-  function scheduleReconnect() {
-    if (reconnectTimer) return;
-    const base = Math.min(RECONNECT_BASE_MS * Math.pow(2, reconnectAttempts), RECONNECT_MAX_MS);
-    const delay = base + Math.random() * base * 0.2;
-    reconnectAttempts++;
-    reconnectTimer = setTimeout(() => { reconnectTimer = null; connectWs(); }, delay);
-  }
-
-  function wsSend(msg) {
-    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
-  }
-
-  // --- Clock sync (Cristian's algorithm) ---
-  function startClockSync() {
-    clockSamples = [];
-    for (let i = 0; i < CLOCK_SAMPLES; i++) {
-      setTimeout(() => wsSend({ type: 'clock.ping', payload: { clientTime: Date.now() } }), i * 200);
-    }
-  }
+  // --- Extension context guard (WS survives extension reloads, but chrome APIs don't) ---
+  function extOk() { return !!chrome.runtime?.id; }
 
   // --- Persist state to storage for popup queries ---
   function persistState() {
+    if (!extOk()) return;
     chrome.storage.local.set({
       wpRoomState: roomState,
       wpUserId: userId,
-      wpWsConnected: wsConnected,
+      wpWsConnected: WPWS.isConnected(),
     }).catch(() => {});
   }
 
-  // Notify background of status changes (for badge, popup relay)
   function notifyBackground(data) {
+    if (!extOk()) return;
     try {
       chrome.runtime.sendMessage({ type: 'watchparty-ext', ...data }).catch(() => {});
     } catch { /* context invalidated */ }
   }
 
-  // --- Process pending create/join actions from storage ---
-  function processPendingActions() {
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    chrome.storage.local.get(['pendingRoomCreate', 'pendingRoomJoin', 'currentRoom', 'wpUsername'], (stored) => {
-      if (stored.pendingRoomCreate) {
-        chrome.storage.local.remove('pendingRoomCreate');
-        const rc = stored.pendingRoomCreate;
-        if (rc.username) wsSend({ type: 'user.update', payload: { username: rc.username } });
-        const payload = { meta: rc.meta, stream: rc.stream, public: rc.public || false };
-        if (rc.roomName) payload.name = rc.roomName;
-        wsSend({ type: 'room.new', payload });
-      } else {
-        const roomToJoin = stored.pendingRoomJoin || stored.currentRoom;
-        if (stored.pendingRoomJoin) chrome.storage.local.remove('pendingRoomJoin');
-        if (roomToJoin) {
-          if (stored.wpUsername) wsSend({ type: 'user.update', payload: { username: stored.wpUsername } });
-          wsSend({ type: 'room.join', payload: { id: roomToJoin } });
-        }
+  // --- WS callbacks ---
+  WPWS.onConnect(() => {
+    notifyBackground({ action: 'ws-status-changed', connected: true });
+    WPSync.resetCorrection();
+    // If we were in a room, rejoin with replay of missed messages
+    if (roomState?.id) {
+      const seq = WPWS.getLastSeq();
+      if (seq > 0) {
+        WPWS.send({ type: 'room.rejoin', payload: { id: roomState.id, lastSeq: seq } });
       }
-    });
-  }
+    }
+  });
 
-  // --- Server message handling (merged from background.js + old handleMessage) ---
-  function handleServerMessage(msg) {
+  WPWS.onDisconnect(() => {
+    notifyBackground({ action: 'ws-status-changed', connected: false });
+  });
+
+  WPWS.onMessage((msg) => {
     if (!msg || !msg.type) return;
     const p = msg.payload;
 
@@ -167,14 +64,20 @@
       case 'ready':
         if (!p?.user?.id) return;
         userId = p.user.id;
+        // Protocol version check — warn if server is newer than what this extension expects
+        if (p.protocol && p.protocol > 2) {
+          WPOverlay.showToast('Server updated — please update the WatchParty extension', 5000);
+          console.warn(`[WatchParty] Server protocol v${p.protocol}, extension expects v2. Some features may not work.`);
+        }
         processPendingActions();
-        startClockSync();
+        WPWS.startClockSync();
         persistState();
         refreshOverlay();
         break;
 
       case 'sync':
         if (!p) return;
+        prevPlayerTime = roomState?.player?.time || 0;
         roomState = p;
         persistState();
         onRoomSync();
@@ -183,7 +86,7 @@
       case 'room':
         if (!p?.id) return;
         roomState = p;
-        chrome.storage.local.set({ currentRoom: roomState.id });
+        if (extOk()) chrome.storage.local.set({ currentRoom: roomState.id });
         persistState();
         onRoomJoined();
         break;
@@ -203,9 +106,13 @@
         if (p?.type === 'room') {
           inRoom = false; roomState = null;
           WPSync.detach();
-          chrome.storage.local.remove('currentRoom');
+          if (extOk()) chrome.storage.local.remove(['currentRoom', 'pendingRoomJoin']);
           refreshOverlay();
           persistState();
+        }
+        // Show error feedback for non-room errors (cooldown, owner, validation, etc.)
+        if (p?.type !== 'room' && p?.message) {
+          WPOverlay.showToast(p.message, 2000);
         }
         break;
 
@@ -234,37 +141,100 @@
 
       case 'bookmark':
         WPOverlay.appendBookmark(p);
+        notifyBackground({ action: 'bookmark', payload: p });
         break;
 
-      case 'clock.pong': {
-        if (!p?.clientTime || !p?.serverTime) return;
-        const now = Date.now();
-        const rtt = now - p.clientTime;
-        const offset = p.serverTime - p.clientTime - rtt / 2;
-        clockSamples.push({ rtt, offset });
-        if (clockSamples.length >= CLOCK_SAMPLES) {
-          clockSamples.sort((a, b) => a.rtt - b.rtt);
-          clockOffset = clockSamples[0].offset;
-        }
+      // --- Delta events (lightweight, avoid full room broadcasts) ---
+
+      case 'playerSync':
+        if (!p?.player || !roomState) return;
+        prevPlayerTime = roomState.player?.time || 0;
+        roomState.player = p.player;
+        onRoomSync();
         break;
-      }
+
+      case 'presenceUpdate':
+        if (!p?.userId || !roomState?.users) return;
+        const presUser = roomState.users.find(u => u.id === p.userId);
+        if (presUser) presUser.status = p.status;
+        refreshOverlay();
+        break;
+
+      case 'playbackStatusUpdate':
+        if (!p?.userId || !roomState?.users) return;
+        const pbUser = roomState.users.find(u => u.id === p.userId);
+        if (pbUser) pbUser.playbackStatus = p.status;
+        refreshOverlay();
+        break;
+
+      case 'settingsUpdate':
+        if (!p?.settings || !roomState) return;
+        roomState.settings = p.settings;
+        refreshOverlay();
+        break;
     }
+  });
+
+  // --- Process pending create/join actions from storage ---
+  function processPendingActions() {
+    if (!WPWS.isReady() || !extOk()) return;
+    chrome.storage.local.get(['pendingRoomCreate', 'pendingRoomJoin', 'currentRoom', 'wpUsername'], (stored) => {
+      if (stored.pendingRoomCreate) {
+        chrome.storage.local.remove('pendingRoomCreate');
+        const rc = stored.pendingRoomCreate;
+        if (rc.username) WPWS.send({ type: 'user.update', payload: { username: rc.username } });
+        const payload = { meta: rc.meta, stream: rc.stream, public: rc.public || false };
+        if (rc.roomName) payload.name = rc.roomName;
+        WPWS.send({ type: 'room.new', payload });
+      } else {
+        const roomToJoin = stored.pendingRoomJoin || stored.currentRoom;
+        if (stored.pendingRoomJoin) chrome.storage.local.remove('pendingRoomJoin');
+        if (roomToJoin) {
+          // Import E2E encryption key BEFORE joining (prevents race where first encrypted message arrives before key is ready)
+          const keyStorageKey = `wpRoomKey:${roomToJoin}`;
+          // Try session storage first (secure, in-memory), fall back to local storage
+          chrome.storage.session.get(keyStorageKey, async (keyResult) => {
+            if (chrome.runtime.lastError || !keyResult[keyStorageKey]) {
+              // Fallback: check local storage (older browsers or key stored before session migration)
+              return chrome.storage.local.get(keyStorageKey, async (localResult) => {
+                await importKeyAndJoin(localResult[keyStorageKey], roomToJoin, stored);
+              });
+            }
+            await importKeyAndJoin(keyResult[keyStorageKey], roomToJoin, stored);
+          });
+        }
+      }
+    });
   }
 
-  // --- Event handlers (UI updates) ---
+  async function importKeyAndJoin(cryptoKeyStr, roomToJoin, stored) {
+    if (cryptoKeyStr && !WPCrypto.isEnabled()) {
+      try { await WPCrypto.importKey(cryptoKeyStr); } catch { /* invalid key */ }
+    }
+    if (!extOk() || !WPWS.isReady()) return;
+    if (stored.wpUsername) WPWS.send({ type: 'user.update', payload: { username: stored.wpUsername } });
+    WPWS.send({ type: 'room.join', payload: { id: roomToJoin } });
+  }
 
-  function onRoomJoined() {
+  // --- Room event handlers ---
+
+  async function onRoomJoined() {
     inRoom = true;
-    userId = userId;
     isHost = roomState.owner === userId;
     if (video) attachSync();
     refreshOverlay();
+    // Generate E2E encryption key for new rooms (host only)
+    if (isHost && !WPCrypto.isEnabled()) {
+      await WPCrypto.generateKey();
+      // Store key so it can be included in invite URLs
+      const keyStr = await WPCrypto.exportKey();
+      if (keyStr && extOk()) chrome.storage.session.set({ [`wpRoomKey:${roomState.id}`]: keyStr }).catch(() => {});
+    }
     WPOverlay.bindRoomCodeCopy(roomState);
     WPOverlay.playNotifSound();
     if (isHost) {
       shareContentLink();
     } else {
-      // Auto-navigate peer to the movie the host is watching
       const meta = roomState.meta;
       if (meta?.id && meta.id !== 'pending' && meta.id !== 'unknown' && meta.type) {
         const currentInfo = getCurrentContentInfo();
@@ -279,17 +249,15 @@
   }
 
   function onRoomSync() {
-    const prevTime = roomState?.player?.time || 0;
     const wasHost = isHost;
     isHost = roomState.owner === userId;
     inRoom = true;
-    // Ensure currentRoom is set (room.join sends sync, not room event)
-    if (roomState?.id) chrome.storage.local.set({ currentRoom: roomState.id });
+    if (roomState?.id && extOk()) chrome.storage.local.set({ currentRoom: roomState.id });
     WPSync.setHost(isHost);
     refreshOverlay();
     if (!isHost && roomState.player) {
       const newTime = roomState.player.time || 0;
-      if (Math.abs(newTime - prevTime) > 5) {
+      if (Math.abs(newTime - prevPlayerTime) > 5) {
         const mins = Math.floor(newTime / 60);
         const secs = Math.floor(newTime % 60).toString().padStart(2, '0');
         WPOverlay.showToast(`Host seeked to ${mins}:${secs}`);
@@ -302,13 +270,17 @@
     if (!wasHost && isHost) WPOverlay.playNotifSound();
   }
 
-  function onChatMessage(message) {
+  async function onChatMessage(message) {
+    // Decrypt E2E-encrypted messages if crypto is enabled
+    if (WPCrypto.isEnabled() && WPCrypto.isEncrypted(message.content)) {
+      message = { ...message, content: await WPCrypto.decrypt(message.content) };
+    }
     chatMessages.push(message);
     if (chatMessages.length > 200) chatMessages.shift();
     WPOverlay.appendChatMessage(message, roomState, userId);
-    if (message.user !== userId) {
-      WPOverlay.incrementUnread();
-    }
+    if (message.user !== userId) WPOverlay.incrementUnread();
+    // Relay to side panel (it can't access content script globals)
+    notifyBackground({ action: 'chat-message', payload: message });
   }
 
   function onTyping(user, typing) {
@@ -327,24 +299,23 @@
     WPOverlay.updateTypingIndicator(typingUsers, userId, roomState);
   }
 
-  // --- Content link sharing (host tells server what they're watching) ---
+  // --- Content link sharing ---
   function shareContentLink() {
     const info = getCurrentContentInfo();
     if (!info) return;
     const meta = { id: info.id, type: info.type, name: getContentTitle() || info.id };
-    // If no name, fetch from Cinemeta
     if ((!meta.name || meta.name === meta.id) && meta.id?.startsWith('tt')) {
       fetch(`https://v3-cinemeta.strem.io/meta/${meta.type}/${meta.id}.json`, { signal: AbortSignal.timeout(3000) })
         .then(r => r.ok ? r.json() : null)
         .then(data => {
           if (data?.meta?.name) meta.name = data.meta.name;
-          wsSend({ type: 'room.updateStream', payload: { stream: { url: 'https://watchparty.mertd.me/sync' }, meta } });
+          WPWS.send({ type: 'room.updateStream', payload: { stream: { url: 'https://watchparty.mertd.me/sync' }, meta } });
         })
         .catch(() => {
-          wsSend({ type: 'room.updateStream', payload: { stream: { url: 'https://watchparty.mertd.me/sync' }, meta } });
+          WPWS.send({ type: 'room.updateStream', payload: { stream: { url: 'https://watchparty.mertd.me/sync' }, meta } });
         });
     } else {
-      wsSend({ type: 'room.updateStream', payload: { stream: { url: 'https://watchparty.mertd.me/sync' }, meta } });
+      WPWS.send({ type: 'room.updateStream', payload: { stream: { url: 'https://watchparty.mertd.me/sync' }, meta } });
     }
   }
 
@@ -353,7 +324,6 @@
     if (observer) return;
     let videoCheckTimer = null;
     observer = new MutationObserver(() => {
-      // Debounce — Stremio's SPA triggers many mutations per navigation
       if (videoCheckTimer) return;
       videoCheckTimer = setTimeout(() => {
         videoCheckTimer = null;
@@ -384,7 +354,7 @@
       isHost,
       onSync(state) {
         if (roomState && userId === roomState.owner) {
-          wsSend({ type: 'player.sync', payload: { paused: state.paused, buffering: state.buffering, time: state.time, speed: state.speed } });
+          WPWS.send({ type: 'player.sync', payload: { paused: state.paused, buffering: state.buffering, time: state.time, speed: state.speed } });
         }
       },
     });
@@ -414,84 +384,69 @@
     }
   }
 
-  // --- Handle messages from background/popup (relay commands) ---
+  // --- Action dispatch (from overlay events + background/popup messages) ---
+  document.addEventListener('wp-action', (e) => handleAction(e.detail));
   chrome.runtime.onMessage.addListener((message) => {
     if (message.type !== 'watchparty-ext') return;
-    switch (message.action) {
-      case 'create-room':
-      case 'join-room':
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          processPendingActions();
-        } else {
-          connectWs();
-        }
-        break;
-      case 'leave-room':
-        wsSend({ type: 'room.leave', payload: {} });
-        inRoom = false; roomState = null; isHost = false;
-        chrome.storage.local.remove('currentRoom');
-        WPSync.detach();
-        refreshOverlay();
-        persistState();
-        break;
-      case 'toggle-public':
-        wsSend({ type: 'room.updatePublic', payload: { public: message.public } });
-        break;
-      case 'update-room-settings':
-        wsSend({ type: 'room.updateSettings', payload: message.settings });
-        break;
-      case 'transfer-ownership':
-        wsSend({ type: 'room.updateOwnership', payload: { userId: message.targetUserId } });
-        break;
-      case 'update-username':
-        wsSend({ type: 'user.update', payload: { username: message.username } });
-        break;
-      case 'ready-check':
-        wsSend({ type: 'room.readyCheck', payload: { action: message.readyAction } });
-        break;
-      case 'send-bookmark':
-        wsSend({ type: 'room.bookmark', payload: { time: message.time, label: message.label } });
-        break;
-      case 'send-chat':
-        wsSend({ type: 'room.message', payload: { content: message.content } });
-        break;
-      case 'send-typing':
-        wsSend({ type: 'room.typing', payload: { typing: message.typing } });
-        break;
-      case 'send-reaction':
-        wsSend({ type: 'room.reaction', payload: { emoji: message.emoji } });
-        break;
-      case 'send-presence':
-        wsSend({ type: 'user.presence', payload: { status: message.status } });
-        break;
-      case 'send-playback-status':
-        wsSend({ type: 'user.playbackStatus', payload: { status: message.status } });
-        break;
-      case 'request-sync':
-        // Catch-up button: request fresh sync state from server
-        wsSend({ type: 'player.sync', payload: roomState?.player || { paused: true, time: 0, buffering: false } });
-        break;
-      case 'get-ws-status':
-        // Background or popup querying WS status
-        break;
-    }
+    handleAction(message);
   });
 
-  // --- Presence + visibility recovery ---
+  // Action handler map — replaces monolithic switch for testability and clarity
+  const actionHandlers = {
+    'create-room': () => { if (WPWS.isReady()) processPendingActions(); else WPWS.connect(); },
+    'join-room': () => { if (WPWS.isReady()) processPendingActions(); else WPWS.connect(); },
+    'leave-room': () => {
+      WPWS.send({ type: 'room.leave', payload: {} });
+      const leavingRoomId = roomState?.id;
+      inRoom = false; roomState = null; isHost = false;
+      if (extOk()) {
+        chrome.storage.local.remove('currentRoom');
+        // Clean up E2E crypto key for this room
+        if (leavingRoomId) chrome.storage.session.remove(`wpRoomKey:${leavingRoomId}`).catch(() => {});
+      }
+      WPSync.detach();
+      WPCrypto.clear();
+      document.getElementById('wp-catchup-btn')?.remove();
+      refreshOverlay();
+      persistState();
+    },
+    'toggle-public': (m) => WPWS.send({ type: 'room.updatePublic', payload: { public: m.public } }),
+    'update-room-settings': (m) => WPWS.send({ type: 'room.updateSettings', payload: m.settings }),
+    'transfer-ownership': (m) => WPWS.send({ type: 'room.updateOwnership', payload: { userId: m.targetUserId } }),
+    'update-username': (m) => WPWS.send({ type: 'user.update', payload: { username: m.username } }),
+    'ready-check': (m) => WPWS.send({ type: 'room.readyCheck', payload: { action: m.readyAction } }),
+    'send-bookmark': (m) => WPWS.send({ type: 'room.bookmark', payload: { time: m.time, label: m.label } }),
+    'send-chat': async (m) => {
+      const content = WPCrypto.isEnabled() ? await WPCrypto.encrypt(m.content) : m.content;
+      WPWS.send({ type: 'room.message', payload: { content } });
+    },
+    'send-typing': (m) => WPWS.send({ type: 'room.typing', payload: { typing: m.typing } }),
+    'send-reaction': (m) => WPWS.send({ type: 'room.reaction', payload: { emoji: m.emoji } }),
+    'send-presence': (m) => WPWS.send({ type: 'user.presence', payload: { status: m.status } }),
+    'send-playback-status': (m) => WPWS.send({ type: 'user.playbackStatus', payload: { status: m.status } }),
+    'request-sync': () => WPWS.send({ type: 'player.sync', payload: roomState?.player || { paused: true, time: 0, buffering: false } }),
+  };
+
+  function handleAction(message) {
+    const handler = actionHandlers[message.action];
+    if (handler) handler(message);
+  }
+
+  // --- Presence ---
   let presenceTimeout = null;
   document.addEventListener('visibilitychange', () => {
     if (!inRoom) return;
     clearTimeout(presenceTimeout);
     if (document.visibilityState === 'hidden') {
       presenceTimeout = setTimeout(() => {
-        wsSend({ type: 'user.presence', payload: { status: 'away' } });
+        WPWS.send({ type: 'user.presence', payload: { status: 'away' } });
       }, 10000);
     } else {
-      wsSend({ type: 'user.presence', payload: { status: 'active' } });
+      WPWS.send({ type: 'user.presence', payload: { status: 'active' } });
     }
   });
 
-  // --- Playback status: report video state every 3s ---
+  // --- Playback status reporting ---
   let lastPlaybackStatus = '';
   const playbackInterval = setInterval(() => {
     if (!inRoom) return;
@@ -501,11 +456,11 @@
     const status = vid.paused ? 'paused' : vid.readyState < 3 ? 'buffering' : 'playing';
     if (status !== lastPlaybackStatus) {
       lastPlaybackStatus = status;
-      wsSend({ type: 'user.playbackStatus', payload: { status } });
+      WPWS.send({ type: 'user.playbackStatus', payload: { status } });
     }
   }, 3000);
 
-  // Update stream info when host navigates to a different movie (SPA hashchange)
+  // --- Host stream update on SPA navigation ---
   let lastSharedContentId = null;
   window.addEventListener('hashchange', () => {
     if (inRoom && isHost) {
@@ -517,8 +472,17 @@
     }
   });
 
-  // Cleanup on page unload — don't close WS cleanly on navigation
-  // (server will detect the stale connection; the new page will reconnect and rejoin)
+  // --- Storage change listener for pending actions ---
+  if (extOk()) {
+    chrome.storage.onChanged.addListener((changes) => {
+      if (changes.pendingRoomCreate || changes.pendingRoomJoin) {
+        if (WPWS.isReady()) { processPendingActions(); }
+        else { WPWS.connect(); }
+      }
+    });
+  }
+
+  // --- Cleanup ---
   window.addEventListener('beforeunload', () => {
     clearInterval(playbackInterval);
     WPProfile.stop();
@@ -529,20 +493,16 @@
     WPOverlay.create();
     WPOverlay.initKeyboardShortcuts();
     WPOverlay.bindTypingIndicator(
-      () => { if (inRoom) wsSend({ type: 'room.typing', payload: { typing: true } }); },
-      () => { wsSend({ type: 'room.typing', payload: { typing: false } }); }
+      () => { if (inRoom) WPWS.send({ type: 'room.typing', payload: { typing: true } }); },
+      () => { WPWS.send({ type: 'room.typing', payload: { typing: false } }); }
     );
     startVideoObserver();
     WPProfile.start();
+    WPWS.connect();
 
-    // Connect WS immediately — content script doesn't suspend
-    connectWs();
-
-    // Handle pending room join from landing page
     chrome.storage.local.get('pendingRoomJoin', ({ pendingRoomJoin }) => {
       if (pendingRoomJoin) {
-        // The WS ready handler will pick this up and join automatically
-        // (pendingRoomJoin stays in storage until ready handler processes it)
+        // WS ready handler will pick this up and join automatically
       }
     });
   }

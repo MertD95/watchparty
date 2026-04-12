@@ -305,7 +305,7 @@
       <h1>Watch Together on <span>Stremio</span></h1>
       <p>Synchronized playback with friends. Each person streams locally — only play/pause/seek events are synced. Free and open-source.</p>
       <div class="cta-row">
-        <a href="#" class="btn btn-primary" id="install-btn">Install Extension</a>
+        <a href="https://chromewebstore.google.com/detail/watchparty-for-stremio" class="btn btn-primary" id="install-btn" target="_blank">Install Extension</a>
         <a href="https://web.stremio.com" class="btn btn-secondary" target="_blank">Open Stremio Web</a>
       </div>
     </div>
@@ -395,9 +395,55 @@
       loadPublicRooms();
     }
 
+    function renderRooms(data) {
+      const list = document.getElementById('rooms-list');
+      const empty = document.getElementById('rooms-empty');
+      if (!list || !empty) return;
+
+      if (!data.rooms || data.rooms.length === 0) {
+        empty.style.display = 'block';
+        // Clear any existing room cards
+        const cards = list.querySelectorAll('.room-card');
+        cards.forEach(c => c.remove());
+        return;
+      }
+
+      empty.style.display = 'none';
+      list.innerHTML = data.rooms.map(room => {
+        const mins = Math.floor((room.time || 0) / 60);
+        const secs = Math.floor((room.time || 0) % 60).toString().padStart(2, '0');
+        const statusIcon = room.paused ? '\u23F8' : '\u25B6';
+        const statusColor = room.paused ? '#f59e0b' : '#22c55e';
+        const isPublic = room.public;
+        const badge = isPublic
+          ? '<span class="room-badge room-badge-public">Public</span>'
+          : '<span class="room-badge room-badge-private">Private</span>';
+        const metaId = room.meta?.id || '';
+        const metaType = room.meta?.type || '';
+        const joinAction = isPublic
+          ? `joinRoom('${escapeAttr(room.id)}','${escapeAttr(metaId)}','${escapeAttr(metaType)}')`
+          : `showUuidModal()`;
+        return `
+          <div class="room-card">
+            ${room.meta.poster
+              ? `<img class="room-poster" src="${escapeAttr(room.meta.poster)}" alt="" />`
+              : `<div class="room-poster"></div>`}
+            <div class="room-info">
+              <div class="room-title">${escapeHtml(room.meta.name || 'Untitled')}</div>
+              <div class="room-meta">Hosted by ${escapeHtml(room.owner)}${room.meta.year ? ` &middot; ${room.meta.year}` : ''}</div>
+              <div class="room-meta"><span style="color:${statusColor}">${statusIcon}</span> ${mins}:${secs}${room.bookmarks ? ` &middot; \uD83D\uDCCC ${room.bookmarks}` : ''}</div>
+            </div>
+            ${badge}
+            <div class="room-users">${room.users} watching</div>
+            <button class="room-join-btn" onclick="${joinAction}">Join</button>
+          </div>
+        `;
+      }).join('');
+    }
+
     async function loadPublicRooms() {
       try {
-        const res = await fetch(ROOMS_API);
+        const res = await fetch(ROOMS_API, { signal: AbortSignal.timeout(5000) });
         if (!res.ok) return;
         const data = await res.json();
         const list = document.getElementById('rooms-list');
@@ -444,12 +490,49 @@
       }
     }
 
-    // Refresh rooms every 15 seconds
-    setInterval(loadPublicRooms, 15000);
+    // Live updates via SSE (Server-Sent Events) with polling fallback
+    const ROOMS_STREAM = ROOMS_API + '/stream';
+    let sseActive = false;
+    try {
+      const sse = new EventSource(ROOMS_STREAM);
+      sse.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          renderRooms(data);
+          sseActive = true;
+        } catch {}
+      };
+      sse.onerror = () => {
+        // SSE failed — fall back to polling
+        if (!sseActive) {
+          sse.close();
+          setInterval(loadPublicRooms, 10000);
+        }
+      };
+    } catch {
+      // EventSource not available — fall back to polling
+      setInterval(loadPublicRooms, 10000);
+    }
+    // Also poll as fallback for SSE reconnect gaps
+    setInterval(() => { if (!sseActive) loadPublicRooms(); }, 15000);
+
+    // Show a subtle "Live" badge next to the section title
+    const roomsTitle = document.querySelector('.rooms-section h2');
+    if (roomsTitle && !roomsTitle.querySelector('.live-badge')) {
+      const badge = document.createElement('span');
+      badge.className = 'live-badge';
+      badge.textContent = 'Live';
+      badge.style.cssText = 'display:inline-block;font-size:10px;background:#22c55e;color:#fff;padding:1px 6px;border-radius:4px;margin-left:8px;vertical-align:middle;font-weight:500;animation:pulse 2s infinite;';
+      roomsTitle.appendChild(badge);
+    }
 
     function joinRoom(roomId, metaId, metaType) {
-      // Tell the content script to store the room ID in chrome.storage
-      window.postMessage({ type: 'watchparty-join-room', roomId }, '*');
+      // Extract E2E encryption key from URL fragment if present
+      const hash = window.location.hash;
+      const keyMatch = hash.match(/[#&]key=([A-Za-z0-9_-]+)/);
+      const cryptoKey = keyMatch ? keyMatch[1] : undefined;
+      // Tell the content script to store the room ID (and crypto key) in chrome.storage
+      window.postMessage({ type: 'watchparty-join-room', roomId, cryptoKey }, location.origin);
       // Redirect to the movie page on Stremio Web (or home if no meta)
       if (metaId && metaId !== 'pending' && metaId !== 'unknown' && metaType) {
         window.location.href = `https://web.stremio.com/#/detail/${encodeURIComponent(metaType)}/${encodeURIComponent(metaId)}`;

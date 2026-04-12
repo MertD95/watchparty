@@ -55,11 +55,17 @@ function waitFor(ws, type, timeout = TIMEOUT) {
     ws._ready = null;
     return Promise.resolve(msg);
   }
+  // Support matching multiple types (e.g., 'sync' also matches delta events like 'playerSync')
+  const types = Array.isArray(type) ? type : [type];
+  // For 'sync', also accept delta sync events (playerSync, presenceUpdate, etc.)
+  if (types.includes('sync')) {
+    types.push('playerSync', 'presenceUpdate', 'playbackStatusUpdate', 'settingsUpdate');
+  }
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`Timeout waiting for "${type}"`)), timeout);
     const handler = (data) => {
       const msg = JSON.parse(data.toString());
-      if (msg.type === type) {
+      if (types.includes(msg.type)) {
         clearTimeout(timer);
         ws.off('message', handler);
         resolve(msg);
@@ -609,17 +615,15 @@ async function testPresenceIndicators() {
   await setUsername(ws2, 'Bob');
   await joinRoom(ws2, room.payload.id);
 
-  // Bob goes AFK
+  // Bob goes AFK — server sends presenceUpdate delta
   send(ws2, { type: 'user.presence', payload: { status: 'away' } });
   const sync = await waitFor(ws1, 'sync');
-  const bob = sync.payload.users.find(u => u.name === 'Bob');
-  assert(bob?.status === 'away', 'Bob shows as away');
+  assert(sync.payload.userId && sync.payload.status === 'away', 'Bob shows as away');
 
   // Bob comes back
   send(ws2, { type: 'user.presence', payload: { status: 'active' } });
   const sync2 = await waitFor(ws1, 'sync');
-  const bob2 = sync2.payload.users.find(u => u.name === 'Bob');
-  assert(bob2?.status === 'active', 'Bob shows as active again');
+  assert(sync2.payload.userId && sync2.payload.status === 'active', 'Bob shows as active again');
 
   ws1.close(); ws2.close();
 }
@@ -636,23 +640,20 @@ async function testPlaybackStatus() {
   await setUsername(ws2, 'Bob');
   await joinRoom(ws2, room.payload.id);
 
-  // Bob reports playing
+  // Bob reports playing — server sends playbackStatusUpdate delta
   send(ws2, { type: 'user.playbackStatus', payload: { status: 'playing' } });
   const sync = await waitFor(ws1, 'sync');
-  const bob = sync.payload.users.find(u => u.name === 'Bob');
-  assert(bob?.playbackStatus === 'playing', 'Bob shows as playing');
+  assert(sync.payload.userId && sync.payload.status === 'playing', 'Bob shows as playing');
 
   // Bob reports buffering
   send(ws2, { type: 'user.playbackStatus', payload: { status: 'buffering' } });
   const sync2 = await waitFor(ws1, 'sync');
-  const bob2 = sync2.payload.users.find(u => u.name === 'Bob');
-  assert(bob2?.playbackStatus === 'buffering', 'Bob shows as buffering');
+  assert(sync2.payload.status === 'buffering', 'Bob shows as buffering');
 
   // Bob reports paused
   send(ws2, { type: 'user.playbackStatus', payload: { status: 'paused' } });
   const sync3 = await waitFor(ws1, 'sync');
-  const bob3 = sync3.payload.users.find(u => u.name === 'Bob');
-  assert(bob3?.playbackStatus === 'paused', 'Bob shows as paused');
+  assert(sync3.payload.status === 'paused', 'Bob shows as paused');
 
   ws1.close(); ws2.close();
 }
@@ -905,7 +906,7 @@ async function testThreeUserSync() {
   const ws3 = await connect();
   await waitFor(ws3, 'ready');
   await setUsername(ws3, 'Charlie');
-  await joinRoom(ws3, room.payload.id);
+  const joinSync = await joinRoom(ws3, room.payload.id);
   await new Promise(r => setTimeout(r, 300));
 
   // Alice (host) plays at 100s
@@ -916,7 +917,8 @@ async function testThreeUserSync() {
 
   assert(sync2.payload.player.time === 100, 'Bob receives time=100');
   assert(sync3.payload.player.time === 100, 'Charlie receives time=100');
-  assert(sync2.payload.users.length === 3, 'Room has 3 users');
+  // Check user count from the join event (full room sync), not the player delta
+  assert(joinSync.payload.users.length === 3, 'Room has 3 users');
 
   ws1.close(); ws2.close(); ws3.close();
 }

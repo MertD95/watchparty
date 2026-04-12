@@ -7,7 +7,9 @@
   "permissions": [
     "declarativeNetRequest",
     "declarativeNetRequestFeedback",
-    "storage"
+    "storage",
+    "scripting",
+    "sidePanel"
   ],
   "host_permissions": [
     "http://localhost:11470/*",
@@ -32,7 +34,7 @@
         "https://web.strem.io/*",
         "https://app.strem.io/*"
       ],
-      "js": ["stremio-sync.js", "stremio-overlay.js", "stremio-profile.js", "stremio-content.js"],
+      "js": ["utils.js", "stremio-sync.js", "stremio-ws.js", "stremio-crypto.js", "stremio-overlay-theme.js", "stremio-overlay-modals.js", "stremio-overlay.js", "stremio-profile.js", "stremio-content.js"],
       "css": ["stremio-overlay.css"],
       "run_at": "document_end"
     },
@@ -56,6 +58,12 @@
       ]
     }
   ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",

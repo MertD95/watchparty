@@ -1,5 +1,29 @@
 const $ = (id) => document.getElementById(id);
 
+// --- Reactive room state watcher (replaces polling) ---
+function waitForRoomState(onRoom, onTimeout) {
+  let resolved = false;
+  const timeoutId = setTimeout(() => {
+    if (resolved) return;
+    resolved = true;
+    chrome.storage.onChanged.removeListener(listener);
+    onTimeout();
+  }, 12000);
+
+  function listener(changes) {
+    if (resolved) return;
+    if (changes.wpRoomState?.newValue) {
+      resolved = true;
+      clearTimeout(timeoutId);
+      chrome.storage.onChanged.removeListener(listener);
+      chrome.storage.local.get('wpUserId', ({ wpUserId }) => {
+        onRoom(changes.wpRoomState.newValue, wpUserId);
+      });
+    }
+  }
+  chrome.storage.onChanged.addListener(listener);
+}
+
 // --- Init ---
 
 chrome.runtime.sendMessage(
@@ -8,7 +32,7 @@ chrome.runtime.sendMessage(
     if (!response) return;
 
     // Version
-    $('version').textContent = `v${chrome.runtime.getManifest().version}`;
+    $('version').textContent = `v${chrome.runtime.getManifest().version} [${response.bgVersion || 'OLD'}]`;
 
     // Stremio status
     if (response.stremioRunning) {
@@ -116,7 +140,13 @@ $('btn-create').addEventListener('click', () => {
   chrome.storage.local.set({ wpUsername: username });
 
   const isPublic = $('public-check')?.checked || false;
-  const roomName = $('room-name-input')?.value.trim().toLowerCase().replace(/[^a-z0-9-]/g, '') || undefined;
+  let roomName = $('room-name-input')?.value.trim().toLowerCase().replace(/[^a-z0-9-]/g, '') || undefined;
+  // Validate room name length after sanitization (server requires 3-30 chars)
+  if (roomName && roomName.length < 3) {
+    $('create-error').textContent = 'Room name must be at least 3 characters (letters, numbers, hyphens)';
+    $('create-error').classList.remove('hidden');
+    return;
+  }
 
   chrome.runtime.sendMessage({
     type: 'watchparty-ext',
@@ -128,32 +158,19 @@ $('btn-create').addEventListener('click', () => {
     roomName,
   });
 
-  // Close popup and wait for room-joined event
-  // The content script will update the overlay; popup will show room on next open
   $('btn-create').disabled = true;
   $('btn-create').textContent = 'Creating...';
 
-  // Poll for room state — retry up to 8 times (production WS may need time to connect)
-  let attempts = 0;
-  function pollForRoom() {
-    attempts++;
-    chrome.runtime.sendMessage(
-      { type: 'watchparty-ext', action: 'get-status' },
-      (response) => {
-        if (response?.room) {
-          showRoomView(response.room, response.userId);
-        } else if (attempts < 8) {
-          setTimeout(pollForRoom, 1500);
-        } else {
-          $('btn-create').disabled = false;
-          $('btn-create').textContent = 'Create Room';
-          $('create-error').textContent = 'Failed to create room. Make sure web.stremio.com is open.';
-          $('create-error').classList.remove('hidden');
-        }
-      }
-    );
-  }
-  setTimeout(pollForRoom, 2000);
+  // Listen for room state change reactively instead of polling
+  waitForRoomState(
+    (room, userId) => showRoomView(room, userId),
+    () => {
+      $('btn-create').disabled = false;
+      $('btn-create').textContent = 'Create Room';
+      $('create-error').textContent = 'Failed to create room. Make sure web.stremio.com is open.';
+      $('create-error').classList.remove('hidden');
+    }
+  );
 });
 
 $('btn-join').addEventListener('click', () => {
@@ -175,26 +192,15 @@ $('btn-join').addEventListener('click', () => {
   $('btn-join').disabled = true;
   $('btn-join').textContent = 'Joining...';
 
-  let joinAttempts = 0;
-  function pollForJoin() {
-    joinAttempts++;
-    chrome.runtime.sendMessage(
-      { type: 'watchparty-ext', action: 'get-status' },
-      (response) => {
-        if (response?.room) {
-          showRoomView(response.room, response.userId);
-        } else if (joinAttempts < 8) {
-          setTimeout(pollForJoin, 1500);
-        } else {
-          $('btn-join').disabled = false;
-          $('btn-join').textContent = 'Join Room';
-          $('join-error').textContent = 'Room not found. Make sure web.stremio.com is open.';
-          $('join-error').classList.remove('hidden');
-        }
-      }
-    );
-  }
-  setTimeout(pollForJoin, 2000);
+  waitForRoomState(
+    (room, userId) => showRoomView(room, userId),
+    () => {
+      $('btn-join').disabled = false;
+      $('btn-join').textContent = 'Join Room';
+      $('join-error').textContent = 'Room not found. Make sure web.stremio.com is open.';
+      $('join-error').classList.remove('hidden');
+    }
+  );
 });
 
 $('btn-leave').addEventListener('click', () => {
@@ -263,8 +269,5 @@ document.addEventListener('click', (e) => {
   }
 });
 
-function escapeHtml(str) {
-  const div = document.createElement('div');
-  div.textContent = str;
-  return div.innerHTML;
-}
+// escapeHtml provided by WPUtils (loaded via popup.html)
+function escapeHtml(str) { return WPUtils.escapeHtml(str); }

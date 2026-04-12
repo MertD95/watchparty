@@ -73,13 +73,18 @@ function extractSwitchCases(source, label, switchVar) {
 function extractSentActions(source, label) {
   const actions = new Set();
   // Pattern 1: action: 'foo'  (inside sendMessage object literal)
-  const re = /chrome\.runtime\.sendMessage\s*\(\s*\{[^}]*action:\s*'([^']+)'/g;
+  const re1 = /chrome\.runtime\.sendMessage\s*\(\s*\{[^}]*action:\s*'([^']+)'/g;
   let m;
-  while ((m = re.exec(source)) !== null) {
+  while ((m = re1.exec(source)) !== null) {
+    actions.add(m[1]);
+  }
+  // Pattern 2: CustomEvent('wp-action', { detail: { action: 'foo' } })  (direct DOM events)
+  const re2 = /CustomEvent\s*\(\s*'wp-action'\s*,\s*\{\s*detail:\s*\{[^}]*action:\s*'([^']+)'/g;
+  while ((m = re2.exec(source)) !== null) {
     actions.add(m[1]);
   }
   if (actions.size === 0) {
-    console.error(`  WARNING: No sendMessage actions found in ${label} — parser may be broken`);
+    console.error(`  WARNING: No actions found in ${label} — parser may be broken`);
   }
   return actions;
 }
@@ -124,10 +129,11 @@ const CONTENT_INTERNAL_ACTIONS = new Set([
   'stremio-status',     // Background broadcasts Stremio detection changes
 ]);
 
-// ── Test 1: Every overlay action has a case in background.js ──
-console.log('\n── Test 1: Overlay actions → background.js ──');
+// ── Test 1: Every overlay action has a case in stremio-content.js ──
+// Overlay now uses direct DOM events (wp-action) to content script, not background.js
+console.log('\n── Test 1: Overlay actions → stremio-content.js ──');
 for (const action of overlaySends) {
-  ok(bgCases.has(action), `overlay sends '${action}' → background.js has case`);
+  ok(contentCases.has(action), `overlay sends '${action}' → stremio-content.js has case`);
 }
 
 // ── Test 2: Every popup action has a case in background.js ──
@@ -157,6 +163,9 @@ const BG_NON_UI_SENDERS = new Set([
   'send-presence',         // content.js programmatic (visibility change)
   'send-playback-status',  // content.js programmatic (periodic status)
   'update-username',       // content.js processPendingActions (username from storage)
+  // Overlay actions now use DOM events directly — background.js cases kept for popup relay
+  'send-chat', 'send-typing', 'send-reaction', 'send-bookmark',
+  'ready-check', 'transfer-ownership', 'request-sync',
 ]);
 for (const action of bgCases) {
   if (BG_NON_UI_SENDERS.has(action)) continue;

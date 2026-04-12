@@ -1,0 +1,63 @@
+// WatchParty — Theme Module
+// Manages accent color theming via CSS custom properties and chrome.storage.
+// Exposes: WPTheme global used by stremio-overlay.js
+
+const WPTheme = (() => {
+  'use strict';
+
+  function hexToRgb(hex) {
+    const r = parseInt(hex.slice(1, 3), 16);
+    const g = parseInt(hex.slice(3, 5), 16);
+    const b = parseInt(hex.slice(5, 7), 16);
+    return `${r},${g},${b}`;
+  }
+
+  function darkenHex(hex, amount) {
+    const r = Math.max(0, parseInt(hex.slice(1, 3), 16) - amount);
+    const g = Math.max(0, parseInt(hex.slice(3, 5), 16) - amount);
+    const b = Math.max(0, parseInt(hex.slice(5, 7), 16) - amount);
+    return `#${r.toString(16).padStart(2,'0')}${g.toString(16).padStart(2,'0')}${b.toString(16).padStart(2,'0')}`;
+  }
+
+  function lightenHex(hex, amount) {
+    const r = Math.min(255, parseInt(hex.slice(1, 3), 16) + amount);
+    const g = Math.min(255, parseInt(hex.slice(3, 5), 16) + amount);
+    const b = Math.min(255, parseInt(hex.slice(5, 7), 16) + amount);
+    return `#${r.toString(16).padStart(2,'0')}${g.toString(16).padStart(2,'0')}${b.toString(16).padStart(2,'0')}`;
+  }
+
+  function apply() {
+    chrome.storage?.local?.get(['wpAccentColor', 'wpCompactChat'], (r) => {
+      const accent = r.wpAccentColor || '#6366f1';
+      const sidebar = document.getElementById('wp-sidebar');
+      if (sidebar) {
+        sidebar.style.setProperty('--wp-accent', accent);
+        sidebar.style.setProperty('--wp-accent-hover', darkenHex(accent, 14));
+        sidebar.style.setProperty('--wp-accent-light', lightenHex(accent, 26));
+        sidebar.style.setProperty('--wp-accent-rgb', hexToRgb(accent));
+      }
+      // Update toggle button in Shadow DOM (closed — use stored ref)
+      const toggleHost = document.getElementById('wp-toggle-host');
+      const btn = toggleHost?._wpShadowBtn;
+      if (btn) {
+        const rgb = hexToRgb(accent);
+        btn.style.background = `rgba(${rgb},0.85)`;
+        btn.onmouseenter = () => { btn.style.background = `rgba(${rgb},1)`; };
+        btn.onmouseleave = () => { btn.style.background = `rgba(${rgb},0.85)`; };
+      }
+      const overlay = document.getElementById('wp-overlay');
+      if (overlay) {
+        overlay.classList.toggle('wp-compact', !!r.wpCompactChat);
+      }
+    });
+  }
+
+  function startListening() {
+    apply();
+    chrome.storage?.onChanged?.addListener((changes) => {
+      if (changes.wpAccentColor || changes.wpCompactChat) apply();
+    });
+  }
+
+  return { apply, startListening, hexToRgb, darkenHex, lightenHex };
+})();

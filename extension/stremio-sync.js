@@ -6,22 +6,25 @@ const WPSync = (() => {
   'use strict';
 
   // --- Config ---
-  const SOFT_DRIFT_MIN = 0.3;      // Start soft correction above 300ms
-  const SOFT_DRIFT_MAX = 3.0;      // Hard seek above 3s
-  const SOFT_RATE_SLOW = 0.95;     // When ahead of host
-  const SOFT_RATE_FAST = 1.05;     // When behind host
-  const SOFT_DRIFT_RESET = 0.1;    // Resume normal speed within 100ms
+  const SOFT_DRIFT_ENTER = 0.35;    // Enter soft correction above 350ms (hysteresis: enter > exit)
+  const SOFT_DRIFT_EXIT = 0.05;     // Exit soft correction below 50ms
+  const SOFT_DRIFT_MAX = 3.0;       // Hard seek above 3s
+  const CORRECTION_GAIN = 0.03;     // Proportional gain: 3% speed adjustment per second of drift
+  const CORRECTION_MAX = 0.10;      // Clamp at ±10% speed (0.9x–1.1x) to stay imperceptible
   const SYNC_REPORT_INTERVAL = 500; // Report state every 500ms
-  const SEEK_COOLDOWN = 1500;       // Don't re-seek within 1.5s
+  const SEEK_COOLDOWN = 2000;       // Don't re-seek within 2s (was 1.5s — too tight for slow connections)
 
   let video = null;
   let isHost = false;
   let isSyncing = false; // Echo prevention flag
+  let seekInProgress = false; // Separate flag for hard-seek race condition prevention
   let lastReportTime = 0;
   let lastSeekTime = 0;
   let hostSpeed = 1;
   let correcting = false;
   let lastDrift = 0;
+  let clockOffset = 0; // ms offset from Cristian's algorithm
+  let lastRemoteSeekTime = 0; // Prevent seek cascades: ignore remote seeks within cooldown of a local seek
   let onSyncOut = null; // Callback: (state) => void
 
   // --- Public API ---
@@ -49,16 +52,27 @@ const WPSync = (() => {
     video = null;
     onSyncOut = null;
     correcting = false;
+    seekInProgress = false;
+    isSyncing = false;
     lastDrift = 0;
+    lastRemoteSeekTime = 0;
   }
 
   function setHost(val) { isHost = val; }
   function getLastDrift() { return lastDrift; }
   function isAttached() { return video !== null; }
+  function setClockOffset(offset) { clockOffset = offset; }
 
   function applyRemote(player) {
     if (!video || isHost) return;
+    // Don't apply corrections while a hard seek is in-flight
+    if (seekInProgress) return;
+
     hostSpeed = (typeof player.speed === 'number' && isFinite(player.speed) && player.speed >= 0.25 && player.speed <= 4) ? player.speed : 1;
+
+    // Skip drift correction if either side is buffering
+    const peerBuffering = video.readyState < 3;
+    const hostBuffering = player.buffering ?? false;
 
     // Apply pause/play
     // pause() fires 'pause' synchronously — safe to reset flag immediately
@@ -67,28 +81,53 @@ const WPSync = (() => {
       isSyncing = true; video.pause(); isSyncing = false;
     } else if (!player.paused && video.paused) {
       isSyncing = true;
-      video.play().then(() => { isSyncing = false; }).catch(() => { isSyncing = false; });
+      video.play().then(() => { isSyncing = false; }).catch((e) => { isSyncing = false; if (e.name !== 'AbortError') console.warn('[WPSync] play() failed:', e.message); });
     }
 
-    // Drift correction
-    const drift = player.time - video.currentTime;
+    // Drift correction — compensate for network latency using clockOffset
+    // clockOffset is (serverTime - clientTime - rtt/2) from Cristian's algorithm.
+    // It represents how far the server clock is ahead of ours, already adjusted for one-way latency.
+    // Convert ms to seconds (no halving — the offset is already one-way).
+    const latencyCompensation = clockOffset / 1000;
+    const drift = (player.time + latencyCompensation) - video.currentTime;
     lastDrift = drift;
     const now = Date.now();
 
+    // Don't correct drift while either side is buffering — causes cascading seeks
+    if (peerBuffering || hostBuffering) return;
+
     if (Math.abs(drift) > SOFT_DRIFT_MAX) {
-      if (now - lastSeekTime > SEEK_COOLDOWN) {
+      if (now - lastSeekTime > SEEK_COOLDOWN && now - lastRemoteSeekTime > SEEK_COOLDOWN) {
+        seekInProgress = true;
         isSyncing = true;
-        video.currentTime = player.time;
+        video.currentTime = player.time + latencyCompensation;
         lastSeekTime = now;
-        // seeked event fires asynchronously; use one-shot listener to clear flag
-        video.addEventListener('seeked', () => { isSyncing = false; }, { once: true });
+        lastRemoteSeekTime = now;
+        // seeked event fires asynchronously; clear both flags when done
+        video.addEventListener('seeked', () => {
+          isSyncing = false;
+          seekInProgress = false;
+        }, { once: true });
+        // Safety: if seeked never fires (e.g., video element destroyed), clear flags after timeout
+        setTimeout(() => {
+          if (seekInProgress) { seekInProgress = false; isSyncing = false; }
+        }, 3000);
         correcting = false;
         video.playbackRate = hostSpeed;
       }
-    } else if (Math.abs(drift) > SOFT_DRIFT_MIN) {
+    } else if (!correcting && Math.abs(drift) > SOFT_DRIFT_ENTER) {
+      // Hysteresis: only ENTER correction when drift exceeds the higher threshold
       correcting = true;
-      video.playbackRate = drift > 0 ? SOFT_RATE_FAST : SOFT_RATE_SLOW;
-    } else if (correcting && Math.abs(drift) < SOFT_DRIFT_RESET) {
+      // Proportional: correction strength scales with drift magnitude
+      // 0.5s drift → 1.5% adjustment, 2s drift → 6%, 3s drift → 9% (clamped at 10%)
+      const correction = Math.max(-CORRECTION_MAX, Math.min(CORRECTION_MAX, drift * CORRECTION_GAIN));
+      video.playbackRate = hostSpeed + correction;
+    } else if (correcting && Math.abs(drift) > SOFT_DRIFT_EXIT) {
+      // Continue correcting — proportional rate tracks drift magnitude
+      const correction = Math.max(-CORRECTION_MAX, Math.min(CORRECTION_MAX, drift * CORRECTION_GAIN));
+      video.playbackRate = hostSpeed + correction;
+    } else if (correcting && Math.abs(drift) <= SOFT_DRIFT_EXIT) {
+      // Hysteresis: only EXIT correction when drift drops below the lower threshold
       correcting = false;
       video.playbackRate = hostSpeed;
     }
@@ -125,10 +164,17 @@ const WPSync = (() => {
     });
   }
 
+  // Reset correction state (called on WS reconnect to avoid lingering playbackRate)
+  function resetCorrection() {
+    correcting = false;
+    seekInProgress = false;
+    if (video && !isHost) video.playbackRate = hostSpeed;
+  }
+
   // --- Constants exposed for UI (sync indicator thresholds) ---
   return {
     attach, detach, setHost, applyRemote,
-    getLastDrift, isAttached,
-    SOFT_DRIFT_MIN, SOFT_DRIFT_MAX,
+    getLastDrift, isAttached, setClockOffset, resetCorrection,
+    SOFT_DRIFT_ENTER, SOFT_DRIFT_MAX,
   };
 })();

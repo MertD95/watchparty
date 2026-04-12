@@ -226,11 +226,11 @@
   <div id="view-lobby">
     <div class="section">
       <div class="section-title">Your Name</div>
-      <input type="text" id="username-input" placeholder="Enter your name" maxlength="25" />
+      <input type="text" id="username-input" placeholder="Enter your name" maxlength="25" aria-label="Username" />
     </div>
     <div class="section">
       <div class="section-title">Create a Room</div>
-      <input type="text" id="room-name-input" placeholder="Room name (optional, e.g. movie-night)" maxlength="30" style="margin-bottom:6px" />
+      <input type="text" id="room-name-input" placeholder="Room name (optional, e.g. movie-night)" maxlength="30" style="margin-bottom:6px" aria-label="Room name" />
       <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:#999;margin-bottom:8px;cursor:pointer">
         <input type="checkbox" id="public-check" style="accent-color:#6366f1" />
         <span>Public room (anyone can join)</span>
@@ -240,7 +240,7 @@
     </div>
     <div class="section">
       <div class="section-title">Join a Room</div>
-      <input type="text" id="room-id-input" placeholder="Paste room ID" />
+      <input type="text" id="room-id-input" placeholder="Paste room ID" aria-label="Room ID" />
       <button class="btn btn-secondary" id="btn-join">Join Room</button>
       <div class="error-text hidden" id="join-error"></div>
     </div>
@@ -306,6 +306,7 @@
     </div>
   </div>
 
+  <script src="utils.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

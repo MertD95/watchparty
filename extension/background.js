@@ -2,6 +2,7 @@
 // Manages: Stremio server detection, popup communication, profile sync, badge.
 // NOTE: WebSocket connection lives in stremio-content.js (not here) to avoid MV3 suspension issues.
 
+const BG_VERSION = '2025-04-12-fix-chat';
 const STREMIO_BASE = 'http://localhost:11470';
 const STREMIO_API = 'https://api.strem.io';
 const POLL_INTERVAL_MS = 5000;
@@ -22,9 +23,10 @@ async function checkStremio() {
     const res = await fetch(`${STREMIO_BASE}/stats.json`, { signal: AbortSignal.timeout(3000) });
     stremioRunning = res.ok;
     stats.lastLatencyMs = Date.now() - start;
-  } catch {
+  } catch (e) {
     stremioRunning = false;
     stats.lastLatencyMs = 0;
+    // Expected when Stremio is not running — only log at debug level
   }
   updateBadge();
   if (prev !== stremioRunning) {
@@ -55,7 +57,7 @@ async function fetchStremioSettings() {
         remoteHttps: data.values?.remoteHttps ?? null,
       };
     }
-  } catch { /* settings unavailable */ }
+  } catch (e) { console.warn('[WP-BG] Failed to fetch Stremio settings:', e.message); }
 }
 
 // ── Profile sync via Stremio API ──
@@ -63,7 +65,8 @@ async function fetchStremioSettings() {
 async function tryProfileSync() {
   const { stremioProfile } = await chrome.storage.local.get('stremioProfile');
   if (stremioProfile?.authKey && stremioProfile?.addons?.length > 0) return;
-  const { savedAuthKey } = await chrome.storage.local.get('savedAuthKey');
+  // Auth key stored in session storage (cleared on browser restart) for security
+  const { savedAuthKey } = await chrome.storage.session.get('savedAuthKey');
   const authKey = stremioProfile?.authKey || savedAuthKey;
   if (!authKey) return;
   try {
@@ -90,7 +93,7 @@ async function tryProfileSync() {
     };
     await chrome.storage.local.set({ stremioProfile: profile });
     broadcastToWatchParty({ action: 'profile-updated', data: profile });
-  } catch { /* API unavailable */ }
+  } catch (e) { console.warn('[WP-BG] Profile sync failed:', e.message); }
 }
 
 function updateBadge() {
@@ -117,6 +120,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           wsConnected: result.wpWsConnected ?? false,
           userId: result.wpUserId ?? null,
           room: result.wpRoomState ?? null,
+          bgVersion: BG_VERSION,
         });
       });
       return true;
@@ -124,6 +128,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // --- WS status update (from content script) ---
     case 'ws-status-changed':
       updateBadge();
+      return false;
+
+    // --- Chat relay to side panel (from content script → side panel) ---
+    case 'chat-message':
+      // Side panel listens via chrome.runtime.onMessage — just re-broadcast
+      // (sendMessage to all extension pages including side panel)
+      chrome.runtime.sendMessage({ type: 'watchparty-ext', action: 'chat-message', payload: message.payload }).catch(() => {});
+      return false;
+
+    // --- Bookmark relay to side panel ---
+    case 'bookmark':
+      chrome.runtime.sendMessage({ type: 'watchparty-ext', action: 'bookmark', payload: message.payload }).catch(() => {});
       return false;
 
     // --- Room commands (from popup → relay to content script or store for later) ---
@@ -174,7 +190,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     case 'save-auth-key':
       if (message.authKey) {
-        chrome.storage.local.set({ savedAuthKey: message.authKey });
+        chrome.storage.session.set({ savedAuthKey: message.authKey });
         tryProfileSync();
       }
       return false;
@@ -195,12 +211,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 async function forwardToStremioTab(message) {
   try {
     const tabs = await chrome.tabs.query({ url: STREMIO_WEB_URLS });
+    console.log(`[WP-BG] forwardToStremioTab: action=${message.action}, tabs found=${tabs.length}`);
     for (const tab of tabs) {
       if (tab.id != null) {
         chrome.tabs.sendMessage(tab.id, { type: 'watchparty-ext', ...message }).catch(() => {});
       }
     }
-  } catch { /* no Stremio tabs */ }
+  } catch (e) { console.warn('[WP-BG] forwardToStremioTab failed:', e.message); }
 }
 
 // ── Broadcast helpers ──
@@ -213,7 +230,7 @@ async function broadcastToStremioTabs(message) {
         chrome.tabs.sendMessage(tab.id, { type: 'watchparty-ext', ...message }).catch(() => {});
       }
     }
-  } catch { /* no matching tabs */ }
+  } catch (e) { console.warn('[WP-BG] broadcastToStremioTabs failed:', e.message); }
 }
 
 async function broadcastToWatchParty(message) {
@@ -224,7 +241,7 @@ async function broadcastToWatchParty(message) {
         chrome.tabs.sendMessage(tab.id, { type: 'watchparty-ext', ...message }).catch(() => {});
       }
     }
-  } catch { /* no matching tabs */ }
+  } catch (e) { console.warn('[WP-BG] broadcastToWatchParty failed:', e.message); }
 }
 
 // ── CORS proxy (for Stremio localhost) ──
@@ -264,6 +281,8 @@ function arrayBufferToBase64(buffer) {
 // ── Dev auto-reload ──
 
 function connectDevReload() {
+  let lastReloadTime = 0;
+  const RELOAD_COOLDOWN_MS = 2000; // Prevent Chrome's "reloaded too frequently" throttle
   (async () => {
     try {
       const res = await fetch('http://localhost:5111/reload');
@@ -275,6 +294,9 @@ function connectDevReload() {
         if (done) break;
         const text = decoder.decode(value, { stream: true });
         if (text.includes('data: reload')) {
+          const now = Date.now();
+          if (now - lastReloadTime < RELOAD_COOLDOWN_MS) continue; // Skip rapid reloads
+          lastReloadTime = now;
           chrome.runtime.reload();
           return;
         }
@@ -282,6 +304,54 @@ function connectDevReload() {
     } catch { /* dev server not running */ }
   })();
 }
+
+// ── Side Panel (Chrome 114+, optional alternative to injected overlay) ──
+
+if (chrome.sidePanel) {
+  // Enable side panel only on Stremio Web tabs
+  chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false }).catch(() => {});
+
+  // When user navigates to Stremio, enable the side panel for that tab
+  chrome.tabs?.onUpdated?.addListener((tabId, changeInfo, tab) => {
+    if (!tab.url) return;
+    const isStremio = STREMIO_WEB_URLS.some(pattern => {
+      const regex = new RegExp('^' + pattern.replace(/\*/g, '.*'));
+      return regex.test(tab.url);
+    });
+    chrome.sidePanel.setOptions({
+      tabId,
+      path: 'sidepanel.html',
+      enabled: isStremio,
+    }).catch(() => {});
+  });
+}
+
+// ── Extension update: re-inject content scripts into open Stremio tabs ──
+// After auto-update, old content scripts are orphaned (chrome.runtime is dead).
+// Re-injecting restores the sidebar without requiring a manual page refresh.
+
+chrome.runtime.onInstalled.addListener(async (details) => {
+  if (details.reason !== 'update') return;
+  console.log('[WP-BG] Extension updated — re-injecting content scripts');
+  try {
+    const tabs = await chrome.tabs.query({ url: STREMIO_WEB_URLS });
+    for (const tab of tabs) {
+      if (tab.id == null) continue;
+      chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: [
+          'utils.js', 'stremio-sync.js', 'stremio-ws.js', 'stremio-crypto.js',
+          'stremio-overlay-theme.js', 'stremio-overlay-modals.js',
+          'stremio-overlay.js', 'stremio-profile.js', 'stremio-content.js',
+        ],
+      }).catch(() => {}); // Tab may have navigated away or be restricted
+      chrome.scripting.insertCSS({
+        target: { tabId: tab.id },
+        files: ['stremio-overlay.css'],
+      }).catch(() => {});
+    }
+  } catch (e) { console.warn('[WP-BG] Re-injection failed:', e.message); }
+});
 
 // ── Start ──
 

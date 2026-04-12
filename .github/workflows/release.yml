@@ -1,0 +1,67 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  # Build and attach extension zip to GitHub Release
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      # Syntax check before packaging
+      - name: Syntax check
+        run: |
+          for f in extension/*.js; do
+            node -e "new Function(require('fs').readFileSync('$f','utf8'))" || exit 1
+          done
+
+      # Create extension zip (exclude tests, dev files)
+      - name: Package extension
+        run: |
+          cd extension
+          zip -r ../watchparty-extension.zip . \
+            -x "test/*" \
+            -x "*.mjs"
+
+      # Upload to GitHub Release
+      - name: Upload release artifact
+        uses: softprops/action-gh-release@v2
+        with:
+          files: watchparty-extension.zip
+
+  # Publish to Chrome Web Store (optional — requires CWS API credentials)
+  chrome-publish:
+    needs: package
+    runs-on: ubuntu-latest
+    if: ${{ secrets.CHROME_EXTENSION_ID != '' }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Package extension
+        run: |
+          cd extension
+          zip -r ../watchparty-extension.zip . \
+            -x "test/*" \
+            -x "*.mjs"
+
+      - name: Publish to Chrome Web Store
+        uses: mnao305/chrome-extension-upload@v5.0.0
+        with:
+          file-path: watchparty-extension.zip
+          extension-id: ${{ secrets.CHROME_EXTENSION_ID }}
+          client-id: ${{ secrets.CHROME_CLIENT_ID }}
+          client-secret: ${{ secrets.CHROME_CLIENT_SECRET }}
+          refresh-token: ${{ secrets.CHROME_REFRESH_TOKEN }}
+          publish: true
+    # Required secrets for Chrome Web Store publishing:
+    # CHROME_EXTENSION_ID — Your extension's CWS ID
+    # CHROME_CLIENT_ID — OAuth2 client ID from Google Cloud Console
+    # CHROME_CLIENT_SECRET — OAuth2 client secret
+    # CHROME_REFRESH_TOKEN — OAuth2 refresh token (generated via CWS API setup)

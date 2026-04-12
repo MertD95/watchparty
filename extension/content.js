@@ -4,10 +4,18 @@
 // Signal extension is installed (synchronous, before app JS runs)
 document.documentElement.setAttribute('data-watchparty-ext', '1');
 
+// ── Allowed origins for postMessage validation ──
+const ALLOWED_ORIGINS = new Set([
+  'https://watchparty.mertd.me',
+  'http://localhost:8080',
+  'http://localhost:8090',
+]);
+
 // ── Relay messages between WatchParty page and background service worker ──
 
 window.addEventListener('message', async (event) => {
   if (event.source !== window) return;
+  if (!ALLOWED_ORIGINS.has(event.origin)) return;
 
   if (event.data?.type === 'watchparty-ext-request' && event.data.action === 'get-status') {
     try {
@@ -19,13 +27,13 @@ window.addEventListener('message', async (event) => {
         type: 'watchparty-ext-response',
         requestId: event.data.requestId,
         data: response,
-      }, '*');
+      }, event.origin || location.origin);
     } catch {
       window.postMessage({
         type: 'watchparty-ext-response',
         requestId: event.data.requestId,
         data: { stremioRunning: false, profile: null },
-      }, '*');
+      }, event.origin || location.origin);
     }
   }
 });
@@ -38,7 +46,7 @@ async function sendCachedProfile() {
       type: 'watchparty-ext',
       action: 'get-status',
     });
-    window.postMessage({ type: 'watchparty-ext-profile', data: response }, '*');
+    window.postMessage({ type: 'watchparty-ext-profile', data: response }, location.origin);
   } catch { /* extension context invalidated */ }
 }
 
@@ -69,9 +77,9 @@ if (document.readyState === 'loading') {
 chrome.runtime.onMessage.addListener((message) => {
   if (message.type !== 'watchparty-ext') return;
   if (message.action === 'profile-updated') {
-    window.postMessage({ type: 'watchparty-ext-profile', data: { profile: message.data } }, '*');
+    window.postMessage({ type: 'watchparty-ext-profile', data: { profile: message.data } }, location.origin);
   } else if (message.action === 'stremio-status') {
-    window.postMessage({ type: 'watchparty-ext-profile', data: { stremioRunning: message.stremioRunning } }, '*');
+    window.postMessage({ type: 'watchparty-ext-profile', data: { stremioRunning: message.stremioRunning } }, location.origin);
   }
 });
 
@@ -79,8 +87,16 @@ chrome.runtime.onMessage.addListener((message) => {
 
 window.addEventListener('message', (event) => {
   if (event.source !== window) return;
+  if (!ALLOWED_ORIGINS.has(event.origin)) return;
   if (event.data?.type === 'watchparty-join-room' && event.data.roomId) {
     chrome.storage.local.set({ pendingRoomJoin: event.data.roomId });
+    // Store E2E encryption key in session storage (in-memory only, cleared on browser restart — more secure)
+    if (event.data.cryptoKey) {
+      chrome.storage.session.set({ [`wpRoomKey:${event.data.roomId}`]: event.data.cryptoKey }).catch(() => {
+        // Fallback to local storage if session storage unavailable (older browsers)
+        chrome.storage.local.set({ [`wpRoomKey:${event.data.roomId}`]: event.data.cryptoKey });
+      });
+    }
   }
   if (event.data?.type === 'watchparty-create-room' && event.data.username) {
     chrome.runtime.sendMessage({
