@@ -206,6 +206,134 @@ ok(contentCases.size >= 10,  `stremio-content.js has ${contentCases.size} cases 
 ok(overlaySends.size >= 5,   `stremio-overlay.js sends ${overlaySends.size} actions (expected >= 5)`);
 ok(popupSends.size >= 4,     `popup.js sends ${popupSends.size} actions (expected >= 4)`);
 
+// ══════════════════════════════════════════════════
+// Protocol Completeness Tests (wp-protocol.js)
+// ══════════════════════════════════════════════════
+
+console.log('\n=== Protocol Completeness Tests ===\n');
+
+const protocolSource = readSrc('wp-protocol.js');
+
+// ── Parse wp-protocol.js to extract C2S, S2C, and ERROR_CODE values ──
+
+function extractProtocolMap(source, mapName) {
+  const map = {};
+  const pattern = new RegExp(`const ${mapName} = Object\\.freeze\\(\\{([^}]+)\\}\\)`, 's');
+  const match = pattern.exec(source);
+  if (!match) { console.error(`  WARNING: Could not parse ${mapName} from wp-protocol.js`); return map; }
+  const re = /(\w+):\s*'([^']+)'/g;
+  let m;
+  while ((m = re.exec(match[1])) !== null) map[m[1]] = m[2];
+  return map;
+}
+
+const C2S_MAP = extractProtocolMap(protocolSource, 'C2S');
+const S2C_MAP = extractProtocolMap(protocolSource, 'S2C');
+const ERROR_CODE_MAP = extractProtocolMap(protocolSource, 'ERROR_CODE');
+
+// ── Extract WPProtocol.S2C.* case statements from processWsEvent switch ──
+
+function extractProtocolSwitchCases(source, prefix) {
+  const cases = new Set();
+  const re = new RegExp(`case\\s+WPProtocol\\.${prefix}\\.(\\w+)\\s*:`, 'g');
+  let m;
+  while ((m = re.exec(source)) !== null) cases.add(m[1]);
+  return cases;
+}
+
+// ── Extract WPProtocol.C2S.* from WPWS.send() or internal send() calls ──
+
+function extractProtocolSends(source) {
+  const sends = new Set();
+  // Match both WPWS.send({type: WPProtocol.C2S.X}) and send({type: WPProtocol.C2S.X})
+  const re = /(?:WPWS\.)?send\(\s*\{\s*type:\s*WPProtocol\.C2S\.(\w+)/g;
+  let m;
+  while ((m = re.exec(source)) !== null) sends.add(m[1]);
+  return sends;
+}
+
+// ── Extract WPProtocol.ERROR_CODE.* from error handler ──
+
+function extractProtocolErrorCodes(source) {
+  const codes = new Set();
+  const re = /WPProtocol\.ERROR_CODE\.(\w+)/g;
+  let m;
+  while ((m = re.exec(source)) !== null) codes.add(m[1]);
+  return codes;
+}
+
+const wsSource = readSrc('stremio-ws.js');
+const contentS2CCases = extractProtocolSwitchCases(contentSource, 'S2C');
+const contentC2SSends = extractProtocolSends(contentSource);
+const wsC2SSends = extractProtocolSends(wsSource);
+const allC2SSends = new Set([...contentC2SSends, ...wsC2SSends]);
+const contentErrorCodes = extractProtocolErrorCodes(contentSource);
+
+console.log('── Parsed protocol table ──');
+console.log(`  wp-protocol.js C2S types:    ${Object.keys(C2S_MAP).length}`);
+console.log(`  wp-protocol.js S2C types:    ${Object.keys(S2C_MAP).length}`);
+console.log(`  wp-protocol.js error codes:  ${Object.keys(ERROR_CODE_MAP).length}`);
+console.log(`  content.js S2C cases:        ${[...contentS2CCases].sort().join(', ')}`);
+console.log(`  content+ws C2S sends:        ${[...allC2SSends].sort().join(', ')}`);
+console.log(`  content.js error codes used: ${[...contentErrorCodes].sort().join(', ')}`);
+
+// ── Test 6: Every S2C type has a handler in processWsEvent ──
+// clock.pong is handled internally by stremio-ws.js (not the content script switch)
+const S2C_HANDLED_ELSEWHERE = new Set(['CLOCK_PONG']);
+
+console.log('\n── Test 6: Every S2C type has a handler ──');
+for (const [constName, value] of Object.entries(S2C_MAP)) {
+  if (S2C_HANDLED_ELSEWHERE.has(constName)) {
+    // Verify it's referenced in stremio-ws.js instead
+    ok(wsSource.includes(`WPProtocol.S2C.${constName}`), `S2C.${constName} ('${value}') handled in stremio-ws.js`);
+  } else {
+    ok(contentS2CCases.has(constName), `S2C.${constName} ('${value}') has case in processWsEvent`);
+  }
+}
+
+// ── Test 7: Every WPWS.send() uses a valid C2S constant ──
+console.log('\n── Test 7: Every send uses a valid C2S constant ──');
+for (const constName of allC2SSends) {
+  ok(constName in C2S_MAP, `C2S.${constName} used in send() exists in wp-protocol.js`);
+}
+
+// ── Test 8: Every C2S type is sent somewhere ──
+// Some types may only be used in specific flows; we allow a small exclusion list.
+const C2S_OPTIONAL = new Set(); // All C2S types should be sent by the extension
+console.log('\n── Test 8: Every C2S type is sent by the extension ──');
+for (const [constName, value] of Object.entries(C2S_MAP)) {
+  if (C2S_OPTIONAL.has(constName)) continue;
+  ok(allC2SSends.has(constName), `C2S.${constName} ('${value}') is used in a WPWS.send() call`);
+}
+
+// ── Test 9: Error handler covers key error codes ──
+const CRITICAL_ERROR_CODES = ['ROOM_NOT_FOUND', 'NOT_OWNER', 'COOLDOWN', 'VALIDATION_FAILED'];
+console.log('\n── Test 9: Error handler covers key error codes ──');
+for (const code of CRITICAL_ERROR_CODES) {
+  ok(contentErrorCodes.has(code), `ERROR_CODE.${code} handled in error case`);
+}
+
+// ── Test 10: No hardcoded message type strings remain in content/ws scripts ──
+console.log('\n── Test 10: No hardcoded WS message type strings ──');
+
+function findHardcodedTypes(source, label) {
+  const problems = [];
+  // Check for hardcoded type strings in WPWS.send calls
+  const sendRe = /WPWS\.send\(\s*\{\s*type:\s*'([^']+)'/g;
+  let m;
+  while ((m = sendRe.exec(source)) !== null) problems.push(m[1]);
+  // Check for hardcoded case strings in msg.type switch (but not action switch)
+  // Only flag if it looks like a WS message type (contains dot or is camelCase)
+  const caseRe = /case\s+'([a-z]+(?:\.[a-z]+|[A-Z][a-zA-Z]+))'\s*:/g;
+  while ((m = caseRe.exec(source)) !== null) problems.push(m[1]);
+  return problems;
+}
+
+const contentHardcoded = findHardcodedTypes(contentSource, 'stremio-content.js');
+const wsHardcoded = findHardcodedTypes(wsSource, 'stremio-ws.js');
+ok(contentHardcoded.length === 0, `stremio-content.js has no hardcoded WS message types${contentHardcoded.length ? ': ' + contentHardcoded.join(', ') : ''}`);
+ok(wsHardcoded.length === 0, `stremio-ws.js has no hardcoded WS message types${wsHardcoded.length ? ': ' + wsHardcoded.join(', ') : ''}`);
+
 // ── Results ──
 console.log('\n' + '='.repeat(50));
 console.log(`Results: ${passed} passed, ${failed} failed (${total} total)`);

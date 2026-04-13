@@ -89,12 +89,12 @@ window.addEventListener('message', (event) => {
   if (event.source !== window) return;
   if (!ALLOWED_ORIGINS.has(event.origin)) return;
   if (event.data?.type === 'watchparty-join-room' && event.data.roomId) {
-    chrome.storage.local.set({ pendingRoomJoin: event.data.roomId });
+    chrome.storage.local.set({ [WPConstants.STORAGE.PENDING_ROOM_JOIN]: event.data.roomId });
     // Store E2E encryption key in session storage (in-memory only, cleared on browser restart — more secure)
     if (event.data.cryptoKey) {
-      chrome.storage.session.set({ [`wpRoomKey:${event.data.roomId}`]: event.data.cryptoKey }).catch(() => {
+      chrome.storage.session.set({ [WPConstants.STORAGE.roomKey(event.data.roomId)]: event.data.cryptoKey }).catch(() => {
         // Fallback to local storage if session storage unavailable (older browsers)
-        chrome.storage.local.set({ [`wpRoomKey:${event.data.roomId}`]: event.data.cryptoKey });
+        chrome.storage.local.set({ [WPConstants.STORAGE.roomKey(event.data.roomId)]: event.data.cryptoKey });
       });
     }
   }

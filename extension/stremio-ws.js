@@ -58,7 +58,7 @@ const WPWS = (() => {
       // Keepalive ping every 25s
       clearInterval(keepAliveTimer);
       keepAliveTimer = setInterval(() => {
-        if (ws?.readyState === WebSocket.OPEN) send({ type: 'clock.ping', payload: { clientTime: Date.now() } });
+        if (ws?.readyState === WebSocket.OPEN) send({ type: WPProtocol.C2S.CLOCK_PING, payload: { clientTime: Date.now() } });
       }, KEEPALIVE_INTERVAL_MS);
       flushQueue();
       if (onConnectHandler) onConnectHandler();
@@ -70,7 +70,7 @@ const WPWS = (() => {
         // Track sequence number for reconnect replay
         if (typeof msg.seq === 'number') lastSeq = msg.seq;
         // Handle clock pong internally
-        if (msg.type === 'clock.pong') {
+        if (msg.type === WPProtocol.S2C.CLOCK_PONG) {
           handleClockPong(msg.payload);
           return;
         }
@@ -123,7 +123,7 @@ const WPWS = (() => {
     } else {
       // Queue state-changing messages so they're sent when WS reconnects.
       // Skip high-frequency messages (player.sync, clock.ping) to avoid queue bloat.
-      if (msg.type !== 'player.sync' && msg.type !== 'clock.ping') {
+      if (msg.type !== WPProtocol.C2S.PLAYER_SYNC && msg.type !== WPProtocol.C2S.CLOCK_PING) {
         sendQueue.push(msg);
       }
     }
@@ -155,7 +155,7 @@ const WPWS = (() => {
     for (const t of pendingPingTimers) clearTimeout(t);
     pendingPingTimers = [];
     for (let i = 0; i < CLOCK_SAMPLES; i++) {
-      pendingPingTimers.push(setTimeout(() => send({ type: 'clock.ping', payload: { clientTime: Date.now() } }), i * 200));
+      pendingPingTimers.push(setTimeout(() => send({ type: WPProtocol.C2S.CLOCK_PING, payload: { clientTime: Date.now() } }), i * 200));
     }
   }
 

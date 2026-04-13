@@ -12,12 +12,12 @@ function waitForRoomState(onRoom, onTimeout) {
 
   function listener(changes) {
     if (resolved) return;
-    if (changes.wpRoomState?.newValue) {
+    if (changes[WPConstants.STORAGE.ROOM_STATE]?.newValue) {
       resolved = true;
       clearTimeout(timeoutId);
       chrome.storage.onChanged.removeListener(listener);
-      chrome.storage.local.get('wpUserId', ({ wpUserId }) => {
-        onRoom(changes.wpRoomState.newValue, wpUserId);
+      chrome.storage.local.get(WPConstants.STORAGE.USER_ID, (result) => {
+        onRoom(changes[WPConstants.STORAGE.ROOM_STATE].newValue, result[WPConstants.STORAGE.USER_ID]);
       });
     }
   }
@@ -53,8 +53,8 @@ chrome.runtime.sendMessage(
     }
 
     // Load saved username
-    chrome.storage.local.get('wpUsername', ({ wpUsername }) => {
-      if (wpUsername) $('username-input').value = wpUsername;
+    chrome.storage.local.get(WPConstants.STORAGE.USERNAME, (result) => {
+      if (result[WPConstants.STORAGE.USERNAME]) $('username-input').value = result[WPConstants.STORAGE.USERNAME];
     });
 
     // Show room view if already in a room
@@ -122,8 +122,8 @@ function showRoomView(room, myUserId) {
   }
 
   // Load reaction sound preference
-  chrome.storage.local.get('wpReactionSound', ({ wpReactionSound }) => {
-    $('setting-reaction-sound').checked = wpReactionSound !== false;
+  chrome.storage.local.get(WPConstants.STORAGE.REACTION_SOUND, (result) => {
+    $('setting-reaction-sound').checked = result[WPConstants.STORAGE.REACTION_SOUND] !== false;
   });
 }
 
@@ -137,7 +137,7 @@ $('btn-create').addEventListener('click', () => {
   }
   $('create-error').classList.add('hidden');
 
-  chrome.storage.local.set({ wpUsername: username });
+  chrome.storage.local.set({ [WPConstants.STORAGE.USERNAME]: username });
 
   const isPublic = $('public-check')?.checked || false;
   let roomName = $('room-name-input')?.value.trim().toLowerCase().replace(/[^a-z0-9-]/g, '') || undefined;
@@ -180,7 +180,7 @@ $('btn-join').addEventListener('click', () => {
   if (!roomId) { $('room-id-input').focus(); return; }
 
   $('join-error').classList.add('hidden');
-  chrome.storage.local.set({ wpUsername: username });
+  chrome.storage.local.set({ [WPConstants.STORAGE.USERNAME]: username });
 
   chrome.runtime.sendMessage({
     type: 'watchparty-ext',
@@ -223,7 +223,7 @@ $('setting-autopause').addEventListener('change', (e) => {
 });
 
 $('setting-reaction-sound').addEventListener('change', (e) => {
-  chrome.storage.local.set({ wpReactionSound: e.target.checked });
+  chrome.storage.local.set({ [WPConstants.STORAGE.REACTION_SOUND]: e.target.checked });
 });
 
 // Theme: accent color
@@ -231,20 +231,20 @@ document.querySelectorAll('.color-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('.color-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
-    chrome.storage.local.set({ wpAccentColor: btn.dataset.color });
+    chrome.storage.local.set({ [WPConstants.STORAGE.ACCENT_COLOR]: btn.dataset.color });
   });
 });
 // Load saved accent
-chrome.storage.local.get('wpAccentColor', ({ wpAccentColor }) => {
-  const color = wpAccentColor || '#6366f1';
+chrome.storage.local.get(WPConstants.STORAGE.ACCENT_COLOR, (result) => {
+  const color = result[WPConstants.STORAGE.ACCENT_COLOR] || '#6366f1';
   document.querySelector(`.color-btn[data-color="${color}"]`)?.classList.add('active');
 });
 // Compact chat
 $('setting-compact').addEventListener('change', (e) => {
-  chrome.storage.local.set({ wpCompactChat: e.target.checked });
+  chrome.storage.local.set({ [WPConstants.STORAGE.COMPACT_CHAT]: e.target.checked });
 });
-chrome.storage.local.get('wpCompactChat', ({ wpCompactChat }) => {
-  $('setting-compact').checked = !!wpCompactChat;
+chrome.storage.local.get(WPConstants.STORAGE.COMPACT_CHAT, (result) => {
+  $('setting-compact').checked = !!result[WPConstants.STORAGE.COMPACT_CHAT];
 });
 
 // Share invite link

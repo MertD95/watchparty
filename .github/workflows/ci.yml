@@ -27,6 +27,10 @@ jobs:
           done
           echo "All files OK"
 
+      # Routing + protocol completeness test (no server needed)
+      - name: Routing test
+        run: npm run test:routing
+
       # E2E tests require the WS server — run them if server repo token is available
       - name: Checkout server
         if: ${{ env.SERVER_TOKEN != '' }}
@@ -35,6 +39,12 @@ jobs:
           repository: MertD95/watchparty-server
           token: ${{ env.SERVER_TOKEN }}
           path: watchparty-server
+        env:
+          SERVER_TOKEN: ${{ secrets.SERVER_REPO_TOKEN }}
+
+      - name: Verify wp-protocol.js is up-to-date
+        if: ${{ env.SERVER_TOKEN != '' }}
+        run: node watchparty-server/tools/gen-protocol.js --check
         env:
           SERVER_TOKEN: ${{ secrets.SERVER_REPO_TOKEN }}
 

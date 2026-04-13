@@ -13,9 +13,9 @@
 
   // --- State polling from storage ---
   function pollState() {
-    chrome.storage.local.get(['wpRoomState', 'wpUserId', 'wpWsConnected'], (result) => {
-      currentUserId = result.wpUserId;
-      currentRoomState = result.wpRoomState;
+    chrome.storage.local.get([WPConstants.STORAGE.ROOM_STATE, WPConstants.STORAGE.USER_ID, WPConstants.STORAGE.WS_CONNECTED], (result) => {
+      currentUserId = result[WPConstants.STORAGE.USER_ID];
+      currentRoomState = result[WPConstants.STORAGE.ROOM_STATE];
       render(result.wpRoomState, result.wpUserId);
     });
   }
@@ -182,9 +182,9 @@
 
   // --- Storage change listener for real-time updates ---
   chrome.storage.onChanged.addListener((changes) => {
-    if (changes.wpRoomState || changes.wpUserId || changes.wpWsConnected) {
-      if (changes.wpUserId) currentUserId = changes.wpUserId.newValue;
-      if (changes.wpRoomState) currentRoomState = changes.wpRoomState.newValue;
+    if (changes[WPConstants.STORAGE.ROOM_STATE] || changes[WPConstants.STORAGE.USER_ID] || changes[WPConstants.STORAGE.WS_CONNECTED]) {
+      if (changes[WPConstants.STORAGE.USER_ID]) currentUserId = changes[WPConstants.STORAGE.USER_ID].newValue;
+      if (changes[WPConstants.STORAGE.ROOM_STATE]) currentRoomState = changes[WPConstants.STORAGE.ROOM_STATE].newValue;
       render(currentRoomState, currentUserId);
     }
   });

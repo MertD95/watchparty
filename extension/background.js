@@ -63,10 +63,10 @@ async function fetchStremioSettings() {
 // ── Profile sync via Stremio API ──
 
 async function tryProfileSync() {
-  const { stremioProfile } = await chrome.storage.local.get('stremioProfile');
+  const { [WPConstants.STORAGE.STREMIO_PROFILE]: stremioProfile } = await chrome.storage.local.get(WPConstants.STORAGE.STREMIO_PROFILE);
   if (stremioProfile?.authKey && stremioProfile?.addons?.length > 0) return;
   // Auth key stored in session storage (cleared on browser restart) for security
-  const { savedAuthKey } = await chrome.storage.session.get('savedAuthKey');
+  const { [WPConstants.STORAGE.SAVED_AUTH_KEY]: savedAuthKey } = await chrome.storage.session.get(WPConstants.STORAGE.SAVED_AUTH_KEY);
   const authKey = stremioProfile?.authKey || savedAuthKey;
   if (!authKey) return;
   try {
@@ -91,7 +91,7 @@ async function tryProfileSync() {
       },
       readAt: Date.now(),
     };
-    await chrome.storage.local.set({ stremioProfile: profile });
+    await chrome.storage.local.set({ [WPConstants.STORAGE.STREMIO_PROFILE]: profile });
     broadcastToWatchParty({ action: 'profile-updated', data: profile });
   } catch (e) { console.warn('[WP-BG] Profile sync failed:', e.message); }
 }
@@ -111,15 +111,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   switch (message.action) {
     // --- Status queries (from popup) ---
     case 'get-status':
-      chrome.storage.local.get(['stremioProfile', 'wpRoomState', 'wpUserId', 'wpWsConnected'], (result) => {
+      chrome.storage.local.get([WPConstants.STORAGE.STREMIO_PROFILE, WPConstants.STORAGE.ROOM_STATE, WPConstants.STORAGE.USER_ID, WPConstants.STORAGE.WS_CONNECTED], (result) => {
         sendResponse({
           stremioRunning,
           stremioSettings,
-          profile: result.stremioProfile ?? null,
+          profile: result[WPConstants.STORAGE.STREMIO_PROFILE] ?? null,
           stats,
-          wsConnected: result.wpWsConnected ?? false,
-          userId: result.wpUserId ?? null,
-          room: result.wpRoomState ?? null,
+          wsConnected: result[WPConstants.STORAGE.WS_CONNECTED] ?? false,
+          userId: result[WPConstants.STORAGE.USER_ID] ?? null,
+          room: result[WPConstants.STORAGE.ROOM_STATE] ?? null,
           bgVersion: BG_VERSION,
         });
       });
@@ -147,7 +147,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       // Store intent so content script picks it up even if tab isn't open yet
       // Wait for storage write to complete before forwarding to content script
       chrome.storage.local.set({
-        pendingRoomCreate: {
+        [WPConstants.STORAGE.PENDING_ROOM_CREATE]: {
           username: message.username,
           meta: message.meta,
           stream: message.stream,
@@ -160,7 +160,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     case 'join-room':
       chrome.storage.local.set(
-        { pendingRoomJoin: message.roomId, wpUsername: message.username },
+        { [WPConstants.STORAGE.PENDING_ROOM_JOIN]: message.roomId, [WPConstants.STORAGE.USERNAME]: message.username },
         () => forwardToStremioTab(message)
       );
       sendResponse({ ok: true });
@@ -168,7 +168,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     case 'leave-room':
       // Storage fallback — content script picks this up even if tabs.sendMessage fails
-      chrome.storage.local.set({ pendingLeaveRoom: true }, () => forwardToStremioTab(message));
+      chrome.storage.local.set({ [WPConstants.STORAGE.PENDING_LEAVE_ROOM]: true }, () => forwardToStremioTab(message));
       sendResponse({ ok: true });
       return false;
 
@@ -176,7 +176,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'update-room-settings':
     case 'transfer-ownership':
       // Storage fallback — content script picks up pendingAction even if tabs.sendMessage fails
-      chrome.storage.local.set({ pendingAction: { action: message.action, ...message } }, () => forwardToStremioTab(message));
+      chrome.storage.local.set({ [WPConstants.STORAGE.PENDING_ACTION]: { action: message.action, ...message } }, () => forwardToStremioTab(message));
       sendResponse({ ok: true });
       return false;
 
@@ -200,7 +200,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     case 'save-auth-key':
       if (message.authKey) {
-        chrome.storage.session.set({ savedAuthKey: message.authKey });
+        chrome.storage.session.set({ [WPConstants.STORAGE.SAVED_AUTH_KEY]: message.authKey });
         tryProfileSync();
       }
       return false;
@@ -234,27 +234,19 @@ async function forwardToStremioTab(message) {
 
 // ── Broadcast helpers ──
 
-async function broadcastToStremioTabs(message) {
+async function broadcastToTabs(urlPatterns, message) {
   try {
-    const tabs = await chrome.tabs.query({ url: STREMIO_WEB_URLS });
+    const tabs = await chrome.tabs.query({ url: urlPatterns });
     for (const tab of tabs) {
       if (tab.id != null) {
         chrome.tabs.sendMessage(tab.id, { type: 'watchparty-ext', ...message }).catch(() => {});
       }
     }
-  } catch (e) { console.warn('[WP-BG] broadcastToStremioTabs failed:', e.message); }
+  } catch (e) { console.warn('[WP-BG] broadcastToTabs failed:', e.message); }
 }
 
-async function broadcastToWatchParty(message) {
-  try {
-    const tabs = await chrome.tabs.query({ url: WATCHPARTY_URLS });
-    for (const tab of tabs) {
-      if (tab.id != null) {
-        chrome.tabs.sendMessage(tab.id, { type: 'watchparty-ext', ...message }).catch(() => {});
-      }
-    }
-  } catch (e) { console.warn('[WP-BG] broadcastToWatchParty failed:', e.message); }
-}
+function broadcastToStremioTabs(message) { return broadcastToTabs(STREMIO_WEB_URLS, message); }
+function broadcastToWatchParty(message) { return broadcastToTabs(WATCHPARTY_URLS, message); }
 
 // ── CORS proxy (for Stremio localhost) ──
 
@@ -352,9 +344,10 @@ chrome.runtime.onInstalled.addListener(async (details) => {
       chrome.scripting.executeScript({
         target: { tabId: tab.id },
         files: [
-          'utils.js', 'stremio-sync.js', 'stremio-ws.js', 'stremio-crypto.js',
-          'stremio-overlay-theme.js', 'stremio-overlay-modals.js',
-          'stremio-overlay.js', 'stremio-profile.js', 'stremio-content.js',
+          'constants.js', 'wp-protocol.js', 'utils.js', 'stremio-sync.js',
+          'stremio-ws.js', 'stremio-crypto.js', 'stremio-overlay-theme.js',
+          'stremio-overlay-modals.js', 'stremio-overlay.js', 'stremio-profile.js',
+          'stremio-content.js',
         ],
       }).catch(() => {}); // Tab may have navigated away or be restricted
       chrome.scripting.insertCSS({

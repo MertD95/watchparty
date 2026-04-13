@@ -146,6 +146,33 @@ const WPOverlay = (() => {
 
   // escapeHtml() provided by WPUtils (destructured above)
 
+  // --- Sidebar visibility helpers (used 9+ times across file) ---
+  function isSidebarOpen() {
+    return !document.getElementById('wp-sidebar')?.classList.contains('wp-sidebar-hidden');
+  }
+
+  // --- Local echo dedup helpers ---
+  const localEchoSet = new Set();
+  function addLocalEcho(content) {
+    const key = content.substring(0, 300);
+    localEchoSet.add(key);
+    setTimeout(() => localEchoSet.delete(key), LOCAL_ECHO_TTL_MS);
+  }
+  function isLocalEcho(content) {
+    const key = content.substring(0, 300);
+    if (localEchoSet.has(key)) { localEchoSet.delete(key); return true; }
+    return false;
+  }
+
+  // --- DOM pruning helper ---
+  function pruneChildren(container, max = MAX_CHAT_MESSAGES) {
+    while (container.childElementCount > max && container.firstElementChild) {
+      container.removeChild(container.firstElementChild);
+    }
+  }
+
+  // --- Render cache (avoids storing state on DOM elements) ---
+  const renderCache = { lastStatusHtml: '', lastUsersKey: '' };
 
   // --- Push Stremio content when sidebar opens/closes ---
   function updateContentMargin(sidebarOpen) {
@@ -329,8 +356,7 @@ const WPOverlay = (() => {
 
     // Re-evaluate content margin on resize (handles switch between push and overlay mode)
     window.addEventListener('resize', () => {
-      const sidebarOpen = !document.getElementById('wp-sidebar')?.classList.contains('wp-sidebar-hidden');
-      updateContentMargin(sidebarOpen);
+      updateContentMargin(isSidebarOpen());
     });
 
     // Re-apply content margin on SPA navigation (Stremio rebuilds DOM, resets body.style.width)
@@ -339,8 +365,7 @@ const WPOverlay = (() => {
     function startMarginObserver() {
       if (marginObserver) return;
       marginObserver = new MutationObserver(() => {
-        const sidebarOpen = !document.getElementById('wp-sidebar')?.classList.contains('wp-sidebar-hidden');
-        if (sidebarOpen && !document.body.style.width?.includes(`${SIDEBAR_WIDTH}`)) {
+        if (isSidebarOpen() && !document.body.style.width?.includes(`${SIDEBAR_WIDTH}`)) {
           updateContentMargin(true);
         }
       });
@@ -349,8 +374,7 @@ const WPOverlay = (() => {
     startMarginObserver();
     // Also re-apply on hashchange as a fallback
     window.addEventListener('hashchange', () => {
-      const sidebarOpen = !document.getElementById('wp-sidebar')?.classList.contains('wp-sidebar-hidden');
-      if (sidebarOpen) updateContentMargin(true);
+      if (isSidebarOpen()) updateContentMargin(true);
     });
 
     // Theme: delegate to WPTheme module
@@ -491,9 +515,7 @@ const WPOverlay = (() => {
         div.classList.add('wp-chat-local');
         container.appendChild(div);
         container.scrollTop = container.scrollHeight;
-        const dedupKey = gifContent.substring(0, 300); // Truncate to match server's message limit
-        localEchoSet.add(dedupKey);
-        setTimeout(() => localEchoSet.delete(dedupKey), LOCAL_ECHO_TTL_MS);
+        addLocalEcho(gifContent);
       }
       $('wp-gif-picker').classList.add('wp-hidden-el');
       $('wp-chat-input')?.focus();
@@ -517,9 +539,6 @@ const WPOverlay = (() => {
       } catch { results.innerHTML = '<div style="text-align:center;color:#666;padding:16px">Search failed</div>'; }
     }
   }
-
-  // Track locally echoed messages to deduplicate server echoes
-  const localEchoSet = new Set();
 
   let lastSendTime = 0;
   function disableSendButton() {
@@ -551,12 +570,9 @@ const WPOverlay = (() => {
       );
       div.classList.add('wp-chat-local');
       container.appendChild(div);
-      while (container.childElementCount > MAX_CHAT_MESSAGES && container.firstElementChild) container.removeChild(container.firstElementChild);
+      pruneChildren(container);
       container.scrollTop = container.scrollHeight;
-      // Track for dedup (expire after 10s). Truncate to 300 chars to match server's limit.
-      const dedupKey = content.substring(0, 300);
-      localEchoSet.add(dedupKey);
-      setTimeout(() => localEchoSet.delete(dedupKey), LOCAL_ECHO_TTL_MS);
+      addLocalEcho(content);
     }
 
     document.dispatchEvent(new CustomEvent('wp-action', { detail: { action: 'send-chat', content } }));
@@ -576,8 +592,7 @@ const WPOverlay = (() => {
     if (!overlay) return;
 
     // Re-apply content margin if sidebar is open (Stremio SPA navigation can reset body width)
-    const sidebarOpen = !document.getElementById('wp-sidebar')?.classList.contains('wp-sidebar-hidden');
-    if (sidebarOpen) {
+    if (isSidebarOpen()) {
       updateContentMargin(true);
       // Ensure toggle button is hidden when sidebar is open (defensive — covers all code paths)
       const toggle = document.getElementById('wp-toggle-host');
@@ -621,9 +636,9 @@ const WPOverlay = (() => {
       }
       const actionsRow = actions ? `<div class="wp-action-row">${actions}</div>` : '';
       const newStatusHtml = `<span class="wp-status-line">${hostLabel}</span><span class="wp-status-line wp-muted">${videoStatus}</span>${actionsRow}`;
-      if (status._lastHtml !== newStatusHtml) {
+      if (renderCache.lastStatusHtml !== newStatusHtml) {
         status.innerHTML = newStatusHtml;
-        status._lastHtml = newStatusHtml;
+        renderCache.lastStatusHtml = newStatusHtml;
         // Bind action buttons (only when DOM was actually rebuilt)
         document.getElementById('wp-ready-check-btn')?.addEventListener('click', () => {
         document.dispatchEvent(new CustomEvent('wp-action', { detail: { action: 'ready-check', readyAction: 'initiate' } }));
@@ -643,7 +658,7 @@ const WPOverlay = (() => {
         appendBookmark({ user: cachedUserId, userName: cachedUsername, time, label: '' });
         showToast('Bookmark saved!', 1500);
       });
-      } // end if (status._lastHtml !== newStatusHtml)
+      } // end if (renderCache.lastStatusHtml !== newStatusHtml)
     }
 
     // Content link for peers — show what the host is watching
@@ -669,10 +684,10 @@ const WPOverlay = (() => {
     // Only rebuild if user list actually changed (avoids DOM churn on every 500ms playerSync)
     if (usersDiv && roomState.users) {
       const usersKey = roomState.users.map(u => `${u.id}:${u.status}:${u.playbackStatus}`).join(',') + `:${roomState.owner}:${isHost}`;
-      if (usersDiv._lastUsersKey === usersKey) {
+      if (renderCache.lastUsersKey === usersKey) {
         // No change — skip rebuild
       } else {
-      usersDiv._lastUsersKey = usersKey;
+      renderCache.lastUsersKey = usersKey;
       usersDiv.innerHTML = roomState.users.map(u => {
         const isOwner = u.id === roomState.owner;
         const isMe = u.id === userId;
@@ -743,8 +758,7 @@ const WPOverlay = (() => {
     }
 
     // Content-based dedup: replace local echo with server-confirmed version
-    if (msg.user === myUserId && localEchoSet.has(msg.content)) {
-      localEchoSet.delete(msg.content);
+    if (msg.user === myUserId && isLocalEcho(msg.content)) {
       const localMsg = container.querySelector('.wp-chat-local');
       if (localMsg) localMsg.remove();
     }
@@ -762,23 +776,22 @@ const WPOverlay = (() => {
     );
     container.appendChild(div);
     // Prune old DOM nodes to prevent memory buildup
-    while (container.childElementCount > MAX_CHAT_MESSAGES && container.firstElementChild) container.removeChild(container.firstElementChild);
+    pruneChildren(container);
     container.scrollTop = container.scrollHeight;
     // Notification sound if sidebar is hidden
-    const sidebar = document.getElementById('wp-sidebar');
-    if (sidebar?.classList.contains('wp-sidebar-hidden') && msg.user !== myUserId) {
+    if (!isSidebarOpen() && msg.user !== myUserId) {
       playNotifSound();
     }
   }
 
   // --- Reaction sound (toggleable) ---
   let reactionSoundEnabled = true;
-  chrome.storage?.local?.get('wpReactionSound', (r) => {
-    if (r && r.wpReactionSound === false) reactionSoundEnabled = false;
+  chrome.storage?.local?.get(WPConstants.STORAGE.REACTION_SOUND, (r) => {
+    if (r && r[WPConstants.STORAGE.REACTION_SOUND] === false) reactionSoundEnabled = false;
   });
   // Live-update when toggled from popup
   chrome.storage?.onChanged?.addListener((changes) => {
-    if (changes.wpReactionSound) reactionSoundEnabled = changes.wpReactionSound.newValue !== false;
+    if (changes[WPConstants.STORAGE.REACTION_SOUND]) reactionSoundEnabled = changes[WPConstants.STORAGE.REACTION_SOUND].newValue !== false;
   });
 
   function playReactionSound() {
@@ -872,7 +885,7 @@ const WPOverlay = (() => {
       }
     });
     container.appendChild(div);
-    while (container.childElementCount > MAX_CHAT_MESSAGES && container.firstElementChild) container.removeChild(container.firstElementChild);
+    pruneChildren(container);
     container.scrollTop = container.scrollHeight;
   }
 
@@ -918,8 +931,7 @@ const WPOverlay = (() => {
   let unreadCount = 0;
 
   function incrementUnread() {
-    const sidebar = document.getElementById('wp-sidebar');
-    if (sidebar && !sidebar.classList.contains('wp-sidebar-hidden')) return; // sidebar open, don't count
+    if (isSidebarOpen()) return; // sidebar open, don't count
     unreadCount++;
     updateUnreadBadge();
   }
@@ -950,9 +962,8 @@ const WPOverlay = (() => {
       }
       // Escape: close sidebar
       if (e.key === 'Escape') {
-        const sidebar = document.getElementById('wp-sidebar');
-        if (sidebar && !sidebar.classList.contains('wp-sidebar-hidden')) {
-          sidebar.classList.add('wp-sidebar-hidden');
+        if (isSidebarOpen()) {
+          document.getElementById('wp-sidebar')?.classList.add('wp-sidebar-hidden');
           updateContentMargin(false);
         }
       }

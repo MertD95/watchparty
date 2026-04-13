@@ -27,8 +27,8 @@ const WPTheme = (() => {
   }
 
   function apply() {
-    chrome.storage?.local?.get(['wpAccentColor', 'wpCompactChat'], (r) => {
-      const accent = r.wpAccentColor || '#6366f1';
+    chrome.storage?.local?.get([WPConstants.STORAGE.ACCENT_COLOR, WPConstants.STORAGE.COMPACT_CHAT], (r) => {
+      const accent = r[WPConstants.STORAGE.ACCENT_COLOR] || '#6366f1';
       const sidebar = document.getElementById('wp-sidebar');
       if (sidebar) {
         sidebar.style.setProperty('--wp-accent', accent);
@@ -47,7 +47,7 @@ const WPTheme = (() => {
       }
       const overlay = document.getElementById('wp-overlay');
       if (overlay) {
-        overlay.classList.toggle('wp-compact', !!r.wpCompactChat);
+        overlay.classList.toggle('wp-compact', !!r[WPConstants.STORAGE.COMPACT_CHAT]);
       }
     });
   }
@@ -55,7 +55,7 @@ const WPTheme = (() => {
   function startListening() {
     apply();
     chrome.storage?.onChanged?.addListener((changes) => {
-      if (changes.wpAccentColor || changes.wpCompactChat) apply();
+      if (changes[WPConstants.STORAGE.ACCENT_COLOR] || changes[WPConstants.STORAGE.COMPACT_CHAT]) apply();
     });
   }
 
