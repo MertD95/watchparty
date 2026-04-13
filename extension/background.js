@@ -105,114 +105,68 @@ function updateBadge() {
 
 // ── Message handling from popup and content scripts ──
 
+function relayToPanel(action, payload) {
+  chrome.runtime.sendMessage({ type: 'watchparty-ext', action, payload }).catch(() => {});
+}
+
+function storeAndForward(storageData, message, sendResponse) {
+  chrome.storage.local.set(storageData, () => forwardToStremioTab(message));
+  if (sendResponse) sendResponse({ ok: true });
+}
+
+const messageHandlers = {
+  'get-status': (_m, _s, sendResponse) => {
+    chrome.storage.local.get([WPConstants.STORAGE.STREMIO_PROFILE, WPConstants.STORAGE.ROOM_STATE, WPConstants.STORAGE.USER_ID, WPConstants.STORAGE.WS_CONNECTED], (result) => {
+      sendResponse({
+        stremioRunning, stremioSettings,
+        profile: result[WPConstants.STORAGE.STREMIO_PROFILE] ?? null,
+        stats,
+        wsConnected: result[WPConstants.STORAGE.WS_CONNECTED] ?? false,
+        userId: result[WPConstants.STORAGE.USER_ID] ?? null,
+        room: result[WPConstants.STORAGE.ROOM_STATE] ?? null,
+        bgVersion: BG_VERSION,
+      });
+    });
+    return true; // async sendResponse
+  },
+  'ws-status-changed': () => { updateBadge(); },
+  'chat-message': (m) => relayToPanel('chat-message', m.payload),
+  'bookmark': (m) => relayToPanel('bookmark', m.payload),
+  'create-room': (m, _s, sr) => storeAndForward({
+    [WPConstants.STORAGE.PENDING_ROOM_CREATE]: {
+      username: m.username, meta: m.meta, stream: m.stream, public: m.public, roomName: m.roomName,
+    },
+  }, m, sr),
+  'join-room': (m, _s, sr) => storeAndForward(
+    { [WPConstants.STORAGE.PENDING_ROOM_JOIN]: m.roomId, [WPConstants.STORAGE.USERNAME]: m.username }, m, sr
+  ),
+  'leave-room': (m, _s, sr) => storeAndForward({ [WPConstants.STORAGE.PENDING_LEAVE_ROOM]: true }, m, sr),
+  'toggle-public': (m, _s, sr) => storeAndForward({ [WPConstants.STORAGE.PENDING_ACTION]: { action: m.action, ...m } }, m, sr),
+  'update-room-settings': (m, _s, sr) => storeAndForward({ [WPConstants.STORAGE.PENDING_ACTION]: { action: m.action, ...m } }, m, sr),
+  'transfer-ownership': (m, _s, sr) => storeAndForward({ [WPConstants.STORAGE.PENDING_ACTION]: { action: m.action, ...m } }, m, sr),
+  'update-username': (m, _s, sr) => { forwardToStremioTab(m); sr?.({ ok: true }); },
+  'ready-check': (m, _s, sr) => { forwardToStremioTab(m); sr?.({ ok: true }); },
+  'send-bookmark': (m, _s, sr) => { forwardToStremioTab(m); sr?.({ ok: true }); },
+  'send-chat': (m, _s, sr) => { forwardToStremioTab(m); sr?.({ ok: true }); },
+  'send-typing': (m, _s, sr) => { forwardToStremioTab(m); sr?.({ ok: true }); },
+  'send-reaction': (m, _s, sr) => { forwardToStremioTab(m); sr?.({ ok: true }); },
+  'send-presence': (m, _s, sr) => { forwardToStremioTab(m); sr?.({ ok: true }); },
+  'send-playback-status': (m, _s, sr) => { forwardToStremioTab(m); sr?.({ ok: true }); },
+  'request-sync': (m, _s, sr) => { forwardToStremioTab(m); sr?.({ ok: true }); },
+  'profile-updated': (m) => broadcastToWatchParty({ action: 'profile-updated', data: m.data }),
+  'save-auth-key': (m) => {
+    if (m.authKey) { chrome.storage.session.set({ [WPConstants.STORAGE.SAVED_AUTH_KEY]: m.authKey }); tryProfileSync(); }
+  },
+  'proxy-fetch': (m, _s, sendResponse) => {
+    proxyFetch(m.url, m.method, m.headers).then(sendResponse).catch(e => sendResponse({ error: e.message }));
+    return true; // async sendResponse
+  },
+};
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type !== 'watchparty-ext') return false;
-
-  switch (message.action) {
-    // --- Status queries (from popup) ---
-    case 'get-status':
-      chrome.storage.local.get([WPConstants.STORAGE.STREMIO_PROFILE, WPConstants.STORAGE.ROOM_STATE, WPConstants.STORAGE.USER_ID, WPConstants.STORAGE.WS_CONNECTED], (result) => {
-        sendResponse({
-          stremioRunning,
-          stremioSettings,
-          profile: result[WPConstants.STORAGE.STREMIO_PROFILE] ?? null,
-          stats,
-          wsConnected: result[WPConstants.STORAGE.WS_CONNECTED] ?? false,
-          userId: result[WPConstants.STORAGE.USER_ID] ?? null,
-          room: result[WPConstants.STORAGE.ROOM_STATE] ?? null,
-          bgVersion: BG_VERSION,
-        });
-      });
-      return true;
-
-    // --- WS status update (from content script) ---
-    case 'ws-status-changed':
-      updateBadge();
-      return false;
-
-    // --- Chat relay to side panel (from content script → side panel) ---
-    case 'chat-message':
-      // Side panel listens via chrome.runtime.onMessage — just re-broadcast
-      // (sendMessage to all extension pages including side panel)
-      chrome.runtime.sendMessage({ type: 'watchparty-ext', action: 'chat-message', payload: message.payload }).catch(() => {});
-      return false;
-
-    // --- Bookmark relay to side panel ---
-    case 'bookmark':
-      chrome.runtime.sendMessage({ type: 'watchparty-ext', action: 'bookmark', payload: message.payload }).catch(() => {});
-      return false;
-
-    // --- Room commands (from popup → relay to content script or store for later) ---
-    case 'create-room':
-      // Store intent so content script picks it up even if tab isn't open yet
-      // Wait for storage write to complete before forwarding to content script
-      chrome.storage.local.set({
-        [WPConstants.STORAGE.PENDING_ROOM_CREATE]: {
-          username: message.username,
-          meta: message.meta,
-          stream: message.stream,
-          public: message.public,
-          roomName: message.roomName,
-        },
-      }, () => forwardToStremioTab(message));
-      sendResponse({ ok: true });
-      return false;
-
-    case 'join-room':
-      chrome.storage.local.set(
-        { [WPConstants.STORAGE.PENDING_ROOM_JOIN]: message.roomId, [WPConstants.STORAGE.USERNAME]: message.username },
-        () => forwardToStremioTab(message)
-      );
-      sendResponse({ ok: true });
-      return false;
-
-    case 'leave-room':
-      // Storage fallback — content script picks this up even if tabs.sendMessage fails
-      chrome.storage.local.set({ [WPConstants.STORAGE.PENDING_LEAVE_ROOM]: true }, () => forwardToStremioTab(message));
-      sendResponse({ ok: true });
-      return false;
-
-    case 'toggle-public':
-    case 'update-room-settings':
-    case 'transfer-ownership':
-      // Storage fallback — content script picks up pendingAction even if tabs.sendMessage fails
-      chrome.storage.local.set({ [WPConstants.STORAGE.PENDING_ACTION]: { action: message.action, ...message } }, () => forwardToStremioTab(message));
-      sendResponse({ ok: true });
-      return false;
-
-    case 'update-username':
-    case 'ready-check':
-    case 'send-bookmark':
-    case 'send-chat':
-    case 'send-typing':
-    case 'send-reaction':
-    case 'send-presence':
-    case 'send-playback-status':
-    case 'request-sync':
-      forwardToStremioTab(message);
-      sendResponse({ ok: true });
-      return false;
-
-    // --- Profile relay ---
-    case 'profile-updated':
-      broadcastToWatchParty({ action: 'profile-updated', data: message.data });
-      return false;
-
-    case 'save-auth-key':
-      if (message.authKey) {
-        chrome.storage.session.set({ [WPConstants.STORAGE.SAVED_AUTH_KEY]: message.authKey });
-        tryProfileSync();
-      }
-      return false;
-
-    // --- CORS proxy ---
-    case 'proxy-fetch':
-      proxyFetch(message.url, message.method, message.headers)
-        .then(sendResponse)
-        .catch(e => sendResponse({ error: e.message }));
-      return true;
-  }
-
+  const handler = messageHandlers[message.action];
+  if (handler) return handler(message, sender, sendResponse) || false;
   return false;
 });
 

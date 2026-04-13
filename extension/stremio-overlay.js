@@ -88,7 +88,7 @@ const WPOverlay = (() => {
       // No per-pill listener — handled by delegated click on #wp-chat-messages
       pillsContainer.appendChild(pill);
     }
-    document.dispatchEvent(new CustomEvent('wp-action', { detail: { action: 'send-reaction', emoji } }));
+    dispatchAction('send-reaction', { emoji });
   }
 
 
@@ -128,21 +128,23 @@ const WPOverlay = (() => {
   document.addEventListener('click', () => { userHasInteracted = true; ensureAudioCtx(); }, { once: true });
   document.addEventListener('keydown', () => { userHasInteracted = true; }, { once: true });
 
-  function playNotifSound() {
+  function playTone(frequency, gainValue, duration) {
     try {
       const ctx = ensureAudioCtx();
       if (!ctx) return;
       const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.frequency.value = 800;
-      gain.gain.value = 0.08;
+      const g = ctx.createGain();
+      osc.connect(g);
+      g.connect(ctx.destination);
+      osc.frequency.value = frequency;
+      g.gain.value = gainValue;
       osc.start();
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15);
-      osc.stop(ctx.currentTime + 0.15);
+      g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration);
+      osc.stop(ctx.currentTime + duration);
     } catch { /* audio not available */ }
   }
+
+  function playNotifSound() { playTone(800, 0.08, 0.15); }
 
   // escapeHtml() provided by WPUtils (destructured above)
 
@@ -174,6 +176,11 @@ const WPOverlay = (() => {
   // --- Render cache (avoids storing state on DOM elements) ---
   const renderCache = { lastStatusHtml: '', lastUsersKey: '' };
 
+  // --- Action dispatch helper ---
+  function dispatchAction(action, detail = {}) {
+    document.dispatchEvent(new CustomEvent('wp-action', { detail: { action, ...detail } }));
+  }
+
   // --- Push Stremio content when sidebar opens/closes ---
   function updateContentMargin(sidebarOpen) {
     // On small screens, sidebar overlays instead of pushing content
@@ -188,10 +195,121 @@ const WPOverlay = (() => {
   }
 
 
+  // --- Toggle button (Shadow DOM, fixed position, independent of Stremio's DOM) ---
+  function initToggleButton() {
+    const toggleHost = document.createElement('div');
+    toggleHost.id = 'wp-toggle-host';
+    toggleHost.style.cssText = 'position:fixed;top:18px;right:128px;z-index:2147483647;width:42px;height:42px;visibility:hidden;';
+    let positioned = false;
+    function positionToggle() {
+      const container = document.querySelector('[class*="buttons-container"]');
+      if (container) {
+        const r = container.getBoundingClientRect();
+        if (r.width > 0) {
+          toggleHost.style.top = Math.round(r.top + (r.height - 42) / 2) + 'px';
+          toggleHost.style.right = Math.round(window.innerWidth - r.left + 8) + 'px';
+          if (!positioned) { toggleHost.style.visibility = 'visible'; positioned = true; }
+          return true;
+        }
+      }
+      return false;
+    }
+    let posAttempts = 0;
+    const posInterval = setInterval(() => {
+      if (positionToggle() || ++posAttempts >= 30) {
+        clearInterval(posInterval);
+        if (!positioned) toggleHost.style.visibility = 'visible';
+      }
+    }, 100);
+    window.addEventListener('resize', () => positionToggle());
+    const shadow = toggleHost.attachShadow({ mode: 'closed' });
+    shadow.innerHTML = `
+      <style>
+        :host { display:block; }
+        button {
+          width:42px; height:42px; border-radius:50%; border:none;
+          background:rgba(99,102,241,0.85); color:#fff;
+          display:flex; align-items:center; justify-content:center;
+          cursor:pointer; transition:background .15s, transform .15s;
+          box-shadow:0 2px 8px rgba(0,0,0,0.3);
+        }
+        button:hover { background:rgba(99,102,241,1); transform:scale(1.05); }
+        svg { width:22px; height:22px; }
+      </style>
+      <button title="WatchParty" aria-label="Toggle WatchParty sidebar">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
+      </button>
+    `;
+    toggleHost._wpShadowBtn = shadow.querySelector('button');
+    const unreadBadge = document.createElement('span');
+    unreadBadge.id = 'wp-unread-badge';
+    unreadBadge.className = 'wp-hidden-el';
+    toggleHost.appendChild(unreadBadge);
+
+    function toggleSidebar() {
+      const sidebar = document.getElementById('wp-sidebar');
+      sidebar.classList.toggle('wp-sidebar-hidden');
+      const nowOpen = !sidebar.classList.contains('wp-sidebar-hidden');
+      updateContentMargin(nowOpen);
+      toggleHost.style.display = nowOpen ? 'none' : '';
+      if (nowOpen) clearUnread();
+    }
+    shadow.querySelector('button').addEventListener('click', (e) => { e.stopPropagation(); toggleSidebar(); });
+    toggleHost.addEventListener('click', toggleSidebar);
+    document.body.appendChild(toggleHost);
+  }
+
+  // --- Emoji picker setup ---
+  function initEmojiPicker() {
+    const pickerContainer = document.getElementById('wp-emoji-picker');
+    loadEmojiPicker();
+    document.addEventListener('wp-emoji-lib-ready', () => {
+      const picker = document.createElement('emoji-picker');
+      picker.setAttribute('class', 'dark');
+      picker.setAttribute('data-source', chrome.runtime.getURL('vendor/emoji-data.json'));
+      picker.addEventListener('keydown', (e) => e.stopPropagation());
+      picker.addEventListener('keyup', (e) => e.stopPropagation());
+      picker.addEventListener('keypress', (e) => e.stopPropagation());
+      pickerContainer.appendChild(picker);
+    }, { once: true });
+
+    document.addEventListener('wp-emoji-selected', (e) => {
+      const emoji = e.detail;
+      if (!emoji) return;
+      if (reactionTarget) {
+        if (reactionTarget.pills?.isConnected) toggleReaction(reactionTarget.pills, emoji);
+        closeReactionPopup();
+      } else {
+        const input = document.getElementById('wp-chat-input');
+        if (input) {
+          const start = input.selectionStart || input.value.length;
+          const end = input.selectionEnd || start;
+          input.value = input.value.slice(0, start) + emoji + input.value.slice(end);
+          input.selectionStart = input.selectionEnd = start + emoji.length;
+          input.focus();
+        }
+        pickerContainer.classList.add('wp-hidden-el');
+      }
+    });
+  }
+
+  // --- Margin observer (re-applies body width on SPA navigation) ---
+  function initMarginObserver() {
+    window.addEventListener('resize', () => updateContentMargin(isSidebarOpen()));
+    const observer = new MutationObserver(() => {
+      if (isSidebarOpen() && !document.body.style.width?.includes(`${SIDEBAR_WIDTH}`)) {
+        updateContentMargin(true);
+      }
+    });
+    observer.observe(document.body, { attributes: true, attributeFilter: ['style'] });
+    window.addEventListener('hashchange', () => {
+      if (isSidebarOpen()) updateContentMargin(true);
+    });
+  }
+
   // --- Create overlay DOM ---
   function create() {
     if (overlay) return;
-    // Clean up stale overlay from previous content script injection (e.g., after extension update)
     const existing = document.getElementById('wp-overlay');
     if (existing) existing.remove();
     const existingToggle = document.getElementById('wp-toggle-host');
@@ -235,149 +353,13 @@ const WPOverlay = (() => {
       </div>
       <div id="wp-reaction-container"></div>
     `;
-
     document.body.appendChild(overlay);
 
-    // Toggle button — Shadow DOM, fixed position, independent of Stremio's DOM
-    const toggleHost = document.createElement('div');
-    toggleHost.id = 'wp-toggle-host';
-    // Hidden until positioned — avoids visible shift when Stremio's nav renders
-    toggleHost.style.cssText = 'position:fixed;top:18px;right:128px;z-index:2147483647;width:42px;height:42px;visibility:hidden;';
-    let positioned = false;
-    function positionToggle() {
-      const container = document.querySelector('[class*="buttons-container"]');
-      if (container) {
-        const r = container.getBoundingClientRect();
-        if (r.width > 0) {
-          toggleHost.style.top = Math.round(r.top + (r.height - 42) / 2) + 'px';
-          toggleHost.style.right = Math.round(window.innerWidth - r.left + 8) + 'px';
-          if (!positioned) {
-            toggleHost.style.visibility = 'visible';
-            positioned = true;
-          }
-          return true;
-        }
-      }
-      return false;
-    }
-    // Poll rapidly until Stremio's nav renders (every 100ms, up to 3s)
-    let posAttempts = 0;
-    const posInterval = setInterval(() => {
-      if (positionToggle() || ++posAttempts >= 30) {
-        clearInterval(posInterval);
-        if (!positioned) {
-          // Fallback: show at hardcoded position if nav never appeared
-          toggleHost.style.visibility = 'visible';
-        }
-      }
-    }, 100);
-    window.addEventListener('resize', () => positionToggle());
-    const shadow = toggleHost.attachShadow({ mode: 'closed' });
-    shadow.innerHTML = `
-      <style>
-        :host { display:block; }
-        button {
-          width:42px; height:42px; border-radius:50%; border:none;
-          background:rgba(99,102,241,0.85); color:#fff;
-          display:flex; align-items:center; justify-content:center;
-          cursor:pointer; transition:background .15s, transform .15s;
-          box-shadow:0 2px 8px rgba(0,0,0,0.3);
-        }
-        button:hover { background:rgba(99,102,241,1); transform:scale(1.05); }
-        svg { width:22px; height:22px; }
-      </style>
-      <button title="WatchParty" aria-label="Toggle WatchParty sidebar">
-        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
-      </button>
-    `;
-    // Store ref to shadow button for theme updates (shadow is closed, can't access externally)
-    toggleHost._wpShadowBtn = shadow.querySelector('button');
-    // Unread badge (outside shadow so we can query it)
-    const unreadBadge = document.createElement('span');
-    unreadBadge.id = 'wp-unread-badge';
-    unreadBadge.className = 'wp-hidden-el';
-    toggleHost.appendChild(unreadBadge);
-
-    function toggleSidebar() {
-      const sidebar = document.getElementById('wp-sidebar');
-      sidebar.classList.toggle('wp-sidebar-hidden');
-      const nowOpen = !sidebar.classList.contains('wp-sidebar-hidden');
-      updateContentMargin(nowOpen);
-      // Hide toggle button when sidebar is open to prevent overlap with close button
-      toggleHost.style.display = nowOpen ? 'none' : '';
-      if (nowOpen) clearUnread();
-    }
-    // Listen on host for programmatic clicks, inner button handles real user clicks
-    shadow.querySelector('button').addEventListener('click', (e) => { e.stopPropagation(); toggleSidebar(); });
-    toggleHost.addEventListener('click', toggleSidebar);
-    document.body.appendChild(toggleHost);
-
-    // Load emoji-picker-element library and create the picker
-    const pickerContainer = document.getElementById('wp-emoji-picker');
-    loadEmojiPicker();
-    document.addEventListener('wp-emoji-lib-ready', () => {
-      const picker = document.createElement('emoji-picker');
-      picker.setAttribute('class', 'dark');
-      picker.setAttribute('data-source', chrome.runtime.getURL('vendor/emoji-data.json'));
-      // Stop keyboard events from bubbling to Stremio (prevents F→fullscreen, Space→play, etc.)
-      picker.addEventListener('keydown', (e) => e.stopPropagation());
-      picker.addEventListener('keyup', (e) => e.stopPropagation());
-      picker.addEventListener('keypress', (e) => e.stopPropagation());
-      pickerContainer.appendChild(picker);
-    }, { once: true });
-
-    // Listen for emoji selection (bridged from page world via emoji-loader.js)
-    document.addEventListener('wp-emoji-selected', (e) => {
-      const emoji = e.detail;
-      if (!emoji) return;
-
-      if (reactionTarget) {
-        // Reaction mode: add pill to the message (verify element is still in DOM — may have been pruned)
-        if (reactionTarget.pills?.isConnected) {
-          toggleReaction(reactionTarget.pills, emoji);
-        }
-        closeReactionPopup();
-      } else {
-        // Chat mode: insert emoji into input
-        const input = document.getElementById('wp-chat-input');
-        if (input) {
-          const start = input.selectionStart || input.value.length;
-          const end = input.selectionEnd || start;
-          input.value = input.value.slice(0, start) + emoji + input.value.slice(end);
-          input.selectionStart = input.selectionEnd = start + emoji.length;
-          input.focus();
-        }
-        pickerContainer.classList.add('wp-hidden-el');
-      }
-    });
-
+    initToggleButton();
+    initEmojiPicker();
     bindEvents();
     bindChatDelegation();
-
-    // Re-evaluate content margin on resize (handles switch between push and overlay mode)
-    window.addEventListener('resize', () => {
-      updateContentMargin(isSidebarOpen());
-    });
-
-    // Re-apply content margin on SPA navigation (Stremio rebuilds DOM, resets body.style.width)
-    // MutationObserver detects when Stremio resets body.style, more reliable than hardcoded timeouts
-    let marginObserver = null;
-    function startMarginObserver() {
-      if (marginObserver) return;
-      marginObserver = new MutationObserver(() => {
-        if (isSidebarOpen() && !document.body.style.width?.includes(`${SIDEBAR_WIDTH}`)) {
-          updateContentMargin(true);
-        }
-      });
-      marginObserver.observe(document.body, { attributes: true, attributeFilter: ['style'] });
-    }
-    startMarginObserver();
-    // Also re-apply on hashchange as a fallback
-    window.addEventListener('hashchange', () => {
-      if (isSidebarOpen()) updateContentMargin(true);
-    });
-
-    // Theme: delegate to WPTheme module
+    initMarginObserver();
     WPTheme.startListening();
   }
 
@@ -504,7 +486,7 @@ const WPOverlay = (() => {
       const img = e.target.closest('.wp-gif-item');
       if (!img?.dataset.url) return;
       const gifContent = `[gif:${img.dataset.url}]`;
-      document.dispatchEvent(new CustomEvent('wp-action', { detail: { action: 'send-chat', content: gifContent } }));
+      dispatchAction('send-chat', { content: gifContent });
       // Local echo + dedup tracking (same pattern as text chat)
       const container = document.getElementById('wp-chat-messages');
       if (container) {
@@ -575,8 +557,8 @@ const WPOverlay = (() => {
       addLocalEcho(content);
     }
 
-    document.dispatchEvent(new CustomEvent('wp-action', { detail: { action: 'send-chat', content } }));
-    document.dispatchEvent(new CustomEvent('wp-action', { detail: { action: 'send-typing', typing: false } }));
+    dispatchAction('send-chat', { content });
+    dispatchAction('send-typing', { typing: false });
     input.value = '';
   }
 
@@ -623,104 +605,78 @@ const WPOverlay = (() => {
     if (roomCode) roomCode.textContent = roomState.id?.slice(0, 8) || '';
     if (minInfo) minInfo.textContent = `${roomState.users?.length || 0} watching`;
 
-    // Status + action buttons — only rebuild if content changed (avoids DOM churn on every playerSync)
-    if (status) {
-      const hostLabel = isHost ? 'You are the host' : 'Synced to host';
-      const videoStatus = hasVideo ? 'Video detected' : 'No video detected';
-      let actions = '';
-      if (hasVideo && isHost) {
-        actions += `<button class="wp-action-btn" id="wp-ready-check-btn" title="Ready Check">✋ Ready?</button>`;
-      }
-      if (hasVideo) {
-        actions += `<button class="wp-action-btn" id="wp-bookmark-btn" title="Bookmark this moment">📌 Bookmark</button>`;
-      }
-      const actionsRow = actions ? `<div class="wp-action-row">${actions}</div>` : '';
-      const newStatusHtml = `<span class="wp-status-line">${hostLabel}</span><span class="wp-status-line wp-muted">${videoStatus}</span>${actionsRow}`;
-      if (renderCache.lastStatusHtml !== newStatusHtml) {
-        status.innerHTML = newStatusHtml;
-        renderCache.lastStatusHtml = newStatusHtml;
-        // Bind action buttons (only when DOM was actually rebuilt)
-        document.getElementById('wp-ready-check-btn')?.addEventListener('click', () => {
-        document.dispatchEvent(new CustomEvent('wp-action', { detail: { action: 'ready-check', readyAction: 'initiate' } }));
-        // Pause video during ready check
-        const video = document.querySelector('video');
-        if (video && !video.paused) video.pause();
-        // Local echo — show ready check modal immediately for the host
-        const userCount = document.getElementById('wp-users')?.children.length || 1;
-        showReadyCheck('started', [], userCount, cachedUserId);
-      });
-      document.getElementById('wp-bookmark-btn')?.addEventListener('click', () => {
-        const video = document.querySelector('video');
-        if (!video) return;
-        const time = video.currentTime;
-        document.dispatchEvent(new CustomEvent('wp-action', { detail: { action: 'send-bookmark', time } }));
-        // Local echo — show bookmark immediately (server broadcast also arrives but appendBookmark deduplicates by checking last message)
-        appendBookmark({ user: cachedUserId, userName: cachedUsername, time, label: '' });
-        showToast('Bookmark saved!', 1500);
-      });
-      } // end if (renderCache.lastStatusHtml !== newStatusHtml)
-    }
+    if (status) renderStatusButtons(status, isHost, hasVideo);
+    if (contentLink) renderContentLink(contentLink, isHost, roomState);
+    if (usersDiv && roomState.users) renderUsersList(usersDiv, roomState, userId, isHost);
+  }
 
-    // Content link for peers — show what the host is watching
-    if (contentLink) {
-      if (!isHost && roomState.meta?.id && roomState.meta.id !== 'pending' && roomState.meta.id !== 'unknown') {
-        const name = escapeHtml(roomState.meta.name || roomState.meta.id);
-        const link = `https://web.stremio.com/#/detail/${encodeURIComponent(roomState.meta.type)}/${encodeURIComponent(roomState.meta.id)}`;
-        const hasVideo = !!document.querySelector('video');
-        if (hasVideo) {
-          // Already watching — hide the link, not needed
-          contentLink.classList.add('wp-hidden-el');
-        } else {
-          // Not watching yet — show movie name as a link to navigate
-          contentLink.classList.remove('wp-hidden-el');
-          contentLink.innerHTML = `<span class="wp-content-label">Host is watching:</span> <a href="${link}" class="wp-content-link-a">${name}</a>`;
-        }
-      } else {
+  function renderStatusButtons(status, isHost, hasVideo) {
+    const hostLabel = isHost ? 'You are the host' : 'Synced to host';
+    const videoStatus = hasVideo ? 'Video detected' : 'No video detected';
+    let actions = '';
+    if (hasVideo && isHost) actions += `<button class="wp-action-btn" id="wp-ready-check-btn" title="Ready Check">✋ Ready?</button>`;
+    if (hasVideo) actions += `<button class="wp-action-btn" id="wp-bookmark-btn" title="Bookmark this moment">📌 Bookmark</button>`;
+    const actionsRow = actions ? `<div class="wp-action-row">${actions}</div>` : '';
+    const newStatusHtml = `<span class="wp-status-line">${hostLabel}</span><span class="wp-status-line wp-muted">${videoStatus}</span>${actionsRow}`;
+    if (renderCache.lastStatusHtml === newStatusHtml) return;
+    status.innerHTML = newStatusHtml;
+    renderCache.lastStatusHtml = newStatusHtml;
+    document.getElementById('wp-ready-check-btn')?.addEventListener('click', () => {
+      dispatchAction('ready-check', { readyAction: 'initiate' });
+      const video = document.querySelector('video');
+      if (video && !video.paused) video.pause();
+      const userCount = document.getElementById('wp-users')?.children.length || 1;
+      showReadyCheck('started', [], userCount, cachedUserId);
+    });
+    document.getElementById('wp-bookmark-btn')?.addEventListener('click', () => {
+      const video = document.querySelector('video');
+      if (!video) return;
+      const time = video.currentTime;
+      dispatchAction('send-bookmark', { time });
+      appendBookmark({ user: cachedUserId, userName: cachedUsername, time, label: '' });
+      showToast('Bookmark saved!', 1500);
+    });
+  }
+
+  function renderContentLink(contentLink, isHost, roomState) {
+    if (!isHost && roomState.meta?.id && roomState.meta.id !== 'pending' && roomState.meta.id !== 'unknown') {
+      const name = escapeHtml(roomState.meta.name || roomState.meta.id);
+      const link = `https://web.stremio.com/#/detail/${encodeURIComponent(roomState.meta.type)}/${encodeURIComponent(roomState.meta.id)}`;
+      if (document.querySelector('video')) {
         contentLink.classList.add('wp-hidden-el');
-      }
-    }
-
-    // Users with presence, playback status, and ownership transfer
-    // Only rebuild if user list actually changed (avoids DOM churn on every 500ms playerSync)
-    if (usersDiv && roomState.users) {
-      const usersKey = roomState.users.map(u => `${u.id}:${u.status}:${u.playbackStatus}`).join(',') + `:${roomState.owner}:${isHost}`;
-      if (renderCache.lastUsersKey === usersKey) {
-        // No change — skip rebuild
       } else {
-      renderCache.lastUsersKey = usersKey;
-      usersDiv.innerHTML = roomState.users.map(u => {
-        const isOwner = u.id === roomState.owner;
-        const isMe = u.id === userId;
-        const color = getUserColor(u.id);
-        const isAway = u.status === 'away';
-        const crown = isOwner ? '<span class="wp-crown">👑</span>' : '';
-        const you = isMe ? ' <span class="wp-you">(you)</span>' : '';
-        const transferBtn = (isHost && !isMe && !isOwner)
-          ? `<button class="wp-transfer-btn" data-uid="${u.id}" title="Transfer host">Make Host</button>`
-          : '';
-        // Playback status icon
-        let statusIcon = '';
-        if (u.playbackStatus === 'buffering') {
-          statusIcon = '<span class="wp-user-status wp-status-buffering" title="Buffering">⟳</span>';
-        } else if (u.playbackStatus === 'paused') {
-          statusIcon = '<span class="wp-user-status wp-status-paused" title="Paused">❚❚</span>';
-        } else if (u.playbackStatus === 'playing') {
-          statusIcon = '<span class="wp-user-status wp-status-playing" title="Playing">▶</span>';
-        }
-        const awayClass = isAway ? ' wp-user-away' : '';
-        return `<div class="wp-user${awayClass}"><span class="wp-user-dot" style="background:${color}"></span>${crown}${escapeHtml(u.name)}${you}${statusIcon}${transferBtn}</div>`;
-      }).join('');
-      // Event delegation: single listener on usersDiv handles all transfer button clicks
-      // (innerHTML replacement removes old DOM, so no duplicate listeners accumulate)
-      usersDiv.onclick = (e) => {
-        const btn = e.target.closest('.wp-transfer-btn');
-        if (btn?.dataset.uid) {
-          document.dispatchEvent(new CustomEvent('wp-action', { detail: { action: 'transfer-ownership', targetUserId: btn.dataset.uid } }));
-        }
-      };
-      } // end else (users changed)
+        contentLink.classList.remove('wp-hidden-el');
+        contentLink.innerHTML = `<span class="wp-content-label">Host is watching:</span> <a href="${link}" class="wp-content-link-a">${name}</a>`;
+      }
+    } else {
+      contentLink.classList.add('wp-hidden-el');
     }
+  }
 
+  function renderUsersList(usersDiv, roomState, userId, isHost) {
+    const usersKey = roomState.users.map(u => `${u.id}:${u.status}:${u.playbackStatus}`).join(',') + `:${roomState.owner}:${isHost}`;
+    if (renderCache.lastUsersKey === usersKey) return;
+    renderCache.lastUsersKey = usersKey;
+    usersDiv.innerHTML = roomState.users.map(u => {
+      const isOwner = u.id === roomState.owner;
+      const isMe = u.id === userId;
+      const color = getUserColor(u.id);
+      const crown = isOwner ? '<span class="wp-crown">👑</span>' : '';
+      const you = isMe ? ' <span class="wp-you">(you)</span>' : '';
+      const transferBtn = (isHost && !isMe && !isOwner)
+        ? `<button class="wp-transfer-btn" data-uid="${u.id}" title="Transfer host">Make Host</button>`
+        : '';
+      let statusIcon = '';
+      if (u.playbackStatus === 'buffering') statusIcon = '<span class="wp-user-status wp-status-buffering" title="Buffering">⟳</span>';
+      else if (u.playbackStatus === 'paused') statusIcon = '<span class="wp-user-status wp-status-paused" title="Paused">❚❚</span>';
+      else if (u.playbackStatus === 'playing') statusIcon = '<span class="wp-user-status wp-status-playing" title="Playing">▶</span>';
+      const awayClass = u.status === 'away' ? ' wp-user-away' : '';
+      return `<div class="wp-user${awayClass}"><span class="wp-user-dot" style="background:${color}"></span>${crown}${escapeHtml(u.name)}${you}${statusIcon}${transferBtn}</div>`;
+    }).join('');
+    usersDiv.onclick = (e) => {
+      const btn = e.target.closest('.wp-transfer-btn');
+      if (btn?.dataset.uid) dispatchAction('transfer-ownership', { targetUserId: btn.dataset.uid });
+    };
   }
 
   function updateSyncIndicator(isHost, drift) {
@@ -796,20 +752,7 @@ const WPOverlay = (() => {
 
   function playReactionSound() {
     if (!reactionSoundEnabled) return;
-    try {
-      const ctx = ensureAudioCtx();
-      if (!ctx) return;
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.frequency.value = 1200;
-      osc.type = 'sine';
-      gain.gain.value = 0.05;
-      osc.start();
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.12);
-      osc.stop(ctx.currentTime + 0.12);
-    } catch { /* audio not available */ }
+    playTone(1200, 0.05, 0.12);
   }
 
   function showReaction(uid, emoji, roomState) {
@@ -981,7 +924,7 @@ const WPOverlay = (() => {
       btn = document.createElement('button');
       btn.id = 'wp-catchup-btn';
       btn.addEventListener('click', () => {
-        document.dispatchEvent(new CustomEvent('wp-action', { detail: { action: 'request-sync' } }));
+        dispatchAction('request-sync');
         btn.remove();
       });
       document.getElementById('wp-overlay')?.appendChild(btn);

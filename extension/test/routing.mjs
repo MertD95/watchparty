@@ -105,6 +105,11 @@ function extractSentActions(source, label) {
   while ((m = re2.exec(source)) !== null) {
     actions.add(m[1]);
   }
+  // Pattern 3: dispatchAction('foo' ...)  (helper wrapper for CustomEvent)
+  const re3 = /dispatchAction\s*\(\s*'([^']+)'/g;
+  while ((m = re3.exec(source)) !== null) {
+    actions.add(m[1]);
+  }
   if (actions.size === 0) {
     console.error(`  WARNING: No actions found in ${label} — parser may be broken`);
   }
@@ -120,8 +125,11 @@ const contentSource = readSrc('stremio-content.js');
 const overlaySource = readSrc('stremio-overlay.js');
 const popupSource   = readSrc('popup.js');
 
-// background.js has one switch on message.action
-const bgCases      = extractSwitchCases(bgSource, 'background.js', 'action');
+// background.js uses a messageHandlers object map (or switch on message.action)
+let bgCases = extractSwitchCases(bgSource, 'background.js', 'action');
+if (bgCases.size === 0) {
+  bgCases = extractObjectHandlerKeys(bgSource, 'messageHandlers');
+}
 // stremio-content.js uses an actionHandlers object map (not a switch statement)
 // Fall back to extracting keys from the object literal if switch parsing finds nothing
 let contentCases = extractSwitchCases(contentSource, 'stremio-content.js', 'action');
