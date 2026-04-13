@@ -40,7 +40,7 @@ jobs:
   chrome-publish:
     needs: package
     runs-on: ubuntu-latest
-    if: ${{ secrets.CHROME_EXTENSION_ID != '' }}
+    if: ${{ vars.CHROME_PUBLISH_ENABLED == 'true' }}
     steps:
       - uses: actions/checkout@v5
 
