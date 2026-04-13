@@ -97,11 +97,8 @@ const WPOverlay = (() => {
       const pickerEl = document.getElementById('wp-emoji-picker');
       if (pickerEl) {
         pickerEl.classList.add('wp-hidden-el');
-        // Reset to default chat position
-        pickerEl.style.position = 'fixed';
-        pickerEl.style.top = 'auto';
-        pickerEl.style.bottom = '60px';
-        pickerEl.style.right = '16px';
+        // Clear inline styles so CSS position:absolute takes over
+        pickerEl.style.cssText = '';
       }
       reactionTarget = null;
     }
@@ -120,17 +117,21 @@ const WPOverlay = (() => {
 
   // --- Notification sound ---
   let audioCtx = null;
-  // Resume AudioContext on first user interaction (required by browser autoplay policy)
+  let userHasInteracted = false;
+  // Create AudioContext only after user gesture (Chrome autoplay policy)
   function ensureAudioCtx() {
+    if (!userHasInteracted) return null;
     if (!audioCtx) audioCtx = new AudioContext();
     if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
     return audioCtx;
   }
-  document.addEventListener('click', () => ensureAudioCtx(), { once: true });
+  document.addEventListener('click', () => { userHasInteracted = true; ensureAudioCtx(); }, { once: true });
+  document.addEventListener('keydown', () => { userHasInteracted = true; }, { once: true });
 
   function playNotifSound() {
     try {
       const ctx = ensureAudioCtx();
+      if (!ctx) return;
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
       osc.connect(gain);
@@ -201,11 +202,11 @@ const WPOverlay = (() => {
               <input id="wp-gif-search" type="text" placeholder="Search GIFs..." autocomplete="off" />
               <div id="wp-gif-results"></div>
             </div>
+            <div id="wp-emoji-picker" class="wp-hidden-el"></div>
           </div>
         </div>
       </div>
       <div id="wp-reaction-container"></div>
-      <div id="wp-emoji-picker" class="wp-hidden-el"></div>
     `;
 
     document.body.appendChild(overlay);
@@ -291,6 +292,10 @@ const WPOverlay = (() => {
       const picker = document.createElement('emoji-picker');
       picker.setAttribute('class', 'dark');
       picker.setAttribute('data-source', chrome.runtime.getURL('vendor/emoji-data.json'));
+      // Stop keyboard events from bubbling to Stremio (prevents F→fullscreen, Space→play, etc.)
+      picker.addEventListener('keydown', (e) => e.stopPropagation());
+      picker.addEventListener('keyup', (e) => e.stopPropagation());
+      picker.addEventListener('keypress', (e) => e.stopPropagation());
       pickerContainer.appendChild(picker);
     }, { once: true });
 
@@ -393,11 +398,8 @@ const WPOverlay = (() => {
         reactionTarget = { pills };
         activePopupMsg = msg;
 
-        const btnRect = reactBtn.getBoundingClientRect();
-        pickerEl.style.position = 'fixed';
-        pickerEl.style.bottom = 'auto';
-        pickerEl.style.top = (btnRect.bottom + 4) + 'px';
-        pickerEl.style.right = (window.innerWidth - btnRect.right) + 'px';
+        // Position picker near the message (inside sidebar via CSS absolute)
+        pickerEl.style.cssText = '';
         pickerEl.classList.remove('wp-hidden-el');
         return;
       }
@@ -453,10 +455,7 @@ const WPOverlay = (() => {
         activePopupMsg.classList.remove('wp-msg-hovered');
         activePopupMsg = null;
       }
-      pickerEl.style.position = 'fixed';
-      pickerEl.style.top = 'auto';
-      pickerEl.style.bottom = '60px';
-      pickerEl.style.right = '16px';
+      pickerEl.style.cssText = '';
       pickerEl.classList.toggle('wp-hidden-el');
     });
 
@@ -522,9 +521,25 @@ const WPOverlay = (() => {
   // Track locally echoed messages to deduplicate server echoes
   const localEchoSet = new Set();
 
+  let lastSendTime = 0;
+  function disableSendButton() {
+    const btn = document.getElementById('wp-chat-send');
+    if (!btn) return;
+    btn.disabled = true;
+    btn.style.opacity = '0.4';
+    btn.style.cursor = 'not-allowed';
+    setTimeout(() => { btn.disabled = false; btn.style.opacity = ''; btn.style.cursor = ''; }, 3000);
+  }
   function sendChat() {
     const input = document.getElementById('wp-chat-input');
     if (!input || !input.value.trim()) return;
+    const btn = document.getElementById('wp-chat-send');
+    if (btn?.disabled) return; // Already in cooldown
+    // Client-side cooldown — prevent rapid sends (server has 3s cooldown)
+    const now = Date.now();
+    if (now - lastSendTime < 3000) return;
+    lastSendTime = now;
+    disableSendButton();
     const content = input.value.trim();
 
     // Optimistic local echo — show message immediately
@@ -562,7 +577,12 @@ const WPOverlay = (() => {
 
     // Re-apply content margin if sidebar is open (Stremio SPA navigation can reset body width)
     const sidebarOpen = !document.getElementById('wp-sidebar')?.classList.contains('wp-sidebar-hidden');
-    if (sidebarOpen) updateContentMargin(true);
+    if (sidebarOpen) {
+      updateContentMargin(true);
+      // Ensure toggle button is hidden when sidebar is open (defensive — covers all code paths)
+      const toggle = document.getElementById('wp-toggle-host');
+      if (toggle) toggle.style.display = 'none';
+    }
 
     const status = document.getElementById('wp-status');
     const roomCode = document.getElementById('wp-room-code');
@@ -752,6 +772,7 @@ const WPOverlay = (() => {
     if (!reactionSoundEnabled) return;
     try {
       const ctx = ensureAudioCtx();
+      if (!ctx) return;
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
       osc.connect(gain);
@@ -801,7 +822,10 @@ const WPOverlay = (() => {
 
   function openSidebar() {
     document.getElementById('wp-sidebar')?.classList.remove('wp-sidebar-hidden');
+    const toggle = document.getElementById('wp-toggle-host');
+    if (toggle) toggle.style.display = 'none';
     updateContentMargin(true);
+    clearUnread();
   }
 
   // --- Toast, Ready Check, Countdown: delegated to WPModals module ---
@@ -863,10 +887,17 @@ const WPOverlay = (() => {
     const input = document.getElementById('wp-chat-input');
     if (!input) return;
     let typingTimeout = null;
+    let isTyping = false;
     input.addEventListener('input', () => {
-      onTypingStart();
+      if (!isTyping) {
+        isTyping = true;
+        onTypingStart(); // Send only once per typing session
+      }
       clearTimeout(typingTimeout);
-      typingTimeout = setTimeout(onTypingStop, 2000);
+      typingTimeout = setTimeout(() => {
+        isTyping = false;
+        onTypingStop();
+      }, 2000);
     });
   }
 

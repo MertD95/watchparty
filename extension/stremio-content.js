@@ -18,6 +18,7 @@
   let chatMessages = [];
   let observer = null;
   let typingUsers = new Map();
+  let lastUserAction = null; // Track last user-initiated action for error toast filtering
 
   // --- Extension context guard (WS survives extension reloads, but chrome APIs don't) ---
   function extOk() { return !!chrome.runtime?.id; }
@@ -118,9 +119,15 @@
             WPOverlay.showToast('Room no longer exists', 3000);
           }
         }
-        // Show error feedback for non-room errors (cooldown, owner, validation, etc.)
+        // Show error feedback for non-room errors
         if (p?.type !== 'room' && p?.message) {
-          WPOverlay.showToast(p.message, 2000);
+          if (p.type === 'cooldown' && lastUserAction === 'send-chat') {
+            WPOverlay.showToast('Slow down! Wait a moment before sending again.', 2000);
+          } else if (p.type === 'owner') {
+            WPOverlay.showToast('Only the host can do that.', 2000);
+          } else if (p.type !== 'cooldown' && p.type !== 'validation') {
+            WPOverlay.showToast(p.message, 2000);
+          }
         }
         break;
 
@@ -189,6 +196,12 @@
     chrome.storage.local.get(['pendingRoomCreate', 'pendingRoomJoin', 'currentRoom', 'wpUsername'], (stored) => {
       if (stored.pendingRoomCreate) {
         chrome.storage.local.remove('pendingRoomCreate');
+        // Leave current room first if still connected (prevents rejoining old room)
+        if (inRoom) {
+          WPWS.send({ type: 'room.leave', payload: {} });
+          inRoom = false; roomState = null; isHost = false;
+        }
+        chrome.storage.local.remove('currentRoom');
         const rc = stored.pendingRoomCreate;
         if (rc.username) WPWS.send({ type: 'user.update', payload: { username: rc.username } });
         const payload = { meta: rc.meta, stream: rc.stream, public: rc.public || false };
@@ -426,10 +439,11 @@
     'ready-check': (m) => WPWS.send({ type: 'room.readyCheck', payload: { action: m.readyAction } }),
     'send-bookmark': (m) => WPWS.send({ type: 'room.bookmark', payload: { time: m.time, label: m.label } }),
     'send-chat': async (m) => {
+      lastUserAction = 'send-chat';
       const content = WPCrypto.isEnabled() ? await WPCrypto.encrypt(m.content) : m.content;
       WPWS.send({ type: 'room.message', payload: { content } });
     },
-    'send-typing': (m) => WPWS.send({ type: 'room.typing', payload: { typing: m.typing } }),
+    'send-typing': (m) => { lastUserAction = 'send-typing'; WPWS.send({ type: 'room.typing', payload: { typing: m.typing } }); },
     'send-reaction': (m) => WPWS.send({ type: 'room.reaction', payload: { emoji: m.emoji } }),
     'send-presence': (m) => WPWS.send({ type: 'user.presence', payload: { status: m.status } }),
     'send-playback-status': (m) => WPWS.send({ type: 'user.playbackStatus', payload: { status: m.status } }),

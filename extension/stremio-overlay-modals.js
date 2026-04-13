@@ -11,19 +11,19 @@ const WPModals = (() => {
   // --- Toast notification (uses Popover API for top-layer rendering) ---
   function showToast(message, durationMs = TOAST_DURATION_MS) {
     const existing = document.getElementById('wp-toast');
-    if (existing) { try { existing.hidePopover(); } catch {} existing.remove(); }
+    if (existing) existing.remove();
     const toast = document.createElement('div');
     toast.id = 'wp-toast';
     toast.setAttribute('role', 'status');
     toast.setAttribute('aria-live', 'polite');
-    toast.setAttribute('popover', 'manual');
     toast.textContent = message;
-    document.getElementById('wp-overlay')?.appendChild(toast);
-    toast.showPopover();
+    // Append to sidebar (not overlay) so it's positioned within the sidebar
+    const sidebar = document.getElementById('wp-sidebar') || document.getElementById('wp-overlay');
+    sidebar?.appendChild(toast);
     requestAnimationFrame(() => toast.classList.add('wp-toast-visible'));
     setTimeout(() => {
       toast.classList.remove('wp-toast-visible');
-      setTimeout(() => { try { toast.hidePopover(); } catch {} toast.remove(); }, 300);
+      setTimeout(() => toast.remove(), 300);
     }, durationMs);
   }
 

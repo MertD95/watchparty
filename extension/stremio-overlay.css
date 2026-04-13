@@ -140,7 +140,7 @@
   .wp-pill-count { font-size:11px; font-weight:500; }
 
   /* Chat */
-  #wp-chat-container { flex:1; display:flex; flex-direction:column; min-height:0; overflow:hidden; }
+  #wp-chat-container { position:relative; flex:1; display:flex; flex-direction:column; min-height:0; overflow:hidden; }
   #wp-chat-messages {
     flex:1; overflow-y:auto; padding:8px 0; font-size:12px; min-height:80px;
     scrollbar-width:thin; scrollbar-color:rgba(255,255,255,0.15) transparent;
@@ -189,10 +189,26 @@
   #wp-gif-btn:hover { background:rgba(var(--wp-accent-rgb),0.15); }
 
   /* GIF picker */
+  /* wp-chat-container styles merged into line 143 above */
   #wp-gif-picker {
     position:absolute; bottom:50px; left:0; right:0;
     background:rgba(15,15,30,0.98); border-top:1px solid rgba(255,255,255,0.1);
     max-height:250px; display:flex; flex-direction:column; z-index:2;
+  }
+  #wp-emoji-picker {
+    position:absolute; bottom:50px; left:0; right:0;
+    background:rgba(15,15,30,0.98); border-radius:8px 8px 0 0;
+    overflow:hidden; box-shadow:0 -4px 16px rgba(0,0,0,0.4);
+    z-index:3; max-height:300px;
+  }
+  #wp-emoji-picker emoji-picker {
+    --background:rgba(15,15,30,0.98); --border-color:rgba(255,255,255,0.12);
+    --button-active-background:rgba(99,102,241,0.25); --button-hover-background:rgba(255,255,255,0.08);
+    --category-font-color:#888; --emoji-padding:0.3rem; --emoji-size:1.3rem;
+    --indicator-color:#6366f1; --input-border-color:rgba(255,255,255,0.12);
+    --input-font-color:#fff; --input-placeholder-color:#555; --num-columns:6;
+    --outline-color:#6366f1; --search-background:rgba(255,255,255,0.08); --text-color:#ccc;
+    width:100%; height:300px; max-width:100%;
   }
   #wp-gif-search {
     width:100%; background:rgba(255,255,255,0.08); border:none;
@@ -241,20 +257,7 @@
 /* --- Elements outside the sidebar (emoji picker, reactions, toast, modals, etc.) --- */
 /* These live in #wp-overlay but outside #wp-sidebar, scoped to #wp-overlay */
 @scope (#wp-overlay) to (#wp-sidebar) {
-  /* Emoji picker */
-  #wp-emoji-picker {
-    pointer-events:all; position:fixed; bottom:60px; right:16px; z-index:2147483647;
-    border-radius:12px; overflow:hidden; box-shadow:0 8px 32px rgba(0,0,0,0.5);
-  }
-  #wp-emoji-picker emoji-picker {
-    --background:rgba(15,15,30,0.98); --border-color:rgba(255,255,255,0.12);
-    --button-active-background:rgba(99,102,241,0.25); --button-hover-background:rgba(255,255,255,0.08);
-    --category-font-color:#888; --emoji-padding:0.3rem; --emoji-size:1.3rem;
-    --indicator-color:#6366f1; --input-border-color:rgba(255,255,255,0.12);
-    --input-font-color:#fff; --input-placeholder-color:#555; --num-columns:8;
-    --outline-color:#6366f1; --search-background:rgba(255,255,255,0.08); --text-color:#ccc;
-    width:320px; height:340px;
-  }
+  /* Emoji picker styles removed — now inside sidebar scope */
 
   /* Floating reactions */
   #wp-reaction-container {
@@ -271,15 +274,16 @@
   /* Toast (Popover API — renders in top layer, no z-index needed) */
   #wp-toast {
     pointer-events:none;
-    /* Override default popover positioning */
-    position:fixed; top:110px; left:50%; margin:0; inset:auto;
-    transform:translateX(-50%) translateY(-10px);
+    /* Centered in the sidebar */
+    position:absolute; top:50%; left:50%; margin:0; inset:auto;
+    transform:translate(-50%, -50%) translateY(-10px);
+    z-index:100; text-align:center; max-width:280px;
     background:rgba(15,15,30,0.95); color:#fff; font-size:13px;
     padding:8px 20px; border-radius:8px; border:1px solid rgba(99,102,241,0.3);
     box-shadow:0 4px 16px rgba(0,0,0,0.4);
     opacity:0; transition:opacity .3s, transform .3s;
   }
-  #wp-toast.wp-toast-visible { opacity:1; transform:translateX(-50%) translateY(0); }
+  #wp-toast.wp-toast-visible { opacity:1; transform:translate(-50%, -50%); }
 
   /* Ready check modal (Popover API — renders in top layer) */
   #wp-ready-modal {
