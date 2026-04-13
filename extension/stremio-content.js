@@ -20,9 +20,7 @@
   let typingUsers = new Map();
   let lastUserAction = null;
 
-  // --- Tab dedup state (must be at top — closures reference these) ---
-  let isActiveTab = false;
-  let tabChannel = null; // Initialized in init(), null-safe everywhere
+  let sessionId = null; // Persistent session ID — same across all tabs
 
   // --- Extension context guard (WS survives extension reloads, but chrome APIs don't) ---
   function extOk() { return !!chrome.runtime?.id; }
@@ -72,10 +70,8 @@
       case 'ready':
         if (!p?.user?.id) return;
         userId = p.user.id;
-        // Protocol version check — warn if server is newer than what this extension expects
         if (p.protocol && p.protocol > 2) {
           WPOverlay.showToast('Server updated — please update the WatchParty extension', 5000);
-          console.warn(`[WatchParty] Server protocol v${p.protocol}, extension expects v2. Some features may not work.`);
         }
         processPendingActions();
         WPWS.startClockSync();
@@ -205,9 +201,6 @@
   // Wire up: active tab processes WS events and broadcasts to passive tabs
   WPWS.onMessage((msg) => {
     processWsEvent(msg);
-    if (isActiveTab && tabChannel) {
-      tabChannel.postMessage({ kind: 'ws-event', data: msg });
-    }
   });
 
   // --- Process pending create/join actions from storage ---
@@ -223,7 +216,7 @@
         }
         chrome.storage.local.remove('currentRoom');
         const rc = stored.pendingRoomCreate;
-        if (rc.username) WPWS.send({ type: 'user.update', payload: { username: rc.username } });
+        if (rc.username) WPWS.send({ type: 'user.update', payload: { username: rc.username, sessionId } });
         const payload = { meta: rc.meta, stream: rc.stream, public: rc.public || false };
         if (rc.roomName) payload.name = rc.roomName;
         WPWS.send({ type: 'room.new', payload });
@@ -253,7 +246,7 @@
       try { await WPCrypto.importKey(cryptoKeyStr); } catch { /* invalid key */ }
     }
     if (!extOk() || !WPWS.isReady()) return;
-    if (stored.wpUsername) WPWS.send({ type: 'user.update', payload: { username: stored.wpUsername } });
+    if (stored.wpUsername) WPWS.send({ type: 'user.update', payload: { username: stored.wpUsername, sessionId } });
     WPWS.send({ type: 'room.join', payload: { id: roomToJoin } });
   }
 
@@ -395,7 +388,7 @@
       isHost,
       onSync(state) {
         if (roomState && userId === roomState.owner) {
-          sendOrRelay({ type: 'player.sync', payload: { paused: state.paused, buffering: state.buffering, time: state.time, speed: state.speed } });
+          WPWS.send({ type: 'player.sync', payload: { paused: state.paused, buffering: state.buffering, time: state.time, speed: state.speed } });
         }
       },
     });
@@ -434,11 +427,11 @@
 
   // Action handler map — replaces monolithic switch for testability and clarity
   const actionHandlers = {
-    'create-room': () => { if (!isActiveTab) return; if (WPWS.isReady()) processPendingActions(); else WPWS.connect(); },
-    'join-room': () => { if (!isActiveTab) return; if (WPWS.isReady()) processPendingActions(); else WPWS.connect(); },
+    'create-room': () => { if (WPWS.isReady()) processPendingActions(); else WPWS.connect(); },
+    'join-room': () => { if (WPWS.isReady()) processPendingActions(); else WPWS.connect(); },
     'leave-room': () => {
       clearTimeout(presenceTimeout);
-      sendOrRelay({ type: 'room.leave', payload: {} });
+      WPWS.send({ type: 'room.leave', payload: {} });
       const leavingRoomId = roomState?.id;
       inRoom = false; roomState = null; isHost = false;
       if (extOk()) {
@@ -451,22 +444,22 @@
       refreshOverlay();
       persistState();
     },
-    'toggle-public': (m) => sendOrRelay({ type: 'room.updatePublic', payload: { public: m.public } }),
-    'update-room-settings': (m) => sendOrRelay({ type: 'room.updateSettings', payload: m.settings }),
-    'transfer-ownership': (m) => sendOrRelay({ type: 'room.updateOwnership', payload: { userId: m.targetUserId } }),
-    'update-username': (m) => sendOrRelay({ type: 'user.update', payload: { username: m.username } }),
-    'ready-check': (m) => sendOrRelay({ type: 'room.readyCheck', payload: { action: m.readyAction } }),
-    'send-bookmark': (m) => sendOrRelay({ type: 'room.bookmark', payload: { time: m.time, label: m.label } }),
+    'toggle-public': (m) => WPWS.send({ type: 'room.updatePublic', payload: { public: m.public } }),
+    'update-room-settings': (m) => WPWS.send({ type: 'room.updateSettings', payload: m.settings }),
+    'transfer-ownership': (m) => WPWS.send({ type: 'room.updateOwnership', payload: { userId: m.targetUserId } }),
+    'update-username': (m) => WPWS.send({ type: 'user.update', payload: { username: m.username, sessionId } }),
+    'ready-check': (m) => WPWS.send({ type: 'room.readyCheck', payload: { action: m.readyAction } }),
+    'send-bookmark': (m) => WPWS.send({ type: 'room.bookmark', payload: { time: m.time, label: m.label } }),
     'send-chat': async (m) => {
       lastUserAction = 'send-chat';
       const content = WPCrypto.isEnabled() ? await WPCrypto.encrypt(m.content) : m.content;
-      sendOrRelay({ type: 'room.message', payload: { content } });
+      WPWS.send({ type: 'room.message', payload: { content } });
     },
-    'send-typing': (m) => { lastUserAction = 'send-typing'; sendOrRelay({ type: 'room.typing', payload: { typing: m.typing } }); },
-    'send-reaction': (m) => sendOrRelay({ type: 'room.reaction', payload: { emoji: m.emoji } }),
-    'send-presence': (m) => sendOrRelay({ type: 'user.presence', payload: { status: m.status } }),
-    'send-playback-status': (m) => sendOrRelay({ type: 'user.playbackStatus', payload: { status: m.status } }),
-    'request-sync': () => sendOrRelay({ type: 'player.sync', payload: roomState?.player || { paused: true, time: 0, buffering: false } }),
+    'send-typing': (m) => { lastUserAction = 'send-typing'; WPWS.send({ type: 'room.typing', payload: { typing: m.typing } }); },
+    'send-reaction': (m) => WPWS.send({ type: 'room.reaction', payload: { emoji: m.emoji } }),
+    'send-presence': (m) => WPWS.send({ type: 'user.presence', payload: { status: m.status } }),
+    'send-playback-status': (m) => WPWS.send({ type: 'user.playbackStatus', payload: { status: m.status } }),
+    'request-sync': () => WPWS.send({ type: 'player.sync', payload: roomState?.player || { paused: true, time: 0, buffering: false } }),
   };
 
   function handleAction(message) {
@@ -481,10 +474,10 @@
     clearTimeout(presenceTimeout);
     if (document.visibilityState === 'hidden') {
       presenceTimeout = setTimeout(() => {
-        sendOrRelay({ type: 'user.presence', payload: { status: 'away' } });
+        WPWS.send({ type: 'user.presence', payload: { status: 'away' } });
       }, 10000);
     } else {
-      sendOrRelay({ type: 'user.presence', payload: { status: 'active' } });
+      WPWS.send({ type: 'user.presence', payload: { status: 'active' } });
     }
   });
 
@@ -498,7 +491,7 @@
     const status = vid.paused ? 'paused' : vid.readyState < 3 ? 'buffering' : 'playing';
     if (status !== lastPlaybackStatus) {
       lastPlaybackStatus = status;
-      sendOrRelay({ type: 'user.playbackStatus', payload: { status } });
+      WPWS.send({ type: 'user.playbackStatus', payload: { status } });
     }
   }, 3000);
 
@@ -539,79 +532,27 @@
   });
 
   function init() {
-    // Initialize BroadcastChannel for cross-tab communication
-    tabChannel = new BroadcastChannel('watchparty-tabs');
     WPOverlay.create();
     WPOverlay.initKeyboardShortcuts();
     WPOverlay.bindTypingIndicator(
-      () => { if (inRoom) sendOrRelay({ type: 'room.typing', payload: { typing: true } }); },
-      () => { sendOrRelay({ type: 'room.typing', payload: { typing: false } }); }
+      () => { if (inRoom) WPWS.send({ type: 'room.typing', payload: { typing: true } }); },
+      () => { WPWS.send({ type: 'room.typing', payload: { typing: false } }); }
     );
     startVideoObserver();
     WPProfile.start();
-    acquireActiveTab();
 
-    // Cross-tab communication via BroadcastChannel
-    tabChannel.onmessage = (event) => {
-      const { kind, data } = event.data;
-      if (kind === 'ws-event' && !isActiveTab) {
-        // Passive tab: process the WS event through the same handler as active tab
-        processWsEvent(data);
-      } else if (kind === 'send' && isActiveTab) {
-        // Active tab: relay outgoing message from passive tab
-        WPWS.send(data);
-      }
-    };
-  }
-
-  // Send via WS if active tab, or relay via BroadcastChannel
-  function sendOrRelay(msg) {
-    if (isActiveTab) {
-      WPWS.send(msg);
-    } else if (tabChannel) {
-      tabChannel.postMessage({ kind: 'send', data: msg });
-    }
-    // If tabChannel is null (init hasn't run), message is silently dropped — acceptable
-  }
-
-  function acquireActiveTab() {
-    if (!navigator.locks) {
-      isActiveTab = true;
-      WPWS.connect();
-      return;
-    }
-
-    navigator.locks.request('watchparty-ws', { ifAvailable: true }, (lock) => {
-      if (lock) {
-        isActiveTab = true;
-        startAsActiveTab();
-        return new Promise(() => {});
+    // Generate or load persistent session ID (shared across all tabs via chrome.storage).
+    // This lets the server identify all tabs as the same user — Twitch-style multi-tab.
+    chrome.storage.local.get('wpSessionId', ({ wpSessionId }) => {
+      if (wpSessionId) {
+        sessionId = wpSessionId;
       } else {
-        loadCachedState();
+        sessionId = crypto.randomUUID();
+        chrome.storage.local.set({ wpSessionId: sessionId });
       }
-      return undefined;
-    });
-
-    // Queue to take over if active tab closes
-    navigator.locks.request('watchparty-ws', () => {
-      isActiveTab = true;
-      startAsActiveTab();
-      return new Promise(() => {});
-    });
-  }
-
-  function startAsActiveTab() {
-    WPWS.connect();
-  }
-
-  function loadCachedState() {
-    chrome.storage.local.get(['wpRoomState', 'wpUserId'], (stored) => {
-      if (stored.wpRoomState) {
-        roomState = stored.wpRoomState;
-        inRoom = true;
-        userId = stored.wpUserId || null;
-        refreshOverlay();
-      }
+      // Every tab connects its own WS independently (like Twitch).
+      // The server deduplicates by sessionId — multiple connections, one user.
+      WPWS.connect();
     });
   }
 
