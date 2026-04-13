@@ -414,16 +414,15 @@
 
   // Action handler map — replaces monolithic switch for testability and clarity
   const actionHandlers = {
-    'create-room': () => { if (WPWS.isReady()) processPendingActions(); else WPWS.connect(); },
-    'join-room': () => { if (WPWS.isReady()) processPendingActions(); else WPWS.connect(); },
+    'create-room': () => { if (!isActiveTab) return; if (WPWS.isReady()) processPendingActions(); else WPWS.connect(); },
+    'join-room': () => { if (!isActiveTab) return; if (WPWS.isReady()) processPendingActions(); else WPWS.connect(); },
     'leave-room': () => {
       clearTimeout(presenceTimeout);
-      WPWS.send({ type: 'room.leave', payload: {} });
+      sendOrRelay({ type: 'room.leave', payload: {} });
       const leavingRoomId = roomState?.id;
       inRoom = false; roomState = null; isHost = false;
       if (extOk()) {
         chrome.storage.local.remove('currentRoom');
-        // Clean up E2E crypto key for this room
         if (leavingRoomId) chrome.storage.session.remove(`wpRoomKey:${leavingRoomId}`).catch(() => {});
       }
       WPSync.detach();
@@ -432,22 +431,22 @@
       refreshOverlay();
       persistState();
     },
-    'toggle-public': (m) => WPWS.send({ type: 'room.updatePublic', payload: { public: m.public } }),
-    'update-room-settings': (m) => WPWS.send({ type: 'room.updateSettings', payload: m.settings }),
-    'transfer-ownership': (m) => WPWS.send({ type: 'room.updateOwnership', payload: { userId: m.targetUserId } }),
-    'update-username': (m) => WPWS.send({ type: 'user.update', payload: { username: m.username } }),
-    'ready-check': (m) => WPWS.send({ type: 'room.readyCheck', payload: { action: m.readyAction } }),
-    'send-bookmark': (m) => WPWS.send({ type: 'room.bookmark', payload: { time: m.time, label: m.label } }),
+    'toggle-public': (m) => sendOrRelay({ type: 'room.updatePublic', payload: { public: m.public } }),
+    'update-room-settings': (m) => sendOrRelay({ type: 'room.updateSettings', payload: m.settings }),
+    'transfer-ownership': (m) => sendOrRelay({ type: 'room.updateOwnership', payload: { userId: m.targetUserId } }),
+    'update-username': (m) => sendOrRelay({ type: 'user.update', payload: { username: m.username } }),
+    'ready-check': (m) => sendOrRelay({ type: 'room.readyCheck', payload: { action: m.readyAction } }),
+    'send-bookmark': (m) => sendOrRelay({ type: 'room.bookmark', payload: { time: m.time, label: m.label } }),
     'send-chat': async (m) => {
       lastUserAction = 'send-chat';
       const content = WPCrypto.isEnabled() ? await WPCrypto.encrypt(m.content) : m.content;
-      WPWS.send({ type: 'room.message', payload: { content } });
+      sendOrRelay({ type: 'room.message', payload: { content } });
     },
-    'send-typing': (m) => { lastUserAction = 'send-typing'; WPWS.send({ type: 'room.typing', payload: { typing: m.typing } }); },
-    'send-reaction': (m) => WPWS.send({ type: 'room.reaction', payload: { emoji: m.emoji } }),
-    'send-presence': (m) => WPWS.send({ type: 'user.presence', payload: { status: m.status } }),
-    'send-playback-status': (m) => WPWS.send({ type: 'user.playbackStatus', payload: { status: m.status } }),
-    'request-sync': () => WPWS.send({ type: 'player.sync', payload: roomState?.player || { paused: true, time: 0, buffering: false } }),
+    'send-typing': (m) => { lastUserAction = 'send-typing'; sendOrRelay({ type: 'room.typing', payload: { typing: m.typing } }); },
+    'send-reaction': (m) => sendOrRelay({ type: 'room.reaction', payload: { emoji: m.emoji } }),
+    'send-presence': (m) => sendOrRelay({ type: 'user.presence', payload: { status: m.status } }),
+    'send-playback-status': (m) => sendOrRelay({ type: 'user.playbackStatus', payload: { status: m.status } }),
+    'request-sync': () => sendOrRelay({ type: 'player.sync', payload: roomState?.player || { paused: true, time: 0, buffering: false } }),
   };
 
   function handleAction(message) {
@@ -508,9 +507,19 @@
       }
       if (changes.pendingAction?.newValue) {
         chrome.storage.local.remove('pendingAction');
-        // Don't guard on inRoom — action may arrive before sync event sets inRoom=true.
-        // Server rejects if not in a room anyway.
         handleAction(changes.pendingAction.newValue);
+      }
+      // Active tab: relay messages from passive tabs
+      if (isActiveTab && changes.wpRelayMessage?.newValue) {
+        chrome.storage.local.remove('wpRelayMessage');
+        WPWS.send(changes.wpRelayMessage.newValue);
+      }
+      // Passive tabs: sync UI when active tab writes room state
+      if (!isActiveTab && changes.wpRoomState) {
+        roomState = changes.wpRoomState.newValue || null;
+        inRoom = !!roomState;
+        if (changes.wpUserId) userId = changes.wpUserId.newValue;
+        refreshOverlay();
       }
     });
   }
@@ -521,21 +530,70 @@
     WPProfile.stop();
   });
 
-  // --- Initialize ---
+  // --- Tab dedup: only one tab connects to WS ---
+  // Other tabs mirror state from chrome.storage and relay actions via pendingAction.
+  let isActiveTab = false;
+
   function init() {
     WPOverlay.create();
     WPOverlay.initKeyboardShortcuts();
     WPOverlay.bindTypingIndicator(
-      () => { if (inRoom) WPWS.send({ type: 'room.typing', payload: { typing: true } }); },
-      () => { WPWS.send({ type: 'room.typing', payload: { typing: false } }); }
+      () => { if (inRoom) sendOrRelay({ type: 'room.typing', payload: { typing: true } }); },
+      () => { sendOrRelay({ type: 'room.typing', payload: { typing: false } }); }
     );
     startVideoObserver();
     WPProfile.start();
-    WPWS.connect();
+    acquireActiveTab();
+  }
 
-    chrome.storage.local.get('pendingRoomJoin', ({ pendingRoomJoin }) => {
-      if (pendingRoomJoin) {
-        // WS ready handler will pick this up and join automatically
+  // Send via WS if active tab, or relay via storage for passive tabs
+  function sendOrRelay(msg) {
+    if (isActiveTab) {
+      WPWS.send(msg);
+    } else {
+      // Relay through storage → leader tab's storage listener picks it up
+      chrome.storage.local.set({ wpRelayMessage: msg });
+    }
+  }
+
+  function acquireActiveTab() {
+    if (!navigator.locks) {
+      // Fallback: connect directly
+      isActiveTab = true;
+      WPWS.connect();
+      return;
+    }
+
+    navigator.locks.request('watchparty-ws', { ifAvailable: true }, (lock) => {
+      if (lock) {
+        // We got the lock — we're the active tab
+        isActiveTab = true;
+        WPWS.connect();
+        // Hold lock until tab closes (return a never-resolving promise)
+        return new Promise(() => {});
+      } else {
+        // Another tab has the lock — load cached state
+        loadCachedState();
+      }
+      return undefined;
+    });
+
+    // Also try to steal leadership if the active tab closes
+    navigator.locks.request('watchparty-ws', () => {
+      // Previous holder released — we're now active
+      isActiveTab = true;
+      WPWS.connect();
+      return new Promise(() => {});
+    });
+  }
+
+  function loadCachedState() {
+    chrome.storage.local.get(['wpRoomState', 'wpUserId'], (stored) => {
+      if (stored.wpRoomState) {
+        roomState = stored.wpRoomState;
+        inRoom = true;
+        userId = stored.wpUserId || null;
+        refreshOverlay();
       }
     });
   }
