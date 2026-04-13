@@ -404,6 +404,7 @@
     'create-room': () => { if (WPWS.isReady()) processPendingActions(); else WPWS.connect(); },
     'join-room': () => { if (WPWS.isReady()) processPendingActions(); else WPWS.connect(); },
     'leave-room': () => {
+      clearTimeout(presenceTimeout);
       WPWS.send({ type: 'room.leave', payload: {} });
       const leavingRoomId = roomState?.id;
       inRoom = false; roomState = null; isHost = false;

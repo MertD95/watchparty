@@ -492,8 +492,9 @@ const WPOverlay = (() => {
         div.classList.add('wp-chat-local');
         container.appendChild(div);
         container.scrollTop = container.scrollHeight;
-        localEchoSet.add(gifContent);
-        setTimeout(() => localEchoSet.delete(gifContent), LOCAL_ECHO_TTL_MS);
+        const dedupKey = gifContent.substring(0, 300); // Truncate to match server's message limit
+        localEchoSet.add(dedupKey);
+        setTimeout(() => localEchoSet.delete(dedupKey), LOCAL_ECHO_TTL_MS);
       }
       $('wp-gif-picker').classList.add('wp-hidden-el');
       $('wp-chat-input')?.focus();
@@ -848,9 +849,13 @@ const WPOverlay = (() => {
         const key = await WPCrypto.exportKey();
         if (key) inviteUrl += `#key=${key}`;
       }
-      navigator.clipboard.writeText(inviteUrl).catch(() => { el.textContent = 'Copy failed'; });
-      el.textContent = 'Link copied!';
-      setTimeout(() => { el.textContent = roomState?.id?.slice(0, 8) || ''; }, 1500);
+      navigator.clipboard.writeText(inviteUrl).then(() => {
+        el.textContent = 'Link copied!';
+      }).catch(() => {
+        el.textContent = 'Copy failed';
+      }).finally(() => {
+        setTimeout(() => { el.textContent = roomState?.id?.slice(0, 8) || ''; }, 1500);
+      });
     };
   }
 

@@ -8,6 +8,8 @@
     "test:routing": "node extension/test/routing.mjs",
     "test:browser": "node extension/test/e2e-browser.mjs",
     "test:2user": "node extension/test/two-user.mjs",
+    "test:visual": "node extension/test/visual.mjs",
+    "test:visual:update": "node extension/test/visual.mjs --update",
     "test:crypto": "node extension/test/crypto.mjs",
     "syntax": "for f in extension/*.js; do node -e \"new Function(require('fs').readFileSync('$f','utf8'))\"; done"
   },

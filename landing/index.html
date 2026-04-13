@@ -629,9 +629,7 @@
       d.textContent = str;
       return d.innerHTML;
     }
-    function escapeAttr(str) {
-      return str.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-    }
+    // escapeAttr removed — room cards now use DOM API (buildRoomCard), no innerHTML
   </script>
 </body>
 </html>

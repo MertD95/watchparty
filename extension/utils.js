@@ -18,6 +18,7 @@ const WPUtils = (() => {
   }
 
   function escapeHtml(str) {
+    if (str == null) return '';
     const d = document.createElement('div');
     d.textContent = str;
     return d.innerHTML;
