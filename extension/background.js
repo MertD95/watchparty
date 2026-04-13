@@ -2,6 +2,9 @@
 // Manages: Stremio server detection, popup communication, profile sync, badge.
 // NOTE: WebSocket connection lives in stremio-content.js (not here) to avoid MV3 suspension issues.
 
+// Load shared constants (service workers don't get content_scripts injection)
+importScripts('constants.js');
+
 const BG_VERSION = '2025-04-12-fix-chat';
 const STREMIO_BASE = 'http://localhost:11470';
 const STREMIO_API = 'https://api.strem.io';

@@ -48,13 +48,21 @@
     WPSync.resetCorrection();
     // If we were in a room, rejoin (with replay if we have a sequence number)
     if (roomState?.id) {
-      const seq = WPWS.getLastSeq();
-      if (seq > 0) {
-        WPWS.send({ type: WPProtocol.C2S.ROOM_REJOIN, payload: { id: roomState.id, lastSeq: seq } });
-      } else {
-        // Fresh page load with cached roomState — verify room still exists via regular join
-        WPWS.send({ type: WPProtocol.C2S.ROOM_JOIN, payload: { id: roomState.id } });
-      }
+      // Load E2E crypto key before rejoining (prevents garbled messages on new tabs)
+      loadCryptoKeyForRoom(roomState.id).then(() => {
+        // Send username + sessionId so server knows who we are
+        chrome.storage.local.get(WPConstants.STORAGE.USERNAME, (result) => {
+          if (result[WPConstants.STORAGE.USERNAME]) {
+            WPWS.send({ type: WPProtocol.C2S.USER_UPDATE, payload: { username: result[WPConstants.STORAGE.USERNAME], sessionId } });
+          }
+          const seq = WPWS.getLastSeq();
+          if (seq > 0) {
+            WPWS.send({ type: WPProtocol.C2S.ROOM_REJOIN, payload: { id: roomState.id, lastSeq: seq } });
+          } else {
+            WPWS.send({ type: WPProtocol.C2S.ROOM_JOIN, payload: { id: roomState.id } });
+          }
+        });
+      });
     }
   });
 
@@ -240,6 +248,25 @@
     });
   }
 
+  /** Load E2E crypto key from storage for a room (session → local fallback) */
+  function loadCryptoKeyForRoom(roomId) {
+    if (WPCrypto.isEnabled()) return Promise.resolve();
+    const key = WPConstants.STORAGE.roomKey(roomId);
+    return new Promise((resolve) => {
+      chrome.storage.session.get(key, async (result) => {
+        if (chrome.runtime.lastError || !result[key]) {
+          chrome.storage.local.get(key, async (local) => {
+            if (local[key]) try { await WPCrypto.importKey(local[key]); } catch { /* invalid key */ }
+            resolve();
+          });
+          return;
+        }
+        try { await WPCrypto.importKey(result[key]); } catch { /* invalid key */ }
+        resolve();
+      });
+    });
+  }
+
   async function importKeyAndJoin(cryptoKeyStr, roomToJoin, stored) {
     if (cryptoKeyStr && !WPCrypto.isEnabled()) {
       try { await WPCrypto.importKey(cryptoKeyStr); } catch { /* invalid key */ }
@@ -251,9 +278,16 @@
 
   // --- Room event handlers ---
 
+  function isMe(uid) {
+    if (uid === userId) return true;
+    if (!sessionId || !roomState?.users) return false;
+    const ownerUser = roomState.users.find(u => u.id === uid);
+    return ownerUser?.sessionId === sessionId;
+  }
+
   async function onRoomJoined() {
     inRoom = true;
-    isHost = roomState.owner === userId;
+    isHost = isMe(roomState.owner);
     if (video) attachSync();
     refreshOverlay();
     // Generate E2E encryption key for new rooms (host only)
@@ -283,7 +317,7 @@
 
   function onRoomSync() {
     const wasHost = isHost;
-    isHost = roomState.owner === userId;
+    isHost = isMe(roomState.owner);
     inRoom = true;
     if (roomState?.id && extOk()) chrome.storage.local.set({ [WPConstants.STORAGE.CURRENT_ROOM]: roomState.id });
     WPSync.setHost(isHost);
@@ -311,7 +345,7 @@
     chatMessages.push(message);
     if (chatMessages.length > 200) chatMessages.shift();
     WPOverlay.appendChatMessage(message, roomState, userId);
-    if (message.user !== userId) WPOverlay.incrementUnread();
+    if (!isMe(message.user)) WPOverlay.incrementUnread();
     // Relay to side panel (it can't access content script globals)
     notifyBackground({ action: 'chat-message', payload: message });
   }
@@ -411,7 +445,7 @@
 
   // --- Overlay state refresh ---
   function refreshOverlay() {
-    WPOverlay.updateState({ inRoom, isHost, userId, roomState, hasVideo: !!video });
+    WPOverlay.updateState({ inRoom, isHost, userId, sessionId, roomState, hasVideo: !!video });
     if (inRoom && !isHost) {
       WPOverlay.updateSyncIndicator(isHost, WPSync.getLastDrift());
     }

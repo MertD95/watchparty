@@ -44,7 +44,7 @@
         "http://localhost:8080/*",
         "http://localhost:8090/*"
       ],
-      "js": ["content.js"],
+      "js": ["constants.js", "content.js"],
       "run_at": "document_start"
     }
   ],

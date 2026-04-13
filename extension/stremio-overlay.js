@@ -564,11 +564,14 @@ const WPOverlay = (() => {
 
   // --- State updates ---
 
-  function updateState({ inRoom, isHost, userId, roomState, hasVideo }) {
+  let cachedSessionId = null;
+
+  function updateState({ inRoom, isHost, userId, sessionId, roomState, hasVideo }) {
+    if (sessionId) cachedSessionId = sessionId;
     // Cache username for local echo
     if (userId && roomState?.users) {
       cachedUserId = userId;
-      const me = roomState.users.find(u => u.id === userId);
+      const me = roomState.users.find(u => u.id === userId || (cachedSessionId && u.sessionId === cachedSessionId));
       if (me) cachedUsername = me.name;
     }
     if (!overlay) return;
@@ -659,7 +662,7 @@ const WPOverlay = (() => {
     renderCache.lastUsersKey = usersKey;
     usersDiv.innerHTML = roomState.users.map(u => {
       const isOwner = u.id === roomState.owner;
-      const isMe = u.id === userId;
+      const isMe = u.id === userId || (cachedSessionId && u.sessionId === cachedSessionId);
       const color = getUserColor(u.id);
       const crown = isOwner ? '<span class="wp-crown">👑</span>' : '';
       const you = isMe ? ' <span class="wp-you">(you)</span>' : '';
