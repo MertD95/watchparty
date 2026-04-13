@@ -18,7 +18,11 @@
   let chatMessages = [];
   let observer = null;
   let typingUsers = new Map();
-  let lastUserAction = null; // Track last user-initiated action for error toast filtering
+  let lastUserAction = null;
+
+  // --- Tab dedup state (must be at top — closures reference these) ---
+  let isActiveTab = false;
+  let tabChannel = null; // Initialized in init(), null-safe everywhere
 
   // --- Extension context guard (WS survives extension reloads, but chrome APIs don't) ---
   function extOk() { return !!chrome.runtime?.id; }
@@ -60,7 +64,7 @@
     notifyBackground({ action: 'ws-status-changed', connected: false });
   });
 
-  WPWS.onMessage((msg) => {
+  function processWsEvent(msg) {
     if (!msg || !msg.type) return;
     const p = msg.payload;
 
@@ -98,6 +102,14 @@
       case 'message':
         if (!p) return;
         onChatMessage(p);
+        break;
+
+      case 'chatHistory':
+        if (!p?.messages) return;
+        // Load persisted chat history (on join/rejoin)
+        for (const msg of p.messages) {
+          onChatMessage(msg);
+        }
         break;
 
       case 'user':
@@ -187,6 +199,14 @@
         roomState.settings = p.settings;
         refreshOverlay();
         break;
+    }
+  }
+
+  // Wire up: active tab processes WS events and broadcasts to passive tabs
+  WPWS.onMessage((msg) => {
+    processWsEvent(msg);
+    if (isActiveTab && tabChannel) {
+      tabChannel.postMessage({ kind: 'ws-event', data: msg });
     }
   });
 
@@ -375,7 +395,7 @@
       isHost,
       onSync(state) {
         if (roomState && userId === roomState.owner) {
-          WPWS.send({ type: 'player.sync', payload: { paused: state.paused, buffering: state.buffering, time: state.time, speed: state.speed } });
+          sendOrRelay({ type: 'player.sync', payload: { paused: state.paused, buffering: state.buffering, time: state.time, speed: state.speed } });
         }
       },
     });
@@ -461,10 +481,10 @@
     clearTimeout(presenceTimeout);
     if (document.visibilityState === 'hidden') {
       presenceTimeout = setTimeout(() => {
-        WPWS.send({ type: 'user.presence', payload: { status: 'away' } });
+        sendOrRelay({ type: 'user.presence', payload: { status: 'away' } });
       }, 10000);
     } else {
-      WPWS.send({ type: 'user.presence', payload: { status: 'active' } });
+      sendOrRelay({ type: 'user.presence', payload: { status: 'active' } });
     }
   });
 
@@ -478,7 +498,7 @@
     const status = vid.paused ? 'paused' : vid.readyState < 3 ? 'buffering' : 'playing';
     if (status !== lastPlaybackStatus) {
       lastPlaybackStatus = status;
-      WPWS.send({ type: 'user.playbackStatus', payload: { status } });
+      sendOrRelay({ type: 'user.playbackStatus', payload: { status } });
     }
   }, 3000);
 
@@ -509,18 +529,6 @@
         chrome.storage.local.remove('pendingAction');
         handleAction(changes.pendingAction.newValue);
       }
-      // Active tab: relay messages from passive tabs
-      if (isActiveTab && changes.wpRelayMessage?.newValue) {
-        chrome.storage.local.remove('wpRelayMessage');
-        WPWS.send(changes.wpRelayMessage.newValue);
-      }
-      // Passive tabs: sync UI when active tab writes room state
-      if (!isActiveTab && changes.wpRoomState) {
-        roomState = changes.wpRoomState.newValue || null;
-        inRoom = !!roomState;
-        if (changes.wpUserId) userId = changes.wpUserId.newValue;
-        refreshOverlay();
-      }
     });
   }
 
@@ -530,11 +538,9 @@
     WPProfile.stop();
   });
 
-  // --- Tab dedup: only one tab connects to WS ---
-  // Other tabs mirror state from chrome.storage and relay actions via pendingAction.
-  let isActiveTab = false;
-
   function init() {
+    // Initialize BroadcastChannel for cross-tab communication
+    tabChannel = new BroadcastChannel('watchparty-tabs');
     WPOverlay.create();
     WPOverlay.initKeyboardShortcuts();
     WPOverlay.bindTypingIndicator(
@@ -544,21 +550,32 @@
     startVideoObserver();
     WPProfile.start();
     acquireActiveTab();
+
+    // Cross-tab communication via BroadcastChannel
+    tabChannel.onmessage = (event) => {
+      const { kind, data } = event.data;
+      if (kind === 'ws-event' && !isActiveTab) {
+        // Passive tab: process the WS event through the same handler as active tab
+        processWsEvent(data);
+      } else if (kind === 'send' && isActiveTab) {
+        // Active tab: relay outgoing message from passive tab
+        WPWS.send(data);
+      }
+    };
   }
 
-  // Send via WS if active tab, or relay via storage for passive tabs
+  // Send via WS if active tab, or relay via BroadcastChannel
   function sendOrRelay(msg) {
     if (isActiveTab) {
       WPWS.send(msg);
-    } else {
-      // Relay through storage → leader tab's storage listener picks it up
-      chrome.storage.local.set({ wpRelayMessage: msg });
+    } else if (tabChannel) {
+      tabChannel.postMessage({ kind: 'send', data: msg });
     }
+    // If tabChannel is null (init hasn't run), message is silently dropped — acceptable
   }
 
   function acquireActiveTab() {
     if (!navigator.locks) {
-      // Fallback: connect directly
       isActiveTab = true;
       WPWS.connect();
       return;
@@ -566,25 +583,25 @@
 
     navigator.locks.request('watchparty-ws', { ifAvailable: true }, (lock) => {
       if (lock) {
-        // We got the lock — we're the active tab
         isActiveTab = true;
-        WPWS.connect();
-        // Hold lock until tab closes (return a never-resolving promise)
+        startAsActiveTab();
         return new Promise(() => {});
       } else {
-        // Another tab has the lock — load cached state
         loadCachedState();
       }
       return undefined;
     });
 
-    // Also try to steal leadership if the active tab closes
+    // Queue to take over if active tab closes
     navigator.locks.request('watchparty-ws', () => {
-      // Previous holder released — we're now active
       isActiveTab = true;
-      WPWS.connect();
+      startAsActiveTab();
       return new Promise(() => {});
     });
+  }
+
+  function startAsActiveTab() {
+    WPWS.connect();
   }
 
   function loadCachedState() {

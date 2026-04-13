@@ -724,19 +724,32 @@ const WPOverlay = (() => {
     }
   }
 
+  // Track displayed message IDs to prevent duplicates (covers TTL expiry edge case)
+  const displayedMessageIds = new Set();
+
   function appendChatMessage(msg, roomState, myUserId) {
     const container = document.getElementById('wp-chat-messages');
     if (!container) return;
 
-    // Deduplicate: if this is our own message that was already locally echoed, replace the local echo
+    // ID-based dedup: if message has a server ID and we've already shown it, skip
+    if (msg.id && displayedMessageIds.has(msg.id)) return;
+    if (msg.id) {
+      displayedMessageIds.add(msg.id);
+      // Prune old IDs to prevent unbounded growth (keep last 500)
+      if (displayedMessageIds.size > 500) {
+        const first = displayedMessageIds.values().next().value;
+        displayedMessageIds.delete(first);
+      }
+    }
+
+    // Content-based dedup: replace local echo with server-confirmed version
     if (msg.user === myUserId && localEchoSet.has(msg.content)) {
       localEchoSet.delete(msg.content);
-      // Find and replace the local echo with the server-confirmed version (correct name/color)
       const localMsg = container.querySelector('.wp-chat-local');
       if (localMsg) localMsg.remove();
     }
 
-    const userName = roomState?.users?.find(u => u.id === msg.user)?.name || 'Unknown';
+    const userName = roomState?.users?.find(u => u.id === msg.user)?.name || msg.userName || 'Unknown';
     const color = getUserColor(msg.user);
     // Detect GIF messages: [gif:URL] — only allow https:// URLs
     const gifMatch = msg.content.match(/^\[gif:(https:\/\/[^\]]+)\]$/);
