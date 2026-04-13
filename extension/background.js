@@ -167,9 +167,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return false;
 
     case 'leave-room':
+      // Storage fallback — content script picks this up even if tabs.sendMessage fails
+      chrome.storage.local.set({ pendingLeaveRoom: true }, () => forwardToStremioTab(message));
+      sendResponse({ ok: true });
+      return false;
+
     case 'toggle-public':
     case 'update-room-settings':
     case 'transfer-ownership':
+      // Storage fallback — content script picks up pendingAction even if tabs.sendMessage fails
+      chrome.storage.local.set({ pendingAction: { action: message.action, ...message } }, () => forwardToStremioTab(message));
+      sendResponse({ ok: true });
+      return false;
+
     case 'update-username':
     case 'ready-check':
     case 'send-bookmark':
@@ -211,10 +221,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 async function forwardToStremioTab(message) {
   try {
     const tabs = await chrome.tabs.query({ url: STREMIO_WEB_URLS });
-    console.log(`[WP-BG] forwardToStremioTab: action=${message.action}, tabs found=${tabs.length}`);
+    // Debug logging removed for production — uncomment for troubleshooting:
+    // console.log(`[WP-BG] forwardToStremioTab: action=${message.action}, tabs found=${tabs.length}`);
     for (const tab of tabs) {
       if (tab.id != null) {
-        chrome.tabs.sendMessage(tab.id, { type: 'watchparty-ext', ...message }).catch(() => {});
+        chrome.tabs.sendMessage(tab.id, { type: 'watchparty-ext', ...message })
+          .catch((e) => console.warn(`[WP-BG] sendMessage to tab ${tab.id} failed:`, e.message));
       }
     }
   } catch (e) { console.warn('[WP-BG] forwardToStremioTab failed:', e.message); }
@@ -332,7 +344,7 @@ if (chrome.sidePanel) {
 
 chrome.runtime.onInstalled.addListener(async (details) => {
   if (details.reason !== 'update') return;
-  console.log('[WP-BG] Extension updated — re-injecting content scripts');
+  // console.log('[WP-BG] Extension updated — re-injecting content scripts');
   try {
     const tabs = await chrome.tabs.query({ url: STREMIO_WEB_URLS });
     for (const tab of tabs) {
@@ -358,4 +370,5 @@ chrome.runtime.onInstalled.addListener(async (details) => {
 checkStremio();
 fetchStremioSettings();
 setInterval(checkStremio, POLL_INTERVAL_MS);
-connectDevReload();
+// Dev-only: auto-reload on file changes (no update_url = unpacked/dev extension)
+if (!('update_url' in chrome.runtime.getManifest())) connectDevReload();

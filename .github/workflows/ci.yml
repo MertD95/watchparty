@@ -15,6 +15,9 @@ jobs:
         with:
           node-version: 24
 
+      - run: npm install
+      - run: npm audit --audit-level=high
+
       # Syntax-check all extension JS files (no build step — plain JS)
       - name: Syntax check extension
         run: |

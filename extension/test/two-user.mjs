@@ -1,0 +1,304 @@
+// WatchParty — Two Real Users E2E Test
+// Two independent Chromium instances with separate chrome.storage.
+// Each test has a 60s timeout and guaranteed browser cleanup.
+//
+// Requires: WS server on ws://localhost:8181
+// Usage:    node extension/test/two-user.mjs
+
+import { chromium } from 'playwright';
+import WebSocket from 'ws';
+import path from 'path';
+import os from 'os';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const EXT_PATH = path.resolve(__dirname, '..');
+const STREMIO = 'https://web.stremio.com';
+const TIMEOUT = 15000;
+const TEST_TIMEOUT = 60000;
+
+let passed = 0, failed = 0;
+function ok(cond, label) { if (cond) { console.log(`  ✓ ${label}`); passed++; } else { console.error(`  ✗ ${label}`); failed++; } }
+
+const CHROME_FLAGS = [
+  '--disable-background-timer-throttling',
+  '--disable-backgrounding-occluded-windows',
+  '--disable-renderer-backgrounding',
+  '--no-first-run',
+  '--disable-blink-features=AutomationControlled',
+];
+const dirs = [];
+
+async function launch(label) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `wp-${label}-`));
+  dirs.push(dir);
+  return chromium.launchPersistentContext(dir, {
+    headless: false,
+    args: [`--disable-extensions-except=${EXT_PATH}`, `--load-extension=${EXT_PATH}`, ...CHROME_FLAGS],
+    viewport: { width: 1280, height: 720 },
+  });
+}
+
+async function getExtId(ctx) {
+  let sw = ctx.serviceWorkers()[0];
+  if (!sw) sw = await ctx.waitForEvent('serviceworker', { timeout: 10000 });
+  return sw.url().split('/')[2];
+}
+
+async function stremio(ctx) {
+  const p = await ctx.newPage();
+  await p.goto(STREMIO, { waitUntil: 'domcontentloaded' });
+  await p.waitForFunction(() => !!document.getElementById('wp-overlay'), { timeout: TIMEOUT });
+  await p.waitForTimeout(1000);
+  return p;
+}
+
+async function popup(ctx, extId) {
+  const p = await ctx.newPage();
+  await p.goto(`chrome-extension://${extId}/popup.html`, { waitUntil: 'domcontentloaded' });
+  await p.waitForTimeout(1500);
+  return p;
+}
+
+async function sidebar(page) {
+  const h = await page.evaluate(() => document.getElementById('wp-sidebar')?.classList.contains('wp-sidebar-hidden'));
+  if (h) { await page.evaluate(() => document.getElementById('wp-toggle-host')?.click()); await page.waitForTimeout(500); }
+}
+
+async function runTest(name, fn) {
+  console.log(`\n── ${name} ──`);
+  const contexts = [];
+  const wrappedLaunch = async (label) => { const ctx = await launch(label); contexts.push(ctx); return ctx; };
+  try {
+    await Promise.race([
+      fn(wrappedLaunch),
+      new Promise((_, rej) => setTimeout(() => rej(new Error(`TIMEOUT (${TEST_TIMEOUT/1000}s)`)), TEST_TIMEOUT)),
+    ]);
+  } catch (e) {
+    console.error(`  ✗ FATAL: ${e.message}`);
+    failed++;
+  } finally {
+    for (const ctx of contexts) { try { await ctx.close(); } catch {} }
+  }
+}
+
+// ── Tests ──
+
+async function main() {
+  console.log('WatchParty Two-User E2E Tests');
+  console.log('=============================\n');
+  try { const r = await fetch('http://localhost:8181/health'); if (!r.ok) throw 0; console.log('Server: running\n'); }
+  catch { console.error('ERROR: Server not running'); process.exit(1); }
+
+  // TEST 1: Two users — full flow
+  await runTest('Two-user: create, join, chat, settings, leave', async (launch) => {
+    const ctxA = await launch('alice');
+    const ctxB = await launch('bob');
+    const pageA = await stremio(ctxA);
+    const pageB = await stremio(ctxB);
+
+    for (const p of [pageA, pageB]) await p.evaluate(() => document.dispatchEvent(new CustomEvent('wp-action', { detail: { action: 'leave-room' } })));
+    await pageA.waitForTimeout(1500);
+    ok(await pageA.evaluate(() => document.getElementById('wp-sidebar')?.innerText?.includes('Not in a room')), 'Alice clean');
+    ok(await pageB.evaluate(() => document.getElementById('wp-sidebar')?.innerText?.includes('Not in a room')), 'Bob clean');
+
+    const extA = await getExtId(ctxA);
+    const popA = await popup(ctxA, extA);
+    await popA.fill('#username-input', 'Alice');
+    await popA.click('#btn-create');
+    await popA.waitForFunction(() => !document.getElementById('view-room')?.classList.contains('hidden'), { timeout: TIMEOUT });
+    const roomId = await popA.evaluate(() => document.getElementById('room-id-display')?.textContent);
+    ok(!!roomId, `Room created: ${roomId?.substring(0, 8)}`);
+    ok(await popA.evaluate(() => !document.getElementById('setting-public-row')?.classList.contains('hidden')), 'Host sees Public');
+    ok(await popA.evaluate(() => !document.getElementById('setting-autopause-row')?.classList.contains('hidden')), 'Host sees Auto-pause');
+    await popA.close();
+
+    await pageA.waitForFunction(() => !document.getElementById('wp-sidebar')?.innerText?.includes('Not in a room'), { timeout: 8000 });
+    ok(true, 'Alice sidebar in room');
+
+    const extB = await getExtId(ctxB);
+    const popB = await popup(ctxB, extB);
+    await popB.fill('#username-input', 'Bob');
+    await popB.fill('#room-id-input', roomId);
+    await popB.click('#btn-join');
+    await popB.waitForFunction(() => !document.getElementById('view-room')?.classList.contains('hidden'), { timeout: TIMEOUT });
+    ok(true, 'Bob joined');
+    ok(await popB.evaluate(() => document.getElementById('setting-public-row')?.classList.contains('hidden')), 'Peer no Public');
+    await popB.close();
+
+    await sidebar(pageB);
+    ok(await pageB.evaluate(() => document.getElementById('wp-sidebar')?.innerText?.includes('Alice')), 'Bob sees Alice');
+    ok(await pageA.waitForFunction(() => document.getElementById('wp-sidebar')?.innerText?.includes('Bob'), { timeout: 5000 }).then(() => true).catch(() => false), 'Alice sees Bob');
+
+    await pageB.focus('#wp-chat-input');
+    await pageB.keyboard.type('Hi from Bob');
+    await pageB.keyboard.press('Enter');
+    ok(await pageA.waitForFunction(() => document.getElementById('wp-chat-messages')?.innerText?.includes('Hi from Bob'), { timeout: 8000 }).then(() => true).catch(() => false), 'Alice sees Bob chat');
+
+    await pageA.bringToFront();
+    await pageA.waitForTimeout(3500);
+    await pageA.focus('#wp-chat-input');
+    await pageA.keyboard.type('Hi from Alice');
+    await pageA.keyboard.press('Enter');
+    ok(await pageA.waitForFunction(() => document.getElementById('wp-chat-messages')?.innerText?.includes('Hi from Alice'), { timeout: 5000 }).then(() => true).catch(() => false), 'Alice chat round-trip');
+
+    const popA2 = await popup(ctxA, extA);
+    await popA2.evaluate(() => document.querySelector('.color-btn[data-color="#ec4899"]')?.click());
+    await popA2.close();
+    const popB2 = await popup(ctxB, extB);
+    await popB2.evaluate(() => document.querySelector('.color-btn[data-color="#22c55e"]')?.click());
+    await popB2.close();
+    await pageA.waitForTimeout(1000);
+    ok(await pageA.evaluate(() => document.getElementById('wp-sidebar')?.style.getPropertyValue('--wp-accent') === '#ec4899'), 'Alice pink');
+    await pageB.waitForTimeout(1000);
+    ok(await pageB.evaluate(() => document.getElementById('wp-sidebar')?.style.getPropertyValue('--wp-accent') === '#22c55e'), 'Bob green');
+
+    const popB3 = await popup(ctxB, extB);
+    await popB3.click('#btn-leave');
+    await popB3.close();
+    let bobGone = false;
+    for (let i = 0; i < 10; i++) { await pageA.waitForTimeout(500); bobGone = await pageA.evaluate(() => !document.getElementById('wp-users')?.innerText?.includes('Bob')); if (bobGone) break; }
+    ok(bobGone, 'Alice sees Bob left');
+
+    const popA3 = await popup(ctxA, extA);
+    await popA3.click('#btn-leave');
+    await popA3.close();
+    ok(await pageA.waitForFunction(() => document.getElementById('wp-sidebar')?.innerText?.includes('Not in a room'), { timeout: 10000 }).then(() => true).catch(() => false), 'Alice left');
+  });
+
+  // TEST 2: Public/private room via direct WS (server verification)
+  await runTest('Public/private room API', async () => {
+    const ws1 = new WebSocket('ws://localhost:8181');
+    const pubId = await new Promise(resolve => {
+      ws1.on('message', d => { const m = JSON.parse(d.toString()); if (m.type === 'ready') { ws1.send(JSON.stringify({ type: 'user.update', payload: { username: 'Host' } })); ws1.send(JSON.stringify({ type: 'room.new', payload: { meta: { id: 'tt1', type: 'movie', name: 'PubTest' }, stream: { url: 'http://x/s' }, public: true } })); } if (m.type === 'room') resolve(m.payload.id); });
+    });
+    const r1 = await fetch('http://localhost:8181/rooms').then(r => r.json());
+    ok(r1.rooms?.some(r => r.id === pubId), 'Public in /rooms');
+    ok(r1.rooms?.find(r => r.id === pubId)?.owner === 'Host', 'Owner = Host');
+
+    ws1.send(JSON.stringify({ type: 'room.updatePublic', payload: { public: false } }));
+    await new Promise(r => setTimeout(r, 1000));
+    ok(!(await fetch('http://localhost:8181/rooms').then(r => r.json())).rooms?.some(r => r.id === pubId), 'Hidden after toggle private');
+
+    ws1.send(JSON.stringify({ type: 'room.updatePublic', payload: { public: true } }));
+    await new Promise(r => setTimeout(r, 1000));
+    ok((await fetch('http://localhost:8181/rooms').then(r => r.json())).rooms?.some(r => r.id === pubId), 'Visible after toggle public');
+    ws1.close();
+  });
+
+  // TEST 3: Sidebar UI
+  await runTest('Sidebar UI', async (launch) => {
+    const ctx = await launch('ui');
+    const page = await stremio(ctx);
+    const ext = await getExtId(ctx);
+    const pop = await popup(ctx, ext);
+    await pop.fill('#username-input', 'Host');
+    await pop.click('#btn-create');
+    await pop.waitForFunction(() => !document.getElementById('view-room')?.classList.contains('hidden'), { timeout: TIMEOUT });
+    await pop.close();
+    await page.waitForTimeout(2000);
+    await sidebar(page);
+
+    await page.evaluate(() => document.getElementById('wp-close-sidebar')?.click());
+    await page.waitForTimeout(300);
+    ok(await page.evaluate(() => document.getElementById('wp-sidebar')?.classList.contains('wp-sidebar-hidden')), '× closes');
+    await page.evaluate(() => document.getElementById('wp-toggle-host')?.click());
+    await page.waitForTimeout(300);
+    ok(await page.evaluate(() => !document.getElementById('wp-sidebar')?.classList.contains('wp-sidebar-hidden')), 'Toggle opens');
+    ok(await page.evaluate(() => Math.round(document.body.getBoundingClientRect().width)) < 1280, 'Body pushed');
+
+    await page.evaluate(() => document.getElementById('wp-minimize-btn')?.click());
+    await page.waitForTimeout(300);
+    ok(await page.evaluate(() => !document.getElementById('wp-minimized-bar')?.classList.contains('wp-hidden-el')), 'Minimize');
+    await page.evaluate(() => document.getElementById('wp-minimized-bar')?.click());
+    await page.waitForTimeout(300);
+    ok(await page.evaluate(() => !document.getElementById('wp-body')?.classList.contains('wp-hidden-el')), 'Bar expands');
+
+    await page.keyboard.press('Alt+w');
+    await page.waitForTimeout(300);
+    ok(await page.evaluate(() => document.getElementById('wp-sidebar')?.classList.contains('wp-sidebar-hidden')), 'Alt+W closes');
+    await page.keyboard.press('Alt+w');
+    await page.waitForTimeout(300);
+    ok(await page.evaluate(() => !document.getElementById('wp-sidebar')?.classList.contains('wp-sidebar-hidden')), 'Alt+W opens');
+
+    await page.evaluate(() => document.querySelector('#wp-emoji-btn')?.click());
+    await page.waitForTimeout(300);
+    ok(await page.evaluate(() => !document.getElementById('wp-emoji-picker')?.classList.contains('wp-hidden-el')), 'Emoji opens');
+    await page.evaluate(() => document.querySelector('#wp-emoji-btn')?.click());
+    await page.waitForTimeout(200);
+    await page.evaluate(() => document.querySelector('#wp-gif-btn')?.click());
+    await page.waitForTimeout(300);
+    ok(await page.evaluate(() => { const p = document.getElementById('wp-gif-picker'); return p && !p.classList.contains('wp-hidden-el') && !!p.querySelector('input'); }), 'GIF opens');
+    await page.evaluate(() => document.querySelector('#wp-gif-btn')?.click());
+  });
+
+  // TEST 4: SPA navigation
+  await runTest('SPA navigation in room', async (launch) => {
+    const ctx = await launch('spa');
+    const page = await stremio(ctx);
+    const ext = await getExtId(ctx);
+    const pop = await popup(ctx, ext);
+    await pop.fill('#username-input', 'Nav');
+    await pop.click('#btn-create');
+    await pop.waitForFunction(() => !document.getElementById('view-room')?.classList.contains('hidden'), { timeout: TIMEOUT });
+    await pop.close();
+    await page.waitForTimeout(2000);
+
+    for (const h of ['#/', '#/discover', '#/library', '#/settings']) {
+      await page.evaluate(hash => window.location.hash = hash.slice(1), h);
+      await page.waitForTimeout(1000);
+      ok(await page.evaluate(() => !!document.getElementById('wp-overlay') && !!document.getElementById('wp-sidebar')), `Persists on ${h}`);
+    }
+  });
+
+  // TEST 5: Named room
+  await runTest('Named room rejoin', async (launch) => {
+    const ctx = await launch('named');
+    const page = await stremio(ctx);
+    const ext = await getExtId(ctx);
+    const pop1 = await popup(ctx, ext);
+    await pop1.fill('#username-input', 'Alice');
+    await pop1.fill('#room-name-input', 'persist-test');
+    await pop1.click('#btn-create');
+    await pop1.waitForFunction(() => !document.getElementById('view-room')?.classList.contains('hidden'), { timeout: TIMEOUT });
+    const id1 = await pop1.evaluate(() => document.getElementById('room-id-display')?.textContent);
+    ok(!!id1, `Created: ${id1?.substring(0, 8)}`);
+    await pop1.close();
+
+    await page.evaluate(() => document.dispatchEvent(new CustomEvent('wp-action', { detail: { action: 'leave-room' } })));
+    await page.waitForFunction(() => document.getElementById('wp-sidebar')?.innerText?.includes('Not in a room'), { timeout: 8000 }).catch(() => {});
+    await page.waitForTimeout(1000);
+
+    const pop2 = await popup(ctx, ext);
+    await pop2.fill('#username-input', 'Alice');
+    await pop2.fill('#room-name-input', 'persist-test');
+    await pop2.click('#btn-create');
+    await pop2.waitForFunction(() => !document.getElementById('view-room')?.classList.contains('hidden'), { timeout: TIMEOUT });
+    const id2 = await pop2.evaluate(() => document.getElementById('room-id-display')?.textContent);
+    ok(id2 === id1, `Same ID: ${id2?.substring(0, 8)}`);
+    await pop2.close();
+  });
+
+  // TEST 6: Invite link
+  await runTest('Invite link copy', async (launch) => {
+    const ctx = await launch('inv');
+    await stremio(ctx);
+    const ext = await getExtId(ctx);
+    const pop = await popup(ctx, ext);
+    await pop.fill('#username-input', 'Host');
+    await pop.click('#btn-create');
+    await pop.waitForFunction(() => !document.getElementById('view-room')?.classList.contains('hidden'), { timeout: TIMEOUT });
+    await pop.click('#btn-share');
+    await pop.waitForTimeout(500);
+    ok((await pop.evaluate(() => document.getElementById('btn-share')?.textContent))?.includes('Copied'), 'Copy confirmed');
+    await pop.close();
+  });
+
+  console.log(`\n${'='.repeat(30)}`);
+  console.log(`Results: ${passed} passed, ${failed} failed`);
+  for (const d of dirs) { try { fs.rmSync(d, { recursive: true, force: true }); } catch {} }
+  process.exit(failed > 0 ? 1 : 0);
+}
+
+main();

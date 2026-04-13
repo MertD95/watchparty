@@ -60,6 +60,7 @@ const WPWS = (() => {
       keepAliveTimer = setInterval(() => {
         if (ws?.readyState === WebSocket.OPEN) send({ type: 'clock.ping', payload: { clientTime: Date.now() } });
       }, KEEPALIVE_INTERVAL_MS);
+      flushQueue();
       if (onConnectHandler) onConnectHandler();
     };
 
@@ -98,6 +99,7 @@ const WPWS = (() => {
     clockSyncTimer = null;
     for (const t of pendingPingTimers) clearTimeout(t);
     pendingPingTimers = [];
+    sendQueue = [];
     reconnectAttempts = 0;
     if (ws) {
       ws.onclose = null;
@@ -114,8 +116,22 @@ const WPWS = (() => {
     reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, delay);
   }
 
+  let sendQueue = [];
   function send(msg) {
-    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(msg));
+    } else {
+      // Queue state-changing messages so they're sent when WS reconnects.
+      // Skip high-frequency messages (player.sync, clock.ping) to avoid queue bloat.
+      if (msg.type !== 'player.sync' && msg.type !== 'clock.ping') {
+        sendQueue.push(msg);
+      }
+    }
+  }
+  function flushQueue() {
+    while (sendQueue.length > 0 && ws?.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(sendQueue.shift()));
+    }
   }
 
   function isConnected() {

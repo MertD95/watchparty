@@ -43,11 +43,14 @@
   WPWS.onConnect(() => {
     notifyBackground({ action: 'ws-status-changed', connected: true });
     WPSync.resetCorrection();
-    // If we were in a room, rejoin with replay of missed messages
+    // If we were in a room, rejoin (with replay if we have a sequence number)
     if (roomState?.id) {
       const seq = WPWS.getLastSeq();
       if (seq > 0) {
         WPWS.send({ type: 'room.rejoin', payload: { id: roomState.id, lastSeq: seq } });
+      } else {
+        // Fresh page load with cached roomState — verify room still exists via regular join
+        WPWS.send({ type: 'room.join', payload: { id: roomState.id } });
       }
     }
   });
@@ -104,11 +107,16 @@
 
       case 'error':
         if (p?.type === 'room') {
+          const wasInRoom = inRoom;
           inRoom = false; roomState = null;
           WPSync.detach();
           if (extOk()) chrome.storage.local.remove(['currentRoom', 'pendingRoomJoin']);
           refreshOverlay();
           persistState();
+          // Show feedback if we lost a room (e.g., server restart cleared it)
+          if (wasInRoom || p?.code === 'ROOM_NOT_FOUND') {
+            WPOverlay.showToast('Room no longer exists', 3000);
+          }
         }
         // Show error feedback for non-room errors (cooldown, owner, validation, etc.)
         if (p?.type !== 'room' && p?.message) {
@@ -478,6 +486,16 @@
       if (changes.pendingRoomCreate || changes.pendingRoomJoin) {
         if (WPWS.isReady()) { processPendingActions(); }
         else { WPWS.connect(); }
+      }
+      if (changes.pendingLeaveRoom?.newValue) {
+        chrome.storage.local.remove('pendingLeaveRoom');
+        if (inRoom) handleAction({ action: 'leave-room' });
+      }
+      if (changes.pendingAction?.newValue) {
+        chrome.storage.local.remove('pendingAction');
+        // Don't guard on inRoom — action may arrive before sync event sets inRoom=true.
+        // Server rejects if not in a room anyway.
+        handleAction(changes.pendingAction.newValue);
       }
     });
   }

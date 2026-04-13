@@ -432,11 +432,13 @@ const WPOverlay = (() => {
       $('wp-minimized-bar').classList.remove('wp-hidden-el');
       $('wp-minimize-btn').classList.add('wp-hidden-el');
     });
-    $('wp-expand-btn').addEventListener('click', () => {
+    function expandSidebar() {
       $('wp-body').classList.remove('wp-hidden-el');
       $('wp-minimized-bar').classList.add('wp-hidden-el');
       $('wp-minimize-btn').classList.remove('wp-hidden-el');
-    });
+    }
+    $('wp-expand-btn').addEventListener('click', expandSidebar);
+    $('wp-minimized-bar').addEventListener('click', expandSidebar);
     $('wp-chat-send').addEventListener('click', () => sendChat());
     $('wp-chat-input').addEventListener('keydown', (e) => {
       if (e.key === 'Enter') sendChat();

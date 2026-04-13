@@ -68,6 +68,28 @@ function extractSwitchCases(source, label, switchVar) {
   return cases;
 }
 
+// ── Extract keys from an object literal handler map ──
+// Matches:  const actionHandlers = { 'foo': ..., 'bar': ... }
+
+function extractObjectHandlerKeys(source, varName) {
+  const keys = new Set();
+  const pattern = new RegExp(`(?:const|let|var)\\s+${varName}\\s*=\\s*\\{`);
+  const match = pattern.exec(source);
+  if (!match) return keys;
+  // Count braces to find the object block
+  let depth = 1, i = match.index + match[0].length;
+  while (i < source.length && depth > 0) {
+    if (source[i] === '{') depth++;
+    else if (source[i] === '}') depth--;
+    i++;
+  }
+  const block = source.slice(match.index + match[0].length, i - 1);
+  const re = /'([^']+)'\s*:/g;
+  let m;
+  while ((m = re.exec(block)) !== null) keys.add(m[1]);
+  return keys;
+}
+
 // ── Extract actions sent via chrome.runtime.sendMessage ──
 
 function extractSentActions(source, label) {
@@ -100,9 +122,12 @@ const popupSource   = readSrc('popup.js');
 
 // background.js has one switch on message.action
 const bgCases      = extractSwitchCases(bgSource, 'background.js', 'action');
-// stremio-content.js has TWO switches: one on msg.type (server messages) and one on message.action (extension messages)
-// We only care about the message.action switch for routing validation
-const contentCases = extractSwitchCases(contentSource, 'stremio-content.js', 'action');
+// stremio-content.js uses an actionHandlers object map (not a switch statement)
+// Fall back to extracting keys from the object literal if switch parsing finds nothing
+let contentCases = extractSwitchCases(contentSource, 'stremio-content.js', 'action');
+if (contentCases.size === 0) {
+  contentCases = extractObjectHandlerKeys(contentSource, 'actionHandlers');
+}
 const overlaySends = extractSentActions(overlaySource, 'stremio-overlay.js');
 const popupSends   = extractSentActions(popupSource, 'popup.js');
 
@@ -163,6 +188,8 @@ const BG_NON_UI_SENDERS = new Set([
   'send-presence',         // content.js programmatic (visibility change)
   'send-playback-status',  // content.js programmatic (periodic status)
   'update-username',       // content.js processPendingActions (username from storage)
+  'chat-message',          // content.js → background (relay to sidepanel)
+  'bookmark',              // content.js → background (relay to sidepanel)
   // Overlay actions now use DOM events directly — background.js cases kept for popup relay
   'send-chat', 'send-typing', 'send-reaction', 'send-bookmark',
   'ready-check', 'transfer-ownership', 'request-sync',

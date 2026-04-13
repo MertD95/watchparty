@@ -368,8 +368,8 @@
       <div class="modal-error" id="uuid-error" style="display:none"></div>
       <input type="text" id="uuid-input" placeholder="Paste room ID (e.g. a1b2c3d4-...)" />
       <div class="modal-actions">
-        <button class="btn-cancel" onclick="closeUuidModal()">Cancel</button>
-        <button class="btn-primary" onclick="submitUuid()">Join Room</button>
+        <button class="btn-cancel" id="uuid-cancel-btn">Cancel</button>
+        <button class="btn-primary" id="uuid-submit-btn">Join Room</button>
       </div>
     </div>
   </div>
@@ -395,6 +395,73 @@
       loadPublicRooms();
     }
 
+    function buildRoomCard(room) {
+      const mins = Math.floor((room.time || 0) / 60);
+      const secs = Math.floor((room.time || 0) % 60).toString().padStart(2, '0');
+      const statusIcon = room.paused ? '\u23F8' : '\u25B6';
+      const statusColor = room.paused ? '#f59e0b' : '#22c55e';
+      const isPublic = room.public;
+      const metaId = room.meta?.id || '';
+      const metaType = room.meta?.type || '';
+
+      const card = document.createElement('div');
+      card.className = 'room-card';
+
+      // Poster
+      if (room.meta.poster) {
+        const img = document.createElement('img');
+        img.className = 'room-poster';
+        img.src = room.meta.poster;
+        img.alt = '';
+        card.appendChild(img);
+      } else {
+        const placeholder = document.createElement('div');
+        placeholder.className = 'room-poster';
+        card.appendChild(placeholder);
+      }
+
+      // Info section
+      const info = document.createElement('div');
+      info.className = 'room-info';
+      const title = document.createElement('div');
+      title.className = 'room-title';
+      title.textContent = room.meta.name || 'Untitled';
+      info.appendChild(title);
+      const metaLine1 = document.createElement('div');
+      metaLine1.className = 'room-meta';
+      metaLine1.innerHTML = `Hosted by ${escapeHtml(room.owner)}${room.meta.year ? ` &middot; ${room.meta.year}` : ''}`;
+      info.appendChild(metaLine1);
+      const metaLine2 = document.createElement('div');
+      metaLine2.className = 'room-meta';
+      metaLine2.innerHTML = `<span style="color:${statusColor}">${statusIcon}</span> ${mins}:${secs}${room.bookmarks ? ` &middot; \uD83D\uDCCC ${room.bookmarks}` : ''}`;
+      info.appendChild(metaLine2);
+      card.appendChild(info);
+
+      // Badge
+      const badge = document.createElement('span');
+      badge.className = isPublic ? 'room-badge room-badge-public' : 'room-badge room-badge-private';
+      badge.textContent = isPublic ? 'Public' : 'Private';
+      card.appendChild(badge);
+
+      // Users count
+      const users = document.createElement('div');
+      users.className = 'room-users';
+      users.textContent = `${room.users} watching`;
+      card.appendChild(users);
+
+      // Join button — addEventListener instead of inline onclick
+      const btn = document.createElement('button');
+      btn.className = 'room-join-btn';
+      btn.textContent = 'Join';
+      btn.addEventListener('click', () => {
+        if (isPublic) joinRoom(room.id, metaId, metaType);
+        else showUuidModal();
+      });
+      card.appendChild(btn);
+
+      return card;
+    }
+
     function renderRooms(data) {
       const list = document.getElementById('rooms-list');
       const empty = document.getElementById('rooms-empty');
@@ -402,43 +469,13 @@
 
       if (!data.rooms || data.rooms.length === 0) {
         empty.style.display = 'block';
-        // Clear any existing room cards
         const cards = list.querySelectorAll('.room-card');
         cards.forEach(c => c.remove());
         return;
       }
 
       empty.style.display = 'none';
-      list.innerHTML = data.rooms.map(room => {
-        const mins = Math.floor((room.time || 0) / 60);
-        const secs = Math.floor((room.time || 0) % 60).toString().padStart(2, '0');
-        const statusIcon = room.paused ? '\u23F8' : '\u25B6';
-        const statusColor = room.paused ? '#f59e0b' : '#22c55e';
-        const isPublic = room.public;
-        const badge = isPublic
-          ? '<span class="room-badge room-badge-public">Public</span>'
-          : '<span class="room-badge room-badge-private">Private</span>';
-        const metaId = room.meta?.id || '';
-        const metaType = room.meta?.type || '';
-        const joinAction = isPublic
-          ? `joinRoom('${escapeAttr(room.id)}','${escapeAttr(metaId)}','${escapeAttr(metaType)}')`
-          : `showUuidModal()`;
-        return `
-          <div class="room-card">
-            ${room.meta.poster
-              ? `<img class="room-poster" src="${escapeAttr(room.meta.poster)}" alt="" />`
-              : `<div class="room-poster"></div>`}
-            <div class="room-info">
-              <div class="room-title">${escapeHtml(room.meta.name || 'Untitled')}</div>
-              <div class="room-meta">Hosted by ${escapeHtml(room.owner)}${room.meta.year ? ` &middot; ${room.meta.year}` : ''}</div>
-              <div class="room-meta"><span style="color:${statusColor}">${statusIcon}</span> ${mins}:${secs}${room.bookmarks ? ` &middot; \uD83D\uDCCC ${room.bookmarks}` : ''}</div>
-            </div>
-            ${badge}
-            <div class="room-users">${room.users} watching</div>
-            <button class="room-join-btn" onclick="${joinAction}">Join</button>
-          </div>
-        `;
-      }).join('');
+      list.replaceChildren(...data.rooms.map(buildRoomCard));
     }
 
     async function loadPublicRooms() {
@@ -446,45 +483,7 @@
         const res = await fetch(ROOMS_API, { signal: AbortSignal.timeout(5000) });
         if (!res.ok) return;
         const data = await res.json();
-        const list = document.getElementById('rooms-list');
-        const empty = document.getElementById('rooms-empty');
-
-        if (!data.rooms || data.rooms.length === 0) {
-          empty.style.display = 'block';
-          return;
-        }
-
-        empty.style.display = 'none';
-        list.innerHTML = data.rooms.map(room => {
-          const mins = Math.floor((room.time || 0) / 60);
-          const secs = Math.floor((room.time || 0) % 60).toString().padStart(2, '0');
-          const statusIcon = room.paused ? '⏸' : '▶';
-          const statusColor = room.paused ? '#f59e0b' : '#22c55e';
-          const isPublic = room.public;
-          const badge = isPublic
-            ? '<span class="room-badge room-badge-public">Public</span>'
-            : '<span class="room-badge room-badge-private">Private</span>';
-          const metaId = room.meta?.id || '';
-          const metaType = room.meta?.type || '';
-          const joinAction = isPublic
-            ? `joinRoom('${escapeAttr(room.id)}','${escapeAttr(metaId)}','${escapeAttr(metaType)}')`
-            : `showUuidModal()`;
-          return `
-            <div class="room-card">
-              ${room.meta.poster
-                ? `<img class="room-poster" src="${escapeAttr(room.meta.poster)}" alt="" />`
-                : `<div class="room-poster"></div>`}
-              <div class="room-info">
-                <div class="room-title">${escapeHtml(room.meta.name || 'Untitled')}</div>
-                <div class="room-meta">Hosted by ${escapeHtml(room.owner)}${room.meta.year ? ` &middot; ${room.meta.year}` : ''}</div>
-                <div class="room-meta"><span style="color:${statusColor}">${statusIcon}</span> ${mins}:${secs}${room.bookmarks ? ` &middot; 📌 ${room.bookmarks}` : ''}</div>
-              </div>
-              ${badge}
-              <div class="room-users">${room.users} watching</div>
-              <button class="room-join-btn" onclick="${joinAction}">Join</button>
-            </div>
-          `;
-        }).join('');
+        renderRooms(data);
       } catch {
         // Server unavailable — show empty state
       }
@@ -493,6 +492,12 @@
     // Live updates via SSE (Server-Sent Events) with polling fallback
     const ROOMS_STREAM = ROOMS_API + '/stream';
     let sseActive = false;
+    let pollingStarted = false;
+    function startPollingFallback() {
+      if (pollingStarted) return;
+      pollingStarted = true;
+      setInterval(loadPublicRooms, 10000);
+    }
     try {
       const sse = new EventSource(ROOMS_STREAM);
       sse.onmessage = (event) => {
@@ -506,12 +511,12 @@
         // SSE failed — fall back to polling
         if (!sseActive) {
           sse.close();
-          setInterval(loadPublicRooms, 10000);
+          startPollingFallback();
         }
       };
     } catch {
       // EventSource not available — fall back to polling
-      setInterval(loadPublicRooms, 10000);
+      startPollingFallback();
     }
     // Also poll as fallback for SSE reconnect gaps
     setInterval(() => { if (!sseActive) loadPublicRooms(); }, 15000);
@@ -561,6 +566,9 @@
       // Join with the UUID
       joinRoom(id);
     }
+    // Modal button listeners
+    document.getElementById('uuid-cancel-btn').addEventListener('click', closeUuidModal);
+    document.getElementById('uuid-submit-btn').addEventListener('click', submitUuid);
     // Allow Enter key in modal
     document.getElementById('uuid-input').addEventListener('keydown', (e) => {
       if (e.key === 'Enter') submitUuid();
@@ -578,7 +586,7 @@
       document.getElementById('redirect-room-id').textContent = roomId;
 
       // Tell content script to store room ID
-      window.postMessage({ type: 'watchparty-join-room', roomId }, '*');
+      window.postMessage({ type: 'watchparty-join-room', roomId }, window.location.origin);
 
       // Check if extension is installed
       const extCheck = setTimeout(() => {
@@ -596,7 +604,7 @@
           document.getElementById('redirect-status').textContent = 'Extension detected! Redirecting to Stremio Web...';
 
           // Tell extension about the pending room
-          window.postMessage({ type: 'watchparty-join-room', roomId }, '*');
+          window.postMessage({ type: 'watchparty-join-room', roomId }, window.location.origin);
 
           setTimeout(() => {
             window.location.href = 'https://web.stremio.com';
@@ -607,7 +615,7 @@
       // Also check via attribute (content.js sets this synchronously)
       if (document.documentElement.hasAttribute('data-watchparty-ext')) {
         clearTimeout(extCheck);
-        window.postMessage({ type: 'watchparty-join-room', roomId }, '*');
+        window.postMessage({ type: 'watchparty-join-room', roomId }, window.location.origin);
         document.getElementById('redirect-status').textContent = 'Redirecting to Stremio Web...';
         setTimeout(() => {
           window.location.href = 'https://web.stremio.com';
