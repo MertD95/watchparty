@@ -101,13 +101,25 @@ function renderRoomDetails(room, myUserId, mySessionId) {
     return u?.sessionId === mySessionId;
   }
 
+  // Resolve host status: owner ID may be orphaned after WS reconnect/dedup.
+  // If the owner ID isn't in the users list, check if we're the only matching session.
+  function amIHost() {
+    if (isMe(room.owner)) return true;
+    // Owner ID is stale (not in users list) — check if any user with our session exists
+    const ownerInList = room.users?.some(u => u.id === room.owner);
+    if (!ownerInList && room.users?.some(u => isMe(u.id))) return true;
+    return false;
+  }
+
   $('room-id-display').textContent = room.id;
   $('room-meta').textContent = room.meta?.name
     ? `${room.meta.name}${room.meta.year ? ` (${room.meta.year})` : ''}`
     : 'WatchParty Session';
 
+  const isHost = amIHost();
+
   // Content link for peers
-  if (room.meta?.id && room.meta?.type && !isMe(room.owner)) {
+  if (room.meta?.id && room.meta?.type && !isHost) {
     $('content-link-hint').classList.remove('hidden');
     $('content-name').textContent = room.meta.name || room.meta.id;
     $('content-link').href = `https://web.stremio.com/#/detail/${encodeURIComponent(room.meta.type)}/${encodeURIComponent(room.meta.id)}`;
@@ -117,14 +129,13 @@ function renderRoomDetails(room, myUserId, mySessionId) {
 
   // Users list
   const usersList = $('users-list');
+  const ownerInList = room.users?.some(u => u.id === room.owner);
   usersList.innerHTML = room.users.map(u => {
-    const isOwner = u.id === room.owner;
+    // Crown: either the actual owner, or if owner is orphaned, the host (us)
+    const isOwner = u.id === room.owner || (!ownerInList && isHost && isMe(u.id));
     const isMyUser = isMe(u.id);
     return `<div class="user-item">${isOwner ? '<span class="user-crown">👑</span> ' : ''}${escapeHtml(u.name)}${isMyUser ? ' (you)' : ''}</div>`;
   }).join('');
-
-  // Room settings
-  const isHost = isMe(room.owner);
   const publicRow = $('setting-public-row');
   const autopauseRow = $('setting-autopause-row');
   if (isHost) {

@@ -20,6 +20,15 @@
     return u?.sessionId === currentSessionId;
   }
 
+  /** Am I the host? Handles orphaned owner IDs after WS reconnect. */
+  function amIHost() {
+    if (!currentRoomState) return false;
+    if (isMe(currentRoomState.owner)) return true;
+    const ownerInList = currentRoomState.users?.some(u => u.id === currentRoomState.owner);
+    if (!ownerInList && currentRoomState.users?.some(u => isMe(u.id))) return true;
+    return false;
+  }
+
   // --- State polling from storage ---
   function pollState() {
     chrome.storage.local.get([WPConstants.STORAGE.ROOM_STATE, WPConstants.STORAGE.USER_ID, WPConstants.STORAGE.SESSION_ID, WPConstants.STORAGE.WS_CONNECTED], (result) => {
@@ -47,7 +56,7 @@
       return;
     }
 
-    const isHost = isMe(roomState.owner);
+    const isHost = amIHost();
     const hostLabel = isHost ? 'You are the host' : 'Synced to host';
 
     // Action buttons
@@ -102,7 +111,9 @@
       users.classList.remove('hidden');
       users.innerHTML = roomState.users.map(u => {
         const color = getUserColor(u.sessionId || u.id);
-        const crown = u.id === roomState.owner ? '<span style="font-size:12px">&#x1F451;</span>' : '';
+        const ownerInList = roomState.users.some(u => u.id === roomState.owner);
+        const isCrown = u.id === roomState.owner || (!ownerInList && isHost && isMe(u.id));
+        const crown = isCrown ? '<span style="font-size:12px">&#x1F451;</span>' : '';
         const you = isMe(u.id) ? ' <span style="color:#888;font-size:11px">(you)</span>' : '';
         const awayClass = u.status === 'away' ? ' user-away' : '';
         let statusIcon = '';

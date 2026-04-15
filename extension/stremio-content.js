@@ -235,6 +235,8 @@
   // --- Process pending create/join actions from storage ---
   function processPendingActions() {
     if (!WPWS.isReady() || !extOk()) return;
+    // sessionId MUST be loaded before sending any room messages — otherwise server can't dedup
+    if (!sessionId) return;
     chrome.storage.local.get([WPConstants.STORAGE.PENDING_ROOM_CREATE, WPConstants.STORAGE.PENDING_ROOM_JOIN, WPConstants.STORAGE.CURRENT_ROOM, WPConstants.STORAGE.USERNAME], (stored) => {
       if (stored[WPConstants.STORAGE.PENDING_ROOM_CREATE]) {
         chrome.storage.local.remove(WPConstants.STORAGE.PENDING_ROOM_CREATE);
@@ -303,13 +305,26 @@
   function isMe(uid) {
     if (uid === userId) return true;
     if (!sessionId || !roomState?.users) return false;
-    const ownerUser = roomState.users.find(u => u.id === uid);
-    return ownerUser?.sessionId === sessionId;
+    const user = roomState.users.find(u => u.id === uid);
+    if (user) return user.sessionId === sessionId;
+    // uid not in users list (orphaned owner after reconnect/dedup) —
+    // check if WE are in the users list (if so, and owner is orphaned, we're likely the owner)
+    return false;
+  }
+
+  /** Am I the room host? Handles orphaned owner IDs after WS reconnect. */
+  function amIHost() {
+    if (!roomState) return false;
+    if (isMe(roomState.owner)) return true;
+    // Owner ID not in users list (stale) — if we're in the room, we're the host
+    const ownerInList = roomState.users?.some(u => u.id === roomState.owner);
+    if (!ownerInList && roomState.users?.some(u => u.id === userId || (sessionId && u.sessionId === sessionId))) return true;
+    return false;
   }
 
   async function onRoomJoined() {
     inRoom = true;
-    isHost = isMe(roomState.owner);
+    isHost = amIHost();
     if (video) { claimActiveTab(); attachSync(); }
     refreshOverlay();
     // E2E encryption is opt-in: only enabled when a key is provided via invite URL.
@@ -339,7 +354,7 @@
 
   function onRoomSync() {
     const wasHost = isHost;
-    isHost = isMe(roomState.owner);
+    isHost = amIHost();
     inRoom = true;
     if (roomState?.id && extOk()) chrome.storage.local.set({ [WPConstants.STORAGE.CURRENT_ROOM]: roomState.id });
     WPSync.setHost(isHost);
@@ -462,7 +477,7 @@
     WPSync.attach(video, {
       isHost,
       onSync(state) {
-        if (roomState && isMe(roomState.owner) && isActiveVideoTab) {
+        if (roomState && amIHost() && isActiveVideoTab) {
           WPWS.send({ type: WPProtocol.C2S.PLAYER_SYNC, payload: { paused: state.paused, buffering: state.buffering, time: state.time, speed: state.speed } });
         }
       },

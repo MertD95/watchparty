@@ -663,9 +663,11 @@ const WPOverlay = (() => {
     const usersKey = roomState.users.map(u => `${u.id}:${u.status}:${u.playbackStatus}`).join(',') + `:${roomState.owner}:${isHost}`;
     if (renderCache.lastUsersKey === usersKey) return;
     renderCache.lastUsersKey = usersKey;
+    const ownerInList = roomState.users.some(u => u.id === roomState.owner);
     usersDiv.innerHTML = roomState.users.map(u => {
-      const isOwner = u.id === roomState.owner;
       const isMe = u.id === userId || (cachedSessionId && u.sessionId === cachedSessionId);
+      // Crown: actual owner, or if owner ID is orphaned (stale after reconnect), the host
+      const isOwner = u.id === roomState.owner || (!ownerInList && isHost && isMe);
       const color = getUserColor(u.sessionId || u.id);
       const crown = isOwner ? '<span class="wp-crown">👑</span>' : '';
       const you = isMe ? ' <span class="wp-you">(you)</span>' : '';
