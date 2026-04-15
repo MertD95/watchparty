@@ -277,18 +277,21 @@
     if (WPCrypto.isEnabled() || !extOk()) return Promise.resolve();
     const key = WPConstants.STORAGE.roomKey(roomId);
     return new Promise((resolve) => {
-      if (!extOk()) { resolve(); return; }
-      chrome.storage.session.get(key, async (result) => {
-        if (chrome.runtime.lastError || !result[key]) {
-          chrome.storage.local.get(key, async (local) => {
-            if (local[key]) try { await WPCrypto.importKey(local[key]); } catch { /* invalid key */ }
-            resolve();
-          });
-          return;
-        }
-        try { await WPCrypto.importKey(result[key]); } catch { /* invalid key */ }
-        resolve();
-      });
+      try {
+        chrome.storage.session.get(key, async (result) => {
+          if (chrome.runtime.lastError || !result?.[key]) {
+            try {
+              chrome.storage.local.get(key, async (local) => {
+                if (local[key]) try { await WPCrypto.importKey(local[key]); } catch { /* invalid key */ }
+                resolve();
+              });
+            } catch { resolve(); } // Extension context invalidated
+            return;
+          }
+          try { await WPCrypto.importKey(result[key]); } catch { /* invalid key */ }
+          resolve();
+        });
+      } catch { resolve(); } // Extension context invalidated
     });
   }
 

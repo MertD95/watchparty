@@ -236,17 +236,18 @@ $('btn-leave').addEventListener('click', () => {
 });
 
 // --- Settings ---
+// Write directly to PENDING_ACTION storage — content script picks it up via onChanged.
+// This bypasses the background relay (chrome.tabs.sendMessage) which fails without tabs permission.
+function sendPendingAction(action) {
+  chrome.storage.local.set({ [WPConstants.STORAGE.PENDING_ACTION]: action });
+}
+
 $('setting-public').addEventListener('change', (e) => {
-  chrome.runtime.sendMessage({
-    type: 'watchparty-ext', action: 'toggle-public', public: e.target.checked,
-  });
+  sendPendingAction({ action: 'toggle-public', public: e.target.checked });
 });
 
 $('setting-autopause').addEventListener('change', (e) => {
-  chrome.runtime.sendMessage({
-    type: 'watchparty-ext', action: 'update-room-settings',
-    settings: { autoPauseOnDisconnect: e.target.checked },
-  });
+  sendPendingAction({ action: 'update-room-settings', settings: { autoPauseOnDisconnect: e.target.checked } });
 });
 
 $('setting-reaction-sound').addEventListener('change', (e) => {
