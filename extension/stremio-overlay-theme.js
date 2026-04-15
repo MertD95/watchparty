@@ -45,9 +45,9 @@ const WPTheme = (() => {
         btn.onmouseenter = () => { btn.style.background = `rgba(${rgb},1)`; };
         btn.onmouseleave = () => { btn.style.background = `rgba(${rgb},0.85)`; };
       }
-      const overlay = document.getElementById('wp-overlay');
-      if (overlay) {
-        overlay.classList.toggle('wp-compact', !!r[WPConstants.STORAGE.COMPACT_CHAT]);
+      // Compact class must be on #wp-sidebar (CSS rules use @scope(#wp-sidebar) { &.wp-compact ... })
+      if (sidebar) {
+        sidebar.classList.toggle('wp-compact', !!r[WPConstants.STORAGE.COMPACT_CHAT]);
       }
     });
   }
