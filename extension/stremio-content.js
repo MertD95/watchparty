@@ -274,9 +274,10 @@
 
   /** Load E2E crypto key from storage for a room (session → local fallback) */
   function loadCryptoKeyForRoom(roomId) {
-    if (WPCrypto.isEnabled()) return Promise.resolve();
+    if (WPCrypto.isEnabled() || !extOk()) return Promise.resolve();
     const key = WPConstants.STORAGE.roomKey(roomId);
     return new Promise((resolve) => {
+      if (!extOk()) { resolve(); return; }
       chrome.storage.session.get(key, async (result) => {
         if (chrome.runtime.lastError || !result[key]) {
           chrome.storage.local.get(key, async (local) => {

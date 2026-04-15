@@ -234,10 +234,21 @@
   }
   .wp-bookmark-time:hover { background:rgba(var(--wp-accent-rgb),0.35); }
 
-  /* Compact chat mode */
-  &.wp-compact .wp-chat-msg { padding:1px 16px; margin-bottom:0; }
-  &.wp-compact .wp-msg-content { line-height:1.3; font-size:11px; }
-  &.wp-compact .wp-chat-gif { max-width:120px; max-height:80px; }
+  /* Compact chat — IRC-style dense layout, ~50% vertical space reduction */
+  &.wp-compact .wp-chat-msg { padding:0 8px; margin:0; border-radius:0; }
+  &.wp-compact .wp-chat-msg.wp-msg-hovered { background:rgba(255,255,255,0.02); }
+  &.wp-compact .wp-msg-content { line-height:1.15; font-size:11px; }
+  &.wp-compact .wp-chat-name { font-size:11px; font-weight:600; opacity:0.85; }
+  &.wp-compact .wp-chat-name::after { content:':'; opacity:0.5; }
+  &.wp-compact .wp-chat-text { font-size:11px; }
+  &.wp-compact .wp-chat-gif { max-width:80px; max-height:50px; border-radius:2px; }
+  &.wp-compact .wp-react-pills { gap:1px; margin-top:0; padding:0 8px; }
+  &.wp-compact .wp-react-pill { padding:0 3px; font-size:10px; min-height:18px; }
+  &.wp-compact .wp-pill-emoji { font-size:10px; }
+  &.wp-compact .wp-msg-row { gap:2px; }
+  &.wp-compact .wp-msg-toolbar { transform:scale(0.85); }
+  &.wp-compact .wp-bookmark-msg { padding:0 8px; font-size:11px; }
+  &.wp-compact #wp-typing-indicator { font-size:10px; padding:0 8px; }
 }
 
 /* --- Keyframes (must be outside @scope — they're global by spec) --- */
