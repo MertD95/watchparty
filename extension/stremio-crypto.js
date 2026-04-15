@@ -8,6 +8,7 @@ const WPCrypto = (() => {
 
   let cryptoKey = null; // CryptoKey for AES-GCM
   let enabled = false;
+  let onKeyLoadedCallback = null;
 
   // --- Key generation ---
   async function generateKey() {
@@ -18,6 +19,7 @@ const WPCrypto = (() => {
     );
     cryptoKey = key;
     enabled = true;
+    if (onKeyLoadedCallback) onKeyLoadedCallback();
     return key;
   }
 
@@ -38,6 +40,7 @@ const WPCrypto = (() => {
       ['encrypt', 'decrypt']
     );
     enabled = true;
+    if (onKeyLoadedCallback) onKeyLoadedCallback();
     return cryptoKey;
   }
 
@@ -60,7 +63,8 @@ const WPCrypto = (() => {
 
   // --- Decrypt a base64url ciphertext → plaintext string ---
   async function decrypt(data) {
-    if (!cryptoKey || !data.startsWith('e2e:')) return data;
+    if (!data.startsWith('e2e:')) return data;
+    if (!cryptoKey) return '[encrypted message]';
     try {
       const combined = base64UrlToArrayBuffer(data.slice(4));
       const iv = combined.slice(0, 12);
@@ -105,8 +109,10 @@ const WPCrypto = (() => {
     return bytes.buffer;
   }
 
+  function onKeyLoaded(cb) { onKeyLoadedCallback = cb; }
+
   return {
     generateKey, exportKey, importKey,
-    encrypt, decrypt, isEncrypted, isEnabled, clear,
+    encrypt, decrypt, isEncrypted, isEnabled, clear, onKeyLoaded,
   };
 })();

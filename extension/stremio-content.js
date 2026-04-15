@@ -290,13 +290,8 @@
     isHost = isMe(roomState.owner);
     if (video) attachSync();
     refreshOverlay();
-    // Generate E2E encryption key for new rooms (host only)
-    if (isHost && !WPCrypto.isEnabled()) {
-      await WPCrypto.generateKey();
-      // Store key so it can be included in invite URLs
-      const keyStr = await WPCrypto.exportKey();
-      if (keyStr && extOk()) chrome.storage.session.set({ [WPConstants.STORAGE.roomKey(roomState.id)]: keyStr }).catch(() => {});
-    }
+    // E2E encryption is opt-in: only enabled when a key is provided via invite URL.
+    // Auto-generating keys breaks multi-tab (other tabs can't reliably read the key from session storage).
     WPOverlay.bindRoomCodeCopy(roomState);
     WPOverlay.playNotifSound();
     if (isHost) {
@@ -337,10 +332,19 @@
     if (!wasHost && isHost) WPOverlay.playNotifSound();
   }
 
+  // Buffer for encrypted messages that arrive before key is loaded
+  const pendingEncryptedMessages = [];
+
   async function onChatMessage(message) {
-    // Decrypt E2E-encrypted messages if crypto is enabled
-    if (WPCrypto.isEnabled() && WPCrypto.isEncrypted(message.content)) {
-      message = { ...message, content: await WPCrypto.decrypt(message.content) };
+    // Decrypt E2E-encrypted messages
+    if (WPCrypto.isEncrypted(message.content)) {
+      const decrypted = await WPCrypto.decrypt(message.content);
+      if (decrypted === '[encrypted message]') {
+        // Key not loaded yet — buffer for retry when key arrives
+        pendingEncryptedMessages.push(message);
+        return; // Don't display garbled text
+      }
+      message = { ...message, content: decrypted };
     }
     chatMessages.push(message);
     if (chatMessages.length > 200) chatMessages.shift();
@@ -349,6 +353,13 @@
     // Relay to side panel (it can't access content script globals)
     notifyBackground({ action: 'chat-message', payload: message });
   }
+
+  // When crypto key becomes available, re-process buffered encrypted messages
+  WPCrypto.onKeyLoaded(() => {
+    while (pendingEncryptedMessages.length > 0) {
+      onChatMessage(pendingEncryptedMessages.shift());
+    }
+  });
 
   function onTyping(user, typing) {
     if (typing) {
@@ -420,7 +431,7 @@
     WPSync.attach(video, {
       isHost,
       onSync(state) {
-        if (roomState && userId === roomState.owner) {
+        if (roomState && isMe(roomState.owner)) {
           WPWS.send({ type: WPProtocol.C2S.PLAYER_SYNC, payload: { paused: state.paused, buffering: state.buffering, time: state.time, speed: state.speed } });
         }
       },

@@ -85,13 +85,29 @@ function showRoomView(room, myUserId) {
   $('view-lobby').classList.add('hidden');
   $('view-room').classList.remove('hidden');
 
+  // Load sessionId for multi-tab identity matching
+  chrome.storage.local.get(WPConstants.STORAGE.SESSION_ID, (result) => {
+    const mySessionId = result[WPConstants.STORAGE.SESSION_ID];
+    renderRoomDetails(room, myUserId, mySessionId);
+  });
+}
+
+function renderRoomDetails(room, myUserId, mySessionId) {
+  // Match identity by userId OR sessionId (multi-tab: client IDs differ but sessionId is shared)
+  function isMe(uid) {
+    if (uid === myUserId) return true;
+    if (!mySessionId || !room.users) return false;
+    const u = room.users.find(u => u.id === uid);
+    return u?.sessionId === mySessionId;
+  }
+
   $('room-id-display').textContent = room.id;
   $('room-meta').textContent = room.meta?.name
     ? `${room.meta.name}${room.meta.year ? ` (${room.meta.year})` : ''}`
     : 'WatchParty Session';
 
   // Content link for peers
-  if (room.meta?.id && room.meta?.type && room.owner !== myUserId) {
+  if (room.meta?.id && room.meta?.type && !isMe(room.owner)) {
     $('content-link-hint').classList.remove('hidden');
     $('content-name').textContent = room.meta.name || room.meta.id;
     $('content-link').href = `https://web.stremio.com/#/detail/${encodeURIComponent(room.meta.type)}/${encodeURIComponent(room.meta.id)}`;
@@ -103,12 +119,12 @@ function showRoomView(room, myUserId) {
   const usersList = $('users-list');
   usersList.innerHTML = room.users.map(u => {
     const isOwner = u.id === room.owner;
-    const isMe = u.id === myUserId;
-    return `<div class="user-item">${isOwner ? '<span class="user-crown">👑</span> ' : ''}${escapeHtml(u.name)}${isMe ? ' (you)' : ''}</div>`;
+    const isMyUser = isMe(u.id);
+    return `<div class="user-item">${isOwner ? '<span class="user-crown">👑</span> ' : ''}${escapeHtml(u.name)}${isMyUser ? ' (you)' : ''}</div>`;
   }).join('');
 
   // Room settings
-  const isHost = room.owner === myUserId;
+  const isHost = isMe(room.owner);
   const publicRow = $('setting-public-row');
   const autopauseRow = $('setting-autopause-row');
   if (isHost) {

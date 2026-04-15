@@ -9,12 +9,22 @@
   const { getUserColor, escapeHtml } = WPUtils;
 
   let currentUserId = null;
+  let currentSessionId = null;
   let currentRoomState = null;
+
+  /** Check if a user ID belongs to the current user (multi-tab: matches by sessionId) */
+  function isMe(uid) {
+    if (uid === currentUserId) return true;
+    if (!currentSessionId || !currentRoomState?.users) return false;
+    const u = currentRoomState.users.find(u => u.id === uid);
+    return u?.sessionId === currentSessionId;
+  }
 
   // --- State polling from storage ---
   function pollState() {
-    chrome.storage.local.get([WPConstants.STORAGE.ROOM_STATE, WPConstants.STORAGE.USER_ID, WPConstants.STORAGE.WS_CONNECTED], (result) => {
+    chrome.storage.local.get([WPConstants.STORAGE.ROOM_STATE, WPConstants.STORAGE.USER_ID, WPConstants.STORAGE.SESSION_ID, WPConstants.STORAGE.WS_CONNECTED], (result) => {
       currentUserId = result[WPConstants.STORAGE.USER_ID];
+      currentSessionId = result[WPConstants.STORAGE.SESSION_ID];
       currentRoomState = result[WPConstants.STORAGE.ROOM_STATE];
       render(result.wpRoomState, result.wpUserId);
     });
@@ -37,7 +47,7 @@
       return;
     }
 
-    const isHost = roomState.owner === userId;
+    const isHost = isMe(roomState.owner);
     const hostLabel = isHost ? 'You are the host' : 'Synced to host';
 
     // Action buttons
@@ -91,9 +101,9 @@
     if (roomState.users?.length > 0) {
       users.classList.remove('hidden');
       users.innerHTML = roomState.users.map(u => {
-        const color = getUserColor(u.id);
+        const color = getUserColor(u.sessionId || u.id);
         const crown = u.id === roomState.owner ? '<span style="font-size:12px">&#x1F451;</span>' : '';
-        const you = u.id === userId ? ' <span style="color:#888;font-size:11px">(you)</span>' : '';
+        const you = isMe(u.id) ? ' <span style="color:#888;font-size:11px">(you)</span>' : '';
         const awayClass = u.status === 'away' ? ' user-away' : '';
         let statusIcon = '';
         if (u.playbackStatus === 'buffering') statusIcon = '<span class="user-status" title="Buffering">&#x27F3;</span>';
@@ -119,7 +129,7 @@
     const content = input.value.trim();
     if (!content) return;
     sendAction({ action: 'send-chat', content });
-    appendChat(currentUserId, 'You', content);
+    appendChat(currentSessionId || currentUserId, 'You', content);
     input.value = '';
   }
 
@@ -140,7 +150,7 @@
     const secs = Math.floor((msg.time || 0) % 60).toString().padStart(2, '0');
     const div = document.createElement('div');
     div.className = 'bookmark-msg';
-    div.innerHTML = `&#x1F4CC; <span class="chat-name" style="color:${getUserColor(msg.user)}">${escapeHtml(msg.userName || 'Unknown')}</span> bookmarked <button class="bookmark-time">${mins}:${secs}</button>`;
+    div.innerHTML = `&#x1F4CC; <span class="chat-name" style="color:${getUserColor(currentSessionId || msg.user)}">${escapeHtml(msg.userName || 'Unknown')}</span> bookmarked <button class="bookmark-time">${mins}:${secs}</button>`;
     div.querySelector('.bookmark-time')?.addEventListener('click', () => {
       sendAction({ action: 'send-bookmark', time: msg.time }); // Navigate to bookmark time
       showToast(`Seeking to ${mins}:${secs}`);
@@ -169,9 +179,10 @@
 
     if (message.action === 'chat-message' && message.payload) {
       const msg = message.payload;
-      const name = currentRoomState?.users?.find(u => u.id === msg.user)?.name || 'Unknown';
-      if (msg.user !== currentUserId) {
-        appendChat(msg.user, name, msg.content);
+      const sender = currentRoomState?.users?.find(u => u.id === msg.user);
+      const name = sender?.name || msg.userName || 'Unknown';
+      if (!isMe(msg.user)) {
+        appendChat(sender?.sessionId || msg.user, name, msg.content);
       }
     }
 
@@ -182,8 +193,9 @@
 
   // --- Storage change listener for real-time updates ---
   chrome.storage.onChanged.addListener((changes) => {
-    if (changes[WPConstants.STORAGE.ROOM_STATE] || changes[WPConstants.STORAGE.USER_ID] || changes[WPConstants.STORAGE.WS_CONNECTED]) {
+    if (changes[WPConstants.STORAGE.ROOM_STATE] || changes[WPConstants.STORAGE.USER_ID] || changes[WPConstants.STORAGE.SESSION_ID] || changes[WPConstants.STORAGE.WS_CONNECTED]) {
       if (changes[WPConstants.STORAGE.USER_ID]) currentUserId = changes[WPConstants.STORAGE.USER_ID].newValue;
+      if (changes[WPConstants.STORAGE.SESSION_ID]) currentSessionId = changes[WPConstants.STORAGE.SESSION_ID].newValue;
       if (changes[WPConstants.STORAGE.ROOM_STATE]) currentRoomState = changes[WPConstants.STORAGE.ROOM_STATE].newValue;
       render(currentRoomState, currentUserId);
     }

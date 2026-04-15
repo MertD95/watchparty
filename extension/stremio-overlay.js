@@ -491,7 +491,7 @@ const WPOverlay = (() => {
       const container = document.getElementById('wp-chat-messages');
       if (container) {
         const div = buildMsgEl(
-          `<span class="wp-chat-name" style="color:${getUserColor(cachedUserId)}">${escapeHtml(cachedUsername)}</span>`,
+          `<span class="wp-chat-name" style="color:${getUserColor(cachedSessionId || cachedUserId)}">${escapeHtml(cachedUsername)}</span>`,
           `<img class="wp-chat-gif" src="${escapeHtml(img.dataset.url)}" alt="GIF" />`
         );
         div.classList.add('wp-chat-local');
@@ -547,7 +547,7 @@ const WPOverlay = (() => {
     const container = document.getElementById('wp-chat-messages');
     if (container) {
       const div = buildMsgEl(
-        `<span class="wp-chat-name" style="color:${getUserColor(cachedUserId)}">${escapeHtml(cachedUsername)}</span>`,
+        `<span class="wp-chat-name" style="color:${getUserColor(cachedSessionId || cachedUserId)}">${escapeHtml(cachedUsername)}</span>`,
         `<span class="wp-chat-text">${escapeHtml(content)}</span>`
       );
       div.classList.add('wp-chat-local');
@@ -663,7 +663,7 @@ const WPOverlay = (() => {
     usersDiv.innerHTML = roomState.users.map(u => {
       const isOwner = u.id === roomState.owner;
       const isMe = u.id === userId || (cachedSessionId && u.sessionId === cachedSessionId);
-      const color = getUserColor(u.id);
+      const color = getUserColor(u.sessionId || u.id);
       const crown = isOwner ? '<span class="wp-crown">👑</span>' : '';
       const you = isMe ? ' <span class="wp-you">(you)</span>' : '';
       const transferBtn = (isHost && !isMe && !isOwner)
@@ -717,13 +717,19 @@ const WPOverlay = (() => {
     }
 
     // Content-based dedup: replace local echo with server-confirmed version
-    if (msg.user === myUserId && isLocalEcho(msg.content)) {
+    // Match by sessionId — msg.user is client ID which changes per-tab
+    const msgSender = roomState?.users?.find(u => u.id === msg.user);
+    // Use msg.sessionId (from server) for stable identity — falls back to roomState lookup, then raw client ID
+    const msgSessionId = msg.sessionId || msgSender?.sessionId;
+    const isMsgFromMe = msg.user === myUserId || (cachedSessionId && msgSessionId === cachedSessionId);
+    if (isMsgFromMe && isLocalEcho(msg.content)) {
       const localMsg = container.querySelector('.wp-chat-local');
       if (localMsg) localMsg.remove();
     }
 
-    const userName = roomState?.users?.find(u => u.id === msg.user)?.name || msg.userName || 'Unknown';
-    const color = getUserColor(msg.user);
+    const userName = msgSender?.name || msg.userName || 'Unknown';
+    // Use sessionId for stable color (same user = same color across tabs and chat history)
+    const color = getUserColor(msgSessionId || msg.user);
     // Detect GIF messages: [gif:URL] — only allow https:// URLs
     const gifMatch = msg.content.match(/^\[gif:(https:\/\/[^\]]+)\]$/);
     const contentHtml = gifMatch
@@ -738,7 +744,7 @@ const WPOverlay = (() => {
     pruneChildren(container);
     container.scrollTop = container.scrollHeight;
     // Notification sound if sidebar is hidden
-    if (!isSidebarOpen() && msg.user !== myUserId) {
+    if (!isSidebarOpen() && !isMsgFromMe) {
       playNotifSound();
     }
   }
@@ -759,11 +765,13 @@ const WPOverlay = (() => {
   }
 
   function showReaction(uid, emoji, roomState) {
-    // Don't play sound for own reactions
-    if (uid !== cachedUserId) playReactionSound();
+    // Don't play sound for own reactions (match by sessionId for multi-tab)
+    const reactionUser = roomState?.users?.find(u => u.id === uid);
+    const isOwnReaction = uid === cachedUserId || (cachedSessionId && reactionUser?.sessionId === cachedSessionId);
+    if (!isOwnReaction) playReactionSound();
     const container = document.getElementById('wp-reaction-container');
     if (!container) return;
-    const userName = roomState?.users?.find(u => u.id === uid)?.name || '';
+    const userName = reactionUser?.name || '';
     const el = document.createElement('div');
     el.className = 'wp-floating-reaction';
     el.innerHTML = `<span class="wp-reaction-emoji">${escapeHtml(emoji)}</span><span class="wp-reaction-name">${escapeHtml(userName)}</span>`;
@@ -779,9 +787,11 @@ const WPOverlay = (() => {
     if (typingUsers.size === 0 && el.classList.contains('wp-hidden-el')) return;
     const names = [];
     for (const [uid] of typingUsers) {
-      if (uid === myUserId) continue;
-      const u = roomState?.users?.find(u => u.id === uid);
-      if (u) names.push(u.name);
+      // Skip own typing indicator (match by sessionId for multi-tab)
+      const typingUser = roomState?.users?.find(u => u.id === uid);
+      const isOwnTyping = uid === myUserId || (cachedSessionId && typingUser?.sessionId === cachedSessionId);
+      if (isOwnTyping) continue;
+      if (typingUser) names.push(typingUser.name);
     }
     if (names.length === 0) {
       el.classList.add('wp-hidden-el');
@@ -820,7 +830,7 @@ const WPOverlay = (() => {
     const timeStr = `${mins}:${secs}`;
     const div = document.createElement('div');
     div.className = 'wp-chat-msg wp-bookmark-msg';
-    div.innerHTML = `<span class="wp-bookmark-icon">📌</span> <span class="wp-chat-name" style="color:${getUserColor(msg.user)}">${escapeHtml(msg.userName)}</span> bookmarked <button class="wp-bookmark-time" data-time="${msg.time}">${timeStr}</button> <span class="wp-chat-text">${msg.label ? escapeHtml(msg.label) : ''}</span>`;
+    div.innerHTML = `<span class="wp-bookmark-icon">📌</span> <span class="wp-chat-name" style="color:${getUserColor(cachedSessionId || msg.user)}">${escapeHtml(msg.userName)}</span> bookmarked <button class="wp-bookmark-time" data-time="${msg.time}">${timeStr}</button> <span class="wp-chat-text">${msg.label ? escapeHtml(msg.label) : ''}</span>`;
     div.querySelector('.wp-bookmark-time')?.addEventListener('click', () => {
       const video = document.querySelector('video');
       if (video) {
