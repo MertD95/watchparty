@@ -271,49 +271,8 @@
   .wp-reaction-emoji { font-size:32px; }
   .wp-reaction-name { font-size:10px; color:rgba(255,255,255,0.7); margin-top:2px; }
 
-  /* Toast (Popover API — renders in top layer, no z-index needed) */
-  #wp-toast {
-    pointer-events:none;
-    /* Centered in the sidebar */
-    position:absolute; top:50%; left:50%; margin:0; inset:auto;
-    transform:translate(-50%, -50%) translateY(-10px);
-    z-index:100; text-align:center; max-width:280px;
-    background:rgba(15,15,30,0.95); color:#fff; font-size:13px;
-    padding:8px 20px; border-radius:8px; border:1px solid rgba(99,102,241,0.3);
-    box-shadow:0 4px 16px rgba(0,0,0,0.4);
-    opacity:0; transition:opacity .3s, transform .3s;
-  }
-  #wp-toast.wp-toast-visible { opacity:1; transform:translate(-50%, -50%); }
-
-  /* Ready check modal (Popover API — renders in top layer) */
-  #wp-ready-modal {
-    pointer-events:all; position:fixed; inset:0; margin:0;
-    background:rgba(0,0,0,0.6); display:flex; align-items:center; justify-content:center;
-    border:none;
-  }
-  .wp-ready-box {
-    background:#1a1a2e; border:1px solid rgba(99,102,241,0.3); border-radius:16px;
-    padding:28px 36px; text-align:center; box-shadow:0 8px 32px rgba(0,0,0,0.5); min-width:260px;
-  }
-  .wp-ready-title { font-size:18px; font-weight:600; color:#fff; margin-bottom:8px; }
-  .wp-ready-status { font-size:13px; color:#888; margin-bottom:12px; }
-  .wp-ready-count { font-size:28px; font-weight:700; color:#6366f1; margin-bottom:16px; }
-  .wp-ready-btn {
-    background:#6366f1; color:#fff; border:none; border-radius:8px;
-    padding:10px 28px; font-size:14px; font-weight:500; cursor:pointer; transition:background .15s;
-  }
-  .wp-ready-btn:hover { background:#5558e6; }
-  .wp-ready-btn:disabled { opacity:0.5; cursor:default; }
-  .wp-ready-cancel { background:none; border:none; color:#666; font-size:12px; cursor:pointer; margin-top:8px; padding:4px 12px; }
-  .wp-ready-cancel:hover { color:#999; }
-
-  /* Countdown */
-  #wp-countdown {
-    pointer-events:none; position:fixed; inset:0; z-index:2147483647;
-    display:flex; align-items:center; justify-content:center;
-    font-size:120px; font-weight:700; color:#fff; text-shadow:0 0 40px rgba(99,102,241,0.6);
-  }
-  .wp-countdown-active { animation:wp-count-pop .8s ease-out; }
+  /* Toast, ready check, and countdown use the Popover API (top layer) —
+     styles moved outside @scope since top-layer elements leave the scope subtree. */
 
   /* Catch-up button */
   #wp-catchup-btn {
@@ -325,6 +284,53 @@
   }
   #wp-catchup-btn:hover { background:rgba(99,102,241,1); }
 }
+
+/* --- Popover API elements (top layer — must be outside @scope) --- */
+/* When showPopover() promotes an element to the top layer, it leaves the
+   @scope subtree, so scoped selectors no longer match. These styles are
+   unscoped so they apply regardless of top-layer promotion. */
+#wp-toast {
+  pointer-events:none;
+  position:absolute; inset:auto; top:50%; left:50%; margin:0;
+  transform:translate(-50%, -50%) translateY(-10px);
+  z-index:100; text-align:center; max-width:280px;
+  background:rgba(15,15,30,0.95); color:#fff; font-size:13px;
+  padding:8px 20px; border-radius:8px; border:1px solid rgba(99,102,241,0.3);
+  box-shadow:0 4px 16px rgba(0,0,0,0.4);
+  opacity:0; transition:opacity .3s, transform .3s;
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+}
+#wp-toast.wp-toast-visible { opacity:1; transform:translate(-50%, -50%); }
+
+#wp-ready-modal {
+  pointer-events:all; position:fixed; inset:0; margin:0;
+  width:100%; height:100%;
+  background:rgba(0,0,0,0.6); display:flex; align-items:center; justify-content:center;
+  border:none; padding:0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+}
+.wp-ready-box {
+  background:#1a1a2e; border:1px solid rgba(99,102,241,0.3); border-radius:16px;
+  padding:28px 36px; text-align:center; box-shadow:0 8px 32px rgba(0,0,0,0.5); min-width:260px;
+}
+.wp-ready-title { font-size:18px; font-weight:600; color:#fff; margin-bottom:8px; }
+.wp-ready-status { font-size:13px; color:#888; margin-bottom:12px; }
+.wp-ready-count { font-size:28px; font-weight:700; color:#6366f1; margin-bottom:16px; }
+.wp-ready-btn {
+  background:#6366f1; color:#fff; border:none; border-radius:8px;
+  padding:10px 28px; font-size:14px; font-weight:500; cursor:pointer; transition:background .15s;
+}
+.wp-ready-btn:hover { background:#5558e6; }
+.wp-ready-btn:disabled { opacity:0.5; cursor:default; }
+.wp-ready-cancel { background:none; border:none; color:#666; font-size:12px; cursor:pointer; margin-top:8px; padding:4px 12px; }
+.wp-ready-cancel:hover { color:#999; }
+
+#wp-countdown {
+  pointer-events:none; position:fixed; inset:0; z-index:2147483647;
+  display:flex; align-items:center; justify-content:center;
+  font-size:120px; font-weight:700; color:#fff; text-shadow:0 0 40px rgba(99,102,241,0.6);
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+}
+.wp-countdown-active { animation:wp-count-pop .8s ease-out; }
 
 /* --- Responsive (applies to sidebar) --- */
 @media (max-width: 640px) {

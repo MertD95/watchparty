@@ -57,8 +57,12 @@ const WPWS = (() => {
       reconnectAttempts = 0;
       // Keepalive ping every 25s
       clearInterval(keepAliveTimer);
+      lastPongTime = Date.now(); // Reset on connect
       keepAliveTimer = setInterval(() => {
-        if (ws?.readyState === WebSocket.OPEN) send({ type: WPProtocol.C2S.CLOCK_PING, payload: { clientTime: Date.now() } });
+        if (ws?.readyState === WebSocket.OPEN) {
+          send({ type: WPProtocol.C2S.CLOCK_PING, payload: { clientTime: Date.now() } });
+          checkHeartbeat();
+        }
       }, KEEPALIVE_INTERVAL_MS);
       flushQueue();
       if (onConnectHandler) onConnectHandler();
@@ -66,6 +70,8 @@ const WPWS = (() => {
 
     ws.onmessage = (event) => {
       try {
+        // Reject oversized messages (100KB) to prevent memory DoS
+        if (typeof event.data === 'string' && event.data.length > 102400) return;
         const msg = JSON.parse(event.data);
         // Track sequence number for reconnect replay
         if (typeof msg.seq === 'number') lastSeq = msg.seq;
@@ -159,8 +165,18 @@ const WPWS = (() => {
     }
   }
 
+  let lastPongTime = 0;
+  const HEARTBEAT_TIMEOUT_MS = 60000; // Disconnect if no pong for 60s
+
+  function checkHeartbeat() {
+    if (lastPongTime > 0 && Date.now() - lastPongTime > HEARTBEAT_TIMEOUT_MS && ws?.readyState === WebSocket.OPEN) {
+      ws.close(4000, 'Heartbeat timeout');
+    }
+  }
+
   function handleClockPong(p) {
     if (!p?.clientTime || !p?.serverTime) return;
+    lastPongTime = Date.now();
     const now = Date.now();
     const rtt = now - p.clientTime;
     const offset = p.serverTime - p.clientTime - rtt / 2;

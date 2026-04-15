@@ -63,7 +63,7 @@ const WPOverlay = (() => {
 
   // Toggle reaction: one per user per emoji, no stacking
   function toggleReaction(pillsContainer, emoji) {
-    const existing = pillsContainer.querySelector(`[data-emoji="${emoji}"]`);
+    const existing = pillsContainer.querySelector(`[data-emoji="${CSS.escape(emoji)}"]`);
     if (existing && existing.classList.contains('wp-pill-mine')) {
       // Already reacted with this emoji → remove own reaction
       const countEl = existing.querySelector('.wp-pill-count');
@@ -84,7 +84,7 @@ const WPOverlay = (() => {
       const pill = document.createElement('button');
       pill.className = 'wp-react-pill wp-pill-mine';
       pill.dataset.emoji = emoji;
-      pill.innerHTML = `<span class="wp-pill-emoji">${emoji}</span><span class="wp-pill-count">1</span>`;
+      pill.innerHTML = `<span class="wp-pill-emoji">${escapeHtml(emoji)}</span><span class="wp-pill-count">1</span>`;
       // No per-pill listener — handled by delegated click on #wp-chat-messages
       pillsContainer.appendChild(pill);
     }
@@ -449,8 +449,11 @@ const WPOverlay = (() => {
     $('wp-minimized-bar').addEventListener('click', expandSidebar);
     $('wp-chat-send').addEventListener('click', () => sendChat());
     $('wp-chat-input').addEventListener('keydown', (e) => {
+      e.stopPropagation();
       if (e.key === 'Enter') sendChat();
     });
+    $('wp-chat-input').addEventListener('keyup', (e) => e.stopPropagation());
+    $('wp-chat-input').addEventListener('keypress', (e) => e.stopPropagation());
     // --- Emoji picker toggle (library handles everything else) ---
     $('wp-emoji-btn').addEventListener('click', (ev) => {
       ev.stopPropagation();

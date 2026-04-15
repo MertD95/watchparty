@@ -22,6 +22,28 @@
 
   let sessionId = null; // Persistent session ID — same across all tabs
 
+  // --- Active video tab election (Spotify-style: only ONE tab syncs at a time) ---
+  // When multiple tabs have video, only the most recent one sends sync/playback/stream messages.
+  // Other tabs remain passive (chat/reactions still work).
+  let isActiveVideoTab = false;
+
+  function claimActiveTab() {
+    if (!extOk() || !userId) return;
+    isActiveVideoTab = true;
+    chrome.storage.local.set({ [WPConstants.STORAGE.ACTIVE_VIDEO_TAB]: userId });
+  }
+
+  function releaseActiveTab() {
+    if (!extOk()) return;
+    isActiveVideoTab = false;
+    // Only clear if we currently own it
+    chrome.storage.local.get(WPConstants.STORAGE.ACTIVE_VIDEO_TAB, (result) => {
+      if (result[WPConstants.STORAGE.ACTIVE_VIDEO_TAB] === userId) {
+        chrome.storage.local.remove(WPConstants.STORAGE.ACTIVE_VIDEO_TAB);
+      }
+    });
+  }
+
   // --- Extension context guard (WS survives extension reloads, but chrome APIs don't) ---
   function extOk() { return !!chrome.runtime?.id; }
 
@@ -288,22 +310,27 @@
   async function onRoomJoined() {
     inRoom = true;
     isHost = isMe(roomState.owner);
-    if (video) attachSync();
+    if (video) { claimActiveTab(); attachSync(); }
     refreshOverlay();
     // E2E encryption is opt-in: only enabled when a key is provided via invite URL.
     // Auto-generating keys breaks multi-tab (other tabs can't reliably read the key from session storage).
     WPOverlay.bindRoomCodeCopy(roomState);
     WPOverlay.playNotifSound();
     if (isHost) {
-      shareContentLink();
+      // Only the active video tab shares content link
+      if (isActiveVideoTab) shareContentLink();
     } else {
-      const meta = roomState.meta;
-      if (meta?.id && meta.id !== 'pending' && meta.id !== 'unknown' && meta.type) {
-        const currentInfo = getCurrentContentInfo();
-        if (!currentInfo || currentInfo.id !== meta.id) {
-          const detailUrl = `#/detail/${encodeURIComponent(meta.type)}/${encodeURIComponent(meta.id)}`;
-          WPOverlay.showToast(`Navigating to: ${meta.name || meta.id}`);
-          setTimeout(() => { window.location.hash = detailUrl.slice(1); }, 500);
+      // Auto-navigate to host's content — but only if this tab doesn't already have video
+      // (prevents a tab mid-playback from being redirected)
+      if (!video) {
+        const meta = roomState.meta;
+        if (meta?.id && meta.id !== 'pending' && meta.id !== 'unknown' && meta.type) {
+          const currentInfo = getCurrentContentInfo();
+          if (!currentInfo || currentInfo.id !== meta.id) {
+            const detailUrl = `#/detail/${encodeURIComponent(meta.type)}/${encodeURIComponent(meta.id)}`;
+            WPOverlay.showToast(`Navigating to: ${meta.name || meta.id}`);
+            setTimeout(() => { window.location.hash = detailUrl.slice(1); }, 500);
+          }
         }
       }
     }
@@ -318,16 +345,18 @@
     WPSync.setHost(isHost);
     refreshOverlay();
     if (!isHost && roomState.player) {
-      const newTime = roomState.player.time || 0;
-      if (Math.abs(newTime - prevPlayerTime) > 5) {
-        const mins = Math.floor(newTime / 60);
-        const secs = Math.floor(newTime % 60).toString().padStart(2, '0');
-        WPOverlay.showToast(`Host seeked to ${mins}:${secs}`);
+      if (video) {
+        const newTime = roomState.player.time || 0;
+        if (Math.abs(newTime - prevPlayerTime) > 5) {
+          const mins = Math.floor(newTime / 60);
+          const secs = Math.floor(newTime % 60).toString().padStart(2, '0');
+          WPOverlay.showToast(`Host seeked to ${mins}:${secs}`);
+        }
+        WPSync.applyRemote(roomState.player);
+        const drift = WPSync.getLastDrift();
+        WPOverlay.updateSyncIndicator(isHost, drift);
+        WPOverlay.showCatchUpButton(drift);
       }
-      WPSync.applyRemote(roomState.player);
-      const drift = WPSync.getLastDrift();
-      WPOverlay.updateSyncIndicator(isHost, drift);
-      if (!isHost) WPOverlay.showCatchUpButton(drift);
     }
     if (!wasHost && isHost) WPOverlay.playNotifSound();
   }
@@ -341,7 +370,7 @@
       const decrypted = await WPCrypto.decrypt(message.content);
       if (decrypted === '[encrypted message]') {
         // Key not loaded yet — buffer for retry when key arrives
-        pendingEncryptedMessages.push(message);
+        if (pendingEncryptedMessages.length < 50) pendingEncryptedMessages.push(message);
         return; // Don't display garbled text
       }
       message = { ...message, content: decrypted };
@@ -409,20 +438,22 @@
         if (v && v !== video) {
           video = v;
           if (inRoom) {
+            claimActiveTab(); // This tab now owns sync
             attachSync();
-            if (isHost) shareContentLink();
+            if (isHost && isActiveVideoTab) shareContentLink();
           }
           refreshOverlay();
         } else if (!v && video) {
           WPSync.detach();
           video = null;
+          releaseActiveTab();
           refreshOverlay();
         }
       }, 200);
     });
     observer.observe(document.body, { childList: true, subtree: true });
     const v = document.querySelector('video');
-    if (v) { video = v; if (inRoom) attachSync(); }
+    if (v) { video = v; if (inRoom) { claimActiveTab(); attachSync(); } }
   }
 
   // --- Sync wiring ---
@@ -431,7 +462,7 @@
     WPSync.attach(video, {
       isHost,
       onSync(state) {
-        if (roomState && isMe(roomState.owner)) {
+        if (roomState && isMe(roomState.owner) && isActiveVideoTab) {
           WPWS.send({ type: WPProtocol.C2S.PLAYER_SYNC, payload: { paused: state.paused, buffering: state.buffering, time: state.time, speed: state.speed } });
         }
       },
@@ -478,6 +509,7 @@
       WPWS.send({ type: WPProtocol.C2S.ROOM_LEAVE, payload: {} });
       const leavingRoomId = roomState?.id;
       inRoom = false; roomState = null; isHost = false;
+      releaseActiveTab();
       if (extOk()) {
         chrome.storage.local.remove(WPConstants.STORAGE.CURRENT_ROOM);
         if (leavingRoomId) chrome.storage.session.remove(WPConstants.STORAGE.roomKey(leavingRoomId)).catch(() => {});
@@ -503,7 +535,7 @@
     'send-reaction': (m) => WPWS.send({ type: WPProtocol.C2S.ROOM_REACTION, payload: { emoji: m.emoji } }),
     'send-presence': (m) => WPWS.send({ type: WPProtocol.C2S.USER_PRESENCE, payload: { status: m.status } }),
     'send-playback-status': (m) => WPWS.send({ type: WPProtocol.C2S.USER_PLAYBACK_STATUS, payload: { status: m.status } }),
-    'request-sync': () => WPWS.send({ type: WPProtocol.C2S.PLAYER_SYNC, payload: roomState?.player || WPProtocol.DEFAULT_PLAYER }),
+    'request-sync': () => { if (isActiveVideoTab) WPWS.send({ type: WPProtocol.C2S.PLAYER_SYNC, payload: roomState?.player || WPProtocol.DEFAULT_PLAYER }); },
   };
 
   function handleAction(message) {
@@ -511,10 +543,12 @@
     if (handler) handler(message);
   }
 
-  // --- Presence ---
+  // --- Presence (only from tab with video to avoid multi-tab conflicts) ---
   let presenceTimeout = null;
   document.addEventListener('visibilitychange', () => {
     if (!inRoom) return;
+    // Only the active video tab reports presence — prevents away/active flicker
+    if (!isActiveVideoTab) return;
     clearTimeout(presenceTimeout);
     if (document.visibilityState === 'hidden') {
       presenceTimeout = setTimeout(() => {
@@ -525,24 +559,23 @@
     }
   });
 
-  // --- Playback status reporting ---
+  // --- Playback status reporting (only from tab with active video) ---
   let lastPlaybackStatus = '';
   const playbackInterval = setInterval(() => {
-    if (!inRoom) return;
+    if (!inRoom || !video || !isActiveVideoTab) return; // Only the active video tab reports
     if (!chrome.runtime?.id) { clearInterval(playbackInterval); return; }
-    const vid = document.querySelector('video');
-    if (!vid) return;
-    const status = vid.paused ? 'paused' : vid.readyState < 3 ? 'buffering' : 'playing';
+    const status = video.paused ? 'paused' : video.readyState < 3 ? 'buffering' : 'playing';
     if (status !== lastPlaybackStatus) {
       lastPlaybackStatus = status;
       WPWS.send({ type: WPProtocol.C2S.USER_PLAYBACK_STATUS, payload: { status } });
     }
   }, 3000);
 
-  // --- Host stream update on SPA navigation ---
+  // --- Host stream update on SPA navigation (only from tab with video) ---
   let lastSharedContentId = null;
   window.addEventListener('hashchange', () => {
-    if (inRoom && isHost) {
+    // Only the active video tab should update stream meta.
+    if (inRoom && isHost && isActiveVideoTab) {
       const info = getCurrentContentInfo();
       if (info && info.id !== lastSharedContentId) {
         lastSharedContentId = info.id;
@@ -566,12 +599,18 @@
         chrome.storage.local.remove(WPConstants.STORAGE.PENDING_ACTION);
         handleAction(changes[WPConstants.STORAGE.PENDING_ACTION].newValue);
       }
+      // Active video tab election — another tab claimed active status
+      if (changes[WPConstants.STORAGE.ACTIVE_VIDEO_TAB]) {
+        const newActiveId = changes[WPConstants.STORAGE.ACTIVE_VIDEO_TAB].newValue;
+        isActiveVideoTab = (newActiveId === userId);
+      }
     });
   }
 
   // --- Cleanup ---
   window.addEventListener('beforeunload', () => {
     clearInterval(playbackInterval);
+    releaseActiveTab();
     WPProfile.stop();
   });
 

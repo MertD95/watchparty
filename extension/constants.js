@@ -22,6 +22,7 @@ const WPConstants = (() => {
     PENDING_ROOM_JOIN: 'pendingRoomJoin',
     PENDING_LEAVE_ROOM: 'pendingLeaveRoom',
     PENDING_ACTION: 'pendingAction',
+    ACTIVE_VIDEO_TAB: 'wpActiveVideoTab', // userId of the tab that owns sync/playback
     // Dynamic key helper for per-room encryption keys
     roomKey(roomId) { return `wpRoomKey:${roomId}`; },
   });

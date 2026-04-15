@@ -67,6 +67,9 @@ const WPSync = (() => {
     if (!video || isHost) return;
     // Don't apply corrections while a hard seek is in-flight
     if (seekInProgress) return;
+    // Validate player state — reject NaN/Infinity/negative time
+    if (typeof player.time !== 'number' || !isFinite(player.time) || player.time < 0) return;
+    if (typeof player.paused !== 'boolean') return;
 
     hostSpeed = (typeof player.speed === 'number' && isFinite(player.speed) && player.speed >= 0.25 && player.speed <= 4) ? player.speed : 1;
 
