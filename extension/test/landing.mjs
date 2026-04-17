@@ -3,8 +3,8 @@ import http from 'node:http';
 import path from 'node:path';
 import { chromium } from 'playwright';
 
-const API_PORT = 8181;
-const PAGE_PORT = 8096;
+const API_PORT = Number(process.env.WP_LANDING_TEST_API_PORT || 8181);
+const PAGE_PORT = Number(process.env.WP_LANDING_TEST_PAGE_PORT || 8096);
 const LANDING_PATH = path.resolve('landing', 'index.html');
 
 let passed = 0;
@@ -47,6 +47,16 @@ function createServers() {
   }
 
   let landingHtml = fs.readFileSync(LANDING_PATH, 'utf8');
+  landingHtml = replaceOnce(
+    landingHtml,
+    "const WS_API = IS_DEV ? 'ws://localhost:8181' : 'wss://ws.mertd.me';",
+    `const WS_API = IS_DEV ? 'ws://localhost:${API_PORT}' : 'wss://ws.mertd.me';`
+  );
+  landingHtml = replaceOnce(
+    landingHtml,
+    "const ROOMS_API = IS_DEV ? 'http://localhost:8181/rooms' : 'https://ws.mertd.me/rooms';",
+    `const ROOMS_API = IS_DEV ? 'http://localhost:${API_PORT}/rooms' : 'https://ws.mertd.me/rooms';`
+  );
   landingHtml = replaceOnce(landingHtml, 'setInterval(loadPublicRooms, 10000);', 'setInterval(loadPublicRooms, 100);');
   landingHtml = replaceOnce(
     landingHtml,
@@ -143,7 +153,9 @@ async function main() {
 
   await page.addInitScript(() => {
     window.__joinMessages = [];
+    window.__navTargets = [];
     window.__sseEvents = [];
+    window.__watchpartyCaptureNavigation = (url) => window.__navTargets.push(url);
     const NativeEventSource = window.EventSource;
     window.EventSource = function (...args) {
       const source = new NativeEventSource(...args);
@@ -166,6 +178,7 @@ async function main() {
         id: 'room-1',
         name: null,
         meta: { id: 'tt1375666', type: 'movie', name: 'Inception' },
+        directJoinUrl: 'https://web.stremio.com/#/player/direct-room-1',
         users: 2,
         owner: 'Alice',
         paused: false,
@@ -191,6 +204,40 @@ async function main() {
     ok(initialCard.text.includes('2:05'), 'landing formats room playback time');
     ok(initialCard.emptyVisible === false, 'empty-state hides when rooms exist');
 
+    const initialButtons = await page.evaluate(() => ({
+      joinText: document.querySelector('.room-card .room-join-btn')?.textContent || '',
+      directText: document.querySelector('.room-card .room-direct-btn')?.textContent || '',
+      directDisabled: document.querySelector('.room-card .room-direct-btn')?.disabled ?? true,
+    }));
+    ok(initialButtons.joinText === 'Join Room', 'landing renders a Join Room button');
+    ok(initialButtons.directText === 'Direct Join' && initialButtons.directDisabled === false, 'landing renders an enabled Direct Join button when the stream is available');
+
+    await page.evaluate(() => {
+      window.__joinMessages = [];
+      window.__navTargets = [];
+    });
+    await page.click('.room-card .room-join-btn');
+    await page.waitForFunction(() => window.__joinMessages.length > 0 && window.__navTargets.length > 0, { timeout: 3000 });
+    const roomJoinAction = await page.evaluate(() => ({
+      joinMessage: window.__joinMessages[0] || null,
+      navTarget: window.__navTargets[0] || null,
+    }));
+    ok(roomJoinAction.joinMessage?.roomId === 'room-1', 'Join Room posts the room ID to the extension bridge');
+    ok(roomJoinAction.navTarget === 'https://web.stremio.com/#/detail/movie/tt1375666', 'Join Room navigates to the Stremio title page');
+
+    await page.evaluate(() => {
+      window.__joinMessages = [];
+      window.__navTargets = [];
+    });
+    await page.click('.room-card .room-direct-btn');
+    await page.waitForFunction(() => window.__joinMessages.length > 0 && window.__navTargets.length > 0, { timeout: 3000 });
+    const directJoinAction = await page.evaluate(() => ({
+      joinMessage: window.__joinMessages[0] || null,
+      navTarget: window.__navTargets[0] || null,
+    }));
+    ok(directJoinAction.joinMessage?.roomId === 'room-1', 'Direct Join also posts the room ID to the extension bridge');
+    ok(directJoinAction.navTarget === 'https://web.stremio.com/#/player/direct-room-1', 'Direct Join targets the shared Stremio player URL');
+
     const sseReady = await page.waitForFunction(
       () => window.__sseEvents.some((event) => event.type === 'message'),
       { timeout: 5000 }
@@ -202,6 +249,7 @@ async function main() {
         id: 'room-1',
         name: null,
         meta: { id: 'tt1375666', type: 'movie', name: 'Inception' },
+        directJoinUrl: 'https://web.stremio.com/#/player/direct-room-1',
         users: 2,
         owner: 'Alice',
         paused: false,
@@ -213,6 +261,7 @@ async function main() {
         id: 'room-2',
         name: null,
         meta: { id: 'tt0816692', type: 'movie', name: 'Interstellar' },
+        directJoinUrl: null,
         users: 3,
         owner: 'Bob',
         paused: true,
@@ -234,6 +283,7 @@ async function main() {
         id: 'room-3',
         name: null,
         meta: { id: 'tt0110912', type: 'movie', name: 'Pulp Fiction' },
+        directJoinUrl: null,
         users: 4,
         owner: 'Carol',
         paused: false,

@@ -188,6 +188,12 @@
       color: var(--green);
       white-space: nowrap;
     }
+    .room-actions {
+      display: flex;
+      gap: 8px;
+      margin-left: auto;
+      flex-shrink: 0;
+    }
     .room-join-btn {
       padding: 6px 14px;
       font-size: 12px;
@@ -199,6 +205,24 @@
       flex-shrink: 0;
     }
     .room-join-btn:hover { background: var(--accent-hover); }
+    .room-direct-btn {
+      padding: 6px 12px;
+      font-size: 12px;
+      border-radius: 6px;
+      background: rgba(255,255,255,0.08);
+      color: #ddd;
+      border: 1px solid rgba(255,255,255,0.12);
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .room-direct-btn:hover:not(:disabled) {
+      background: rgba(255,255,255,0.14);
+      color: #fff;
+    }
+    .room-direct-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
     .room-badge {
       font-size: 10px;
       padding: 2px 8px;
@@ -286,6 +310,26 @@
       color: #f87171;
       max-width: 480px;
       margin: 0 auto 24px;
+    }
+
+    @media (max-width: 720px) {
+      .room-card {
+        flex-wrap: wrap;
+        align-items: flex-start;
+      }
+      .room-info {
+        min-width: calc(100% - 54px);
+      }
+      .room-badge,
+      .room-users {
+        order: 3;
+      }
+      .room-actions {
+        width: 100%;
+        order: 4;
+        margin-left: 54px;
+        justify-content: flex-end;
+      }
     }
   </style>
 </head>
@@ -395,6 +439,29 @@
       loadPublicRooms();
     }
 
+    function getDirectJoinUrl(room) {
+      const rawUrl = room?.directJoinUrl;
+      if (!rawUrl) return null;
+      try {
+        const url = new URL(rawUrl);
+        const isTrustedOrigin = url.origin === 'https://web.stremio.com'
+          || url.origin === 'https://web.strem.io'
+          || url.origin === 'https://app.strem.io';
+        if (!isTrustedOrigin || !url.hash.startsWith('#/player/')) return null;
+        return url.toString();
+      } catch {
+        return null;
+      }
+    }
+
+    function navigateToUrl(url) {
+      if (typeof window.__watchpartyCaptureNavigation === 'function') {
+        window.__watchpartyCaptureNavigation(url);
+        return;
+      }
+      window.location.href = url;
+    }
+
     function buildRoomCard(room) {
       const mins = Math.floor((room.time || 0) / 60);
       const secs = Math.floor((room.time || 0) % 60).toString().padStart(2, '0');
@@ -403,6 +470,7 @@
       const isPublic = room.public;
       const metaId = room.meta?.id || '';
       const metaType = room.meta?.type || '';
+      const directJoinUrl = getDirectJoinUrl(room);
 
       const card = document.createElement('div');
       card.className = 'room-card';
@@ -449,15 +517,30 @@
       users.textContent = `${room.users} watching`;
       card.appendChild(users);
 
-      // Join button — addEventListener instead of inline onclick
-      const btn = document.createElement('button');
-      btn.className = 'room-join-btn';
-      btn.textContent = 'Join';
-      btn.addEventListener('click', () => {
+      const actions = document.createElement('div');
+      actions.className = 'room-actions';
+
+      const joinBtn = document.createElement('button');
+      joinBtn.className = 'room-join-btn';
+      joinBtn.textContent = 'Join Room';
+      joinBtn.addEventListener('click', () => {
         if (isPublic) joinRoom(room.id, metaId, metaType);
         else showUuidModal();
       });
-      card.appendChild(btn);
+      actions.appendChild(joinBtn);
+
+      const directBtn = document.createElement('button');
+      directBtn.className = 'room-direct-btn';
+      directBtn.textContent = 'Direct Join';
+      if (isPublic && directJoinUrl) {
+        directBtn.addEventListener('click', () => joinRoom(room.id, metaId, metaType, directJoinUrl));
+      } else {
+        directBtn.disabled = true;
+        directBtn.title = 'Direct stream unavailable until the host opens a Stremio player.';
+      }
+      actions.appendChild(directBtn);
+
+      card.appendChild(actions);
 
       return card;
     }
@@ -534,19 +617,17 @@
       roomsTitle.appendChild(badge);
     }
 
-    function joinRoom(roomId, metaId, metaType) {
+    function joinRoom(roomId, metaId, metaType, directJoinUrl) {
       // Extract E2E encryption key from URL fragment if present
       const hash = window.location.hash;
       const keyMatch = hash.match(/[#&]key=([A-Za-z0-9_-]+)/);
       const cryptoKey = keyMatch ? keyMatch[1] : undefined;
       // Tell the content script to store the room ID (and crypto key) in chrome.storage
       window.postMessage({ type: 'watchparty-join-room', roomId, cryptoKey }, location.origin);
-      // Redirect to the movie page on Stremio Web (or home if no meta)
-      if (metaId && metaId !== 'pending' && metaId !== 'unknown' && metaType) {
-        window.location.href = `https://web.stremio.com/#/detail/${encodeURIComponent(metaType)}/${encodeURIComponent(metaId)}`;
-      } else {
-        window.location.href = 'https://web.stremio.com';
-      }
+      const fallbackUrl = (metaId && metaId !== 'pending' && metaId !== 'unknown' && metaType)
+        ? `https://web.stremio.com/#/detail/${encodeURIComponent(metaType)}/${encodeURIComponent(metaId)}`
+        : 'https://web.stremio.com';
+      navigateToUrl(directJoinUrl || fallbackUrl);
     }
 
     // --- Private room UUID modal ---
@@ -610,7 +691,7 @@
           window.postMessage({ type: 'watchparty-join-room', roomId }, window.location.origin);
 
           setTimeout(() => {
-            window.location.href = 'https://web.stremio.com';
+            navigateToUrl('https://web.stremio.com');
           }, 500);
         }
       });
@@ -621,7 +702,7 @@
         window.postMessage({ type: 'watchparty-join-room', roomId }, window.location.origin);
         document.getElementById('redirect-status').textContent = 'Redirecting to Stremio Web...';
         setTimeout(() => {
-          window.location.href = 'https://web.stremio.com';
+          navigateToUrl('https://web.stremio.com');
         }, 500);
       }
     }
