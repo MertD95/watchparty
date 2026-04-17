@@ -682,8 +682,25 @@ const WPOverlay = (() => {
     });
   }
 
+  function getDirectStreamUrl(roomState) {
+    const rawUrl = roomState?.stream?.url;
+    if (!rawUrl) return null;
+    try {
+      const url = new URL(rawUrl);
+      const isTrustedOrigin = url.origin === 'https://web.stremio.com'
+        || url.origin === 'https://web.strem.io'
+        || url.origin === 'https://app.strem.io';
+      if (!isTrustedOrigin || !url.hash.startsWith('#/player/')) return null;
+      return url.toString();
+    } catch {
+      return null;
+    }
+  }
+
   function renderContentLink(contentLink, isHost, roomState) {
-    if (isHost || !roomState.meta?.id || roomState.meta.id === 'pending' || roomState.meta.id === 'unknown' || document.querySelector('video')) {
+    const hasMeta = !!roomState.meta?.id && roomState.meta.id !== 'pending' && roomState.meta.id !== 'unknown';
+    const directStreamUrl = getDirectStreamUrl(roomState);
+    if (isHost || (!hasMeta && !directStreamUrl) || document.querySelector('video')) {
       if (renderCache.lastContentLinkKey !== 'hidden') {
         contentLink.classList.add('wp-hidden-el');
         renderCache.lastContentLinkKey = 'hidden';
@@ -691,16 +708,26 @@ const WPOverlay = (() => {
       return;
     }
 
-    const name = escapeHtml(roomState.meta.name || roomState.meta.id);
-    const link = `https://web.stremio.com/#/detail/${encodeURIComponent(roomState.meta.type)}/${encodeURIComponent(roomState.meta.id)}`;
-    const contentLinkKey = `${roomState.meta.type}:${roomState.meta.id}:${roomState.meta.name || ''}`;
+    const name = escapeHtml(roomState.meta?.name || roomState.meta?.id || 'Host stream');
+    const detailUrl = hasMeta
+      ? `https://web.stremio.com/#/detail/${encodeURIComponent(roomState.meta.type)}/${encodeURIComponent(roomState.meta.id)}`
+      : '';
+    const contentLinkKey = `${detailUrl}:${directStreamUrl || ''}:${name}`;
     if (renderCache.lastContentLinkKey === contentLinkKey) {
       if (contentLink.classList.contains('wp-hidden-el')) contentLink.classList.remove('wp-hidden-el');
       return;
     }
 
+    const label = hasMeta ? 'Host is watching:' : 'Host shared a stream:';
+    const primaryLinkHtml = hasMeta
+      ? `<a href="${detailUrl}" class="wp-content-link-a">${name}</a>`
+      : `<span class="wp-content-link-a">${name}</span>`;
+    const directLinkHtml = directStreamUrl
+      ? ` <span class="wp-content-label">&middot;</span> <a href="${directStreamUrl}" class="wp-content-link-a">Open host stream</a>`
+      : '';
+
     contentLink.classList.remove('wp-hidden-el');
-    contentLink.innerHTML = `<span class="wp-content-label">Host is watching:</span> <a href="${link}" class="wp-content-link-a">${name}</a>`;
+    contentLink.innerHTML = `<span class="wp-content-label">${label}</span> ${primaryLinkHtml}${directLinkHtml}`;
     renderCache.lastContentLinkKey = contentLinkKey;
   }
 

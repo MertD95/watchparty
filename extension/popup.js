@@ -5,6 +5,26 @@ let currentActiveBackend = null;
 let currentActiveBackendUrl = null;
 let currentWsConnected = false;
 
+function getContentDetailUrl(room) {
+  if (!room?.meta?.id || !room?.meta?.type) return null;
+  return `https://web.stremio.com/#/detail/${encodeURIComponent(room.meta.type)}/${encodeURIComponent(room.meta.id)}`;
+}
+
+function getDirectStreamUrl(room) {
+  const rawUrl = room?.stream?.url;
+  if (!rawUrl) return null;
+  try {
+    const url = new URL(rawUrl);
+    const isTrustedOrigin = url.origin === 'https://web.stremio.com'
+      || url.origin === 'https://web.strem.io'
+      || url.origin === 'https://app.strem.io';
+    if (!isTrustedOrigin || !url.hash.startsWith('#/player/')) return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
 function setStremioStatus(isRunning) {
   if (isRunning) {
     $('stremio-dot').className = 'dot on';
@@ -226,14 +246,33 @@ function renderRoomDetails(room, myUserId, mySessionId) {
     : 'WatchParty Session';
 
   const isHost = amIHost();
+  const detailUrl = getContentDetailUrl(room);
+  const directStreamUrl = getDirectStreamUrl(room);
 
   // Content link for peers
-  if (room.meta?.id && room.meta?.type && !isHost) {
+  if (!isHost && (detailUrl || directStreamUrl)) {
     $('content-link-hint').classList.remove('hidden');
-    $('content-name').textContent = room.meta.name || room.meta.id;
-    $('content-link').href = `https://web.stremio.com/#/detail/${encodeURIComponent(room.meta.type)}/${encodeURIComponent(room.meta.id)}`;
+    $('content-name').textContent = room.meta?.name || room.meta?.id || 'Host stream';
+    if (detailUrl) {
+      $('content-link').classList.remove('hidden');
+      $('content-link').href = detailUrl;
+    } else {
+      $('content-link').classList.add('hidden');
+      $('content-link').href = '#';
+    }
+    if (directStreamUrl) {
+      $('content-stream-link').classList.remove('hidden');
+      $('content-stream-link').href = directStreamUrl;
+    } else {
+      $('content-stream-link').classList.add('hidden');
+      $('content-stream-link').href = '#';
+    }
   } else {
     $('content-link-hint').classList.add('hidden');
+    $('content-link').classList.add('hidden');
+    $('content-link').href = '#';
+    $('content-stream-link').classList.add('hidden');
+    $('content-stream-link').href = '#';
   }
 
   // Users list

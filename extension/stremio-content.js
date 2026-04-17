@@ -26,6 +26,11 @@
   // When multiple tabs have video, only the most recent one sends sync/playback/stream messages.
   // Other tabs remain passive (chat/reactions still work).
   let isActiveVideoTab = false;
+  let lastKnownContentMeta = null;
+  let lastSharedContentKey = null;
+
+  const PLACEHOLDER_ROOM_NAME = 'WatchParty Session';
+  const PLACEHOLDER_STREAM_URL = 'https://watchparty.mertd.me/sync';
 
   function claimActiveTab() {
     if (!extOk() || !userId) return;
@@ -46,6 +51,14 @@
 
   // --- Extension context guard (WS survives extension reloads, but chrome APIs don't) ---
   function extOk() { return !!chrome.runtime?.id; }
+
+  function isPlaceholderMeta(meta) {
+    return !meta || meta.id === 'pending' || meta.id === 'unknown' || meta.name === PLACEHOLDER_ROOM_NAME;
+  }
+
+  function isPlaceholderStream(stream) {
+    return !stream?.url || stream.url === PLACEHOLDER_STREAM_URL;
+  }
 
   // --- Persist state to storage for popup queries ---
   function persistState() {
@@ -271,7 +284,10 @@
         chrome.storage.local.remove(WPConstants.STORAGE.CURRENT_ROOM);
         const rc = stored[WPConstants.STORAGE.PENDING_ROOM_CREATE];
         if (rc.username) WPWS.send({ type: WPProtocol.C2S.USER_UPDATE, payload: { username: rc.username, sessionId } });
-        const payload = { meta: rc.meta, stream: rc.stream, public: rc.public || false };
+        const context = getCurrentContentContext();
+        const meta = (isPlaceholderMeta(rc.meta) && context.meta) ? context.meta : rc.meta;
+        const stream = (isPlaceholderStream(rc.stream) && context.launchUrl) ? { url: context.launchUrl } : rc.stream;
+        const payload = { meta, stream, public: rc.public || false };
         if (rc.roomName) payload.name = rc.roomName;
         WPWS.send({ type: WPProtocol.C2S.ROOM_NEW, payload });
       } else {
@@ -450,21 +466,37 @@
 
   // --- Content link sharing ---
   function shareContentLink() {
-    const info = getCurrentContentInfo();
-    if (!info) return;
-    const meta = { id: info.id, type: info.type, name: getContentTitle() || info.id };
+    const context = getCurrentContentContext();
+    if (!context.meta && !context.launchUrl) return;
+
+    const stream = { url: context.launchUrl || PLACEHOLDER_STREAM_URL };
+    if (!context.meta) {
+      const streamOnlyKey = `stream:::${stream.url}`;
+      if (lastSharedContentKey === streamOnlyKey) return;
+      lastSharedContentKey = streamOnlyKey;
+      WPWS.send({ type: WPProtocol.C2S.ROOM_UPDATE_STREAM, payload: { stream } });
+      return;
+    }
+
+    const meta = { ...context.meta };
+    const shareKey = `${meta.type}:${meta.id}:${meta.name || ''}:${stream.url}`;
+    if (lastSharedContentKey === shareKey) return;
+
     if ((!meta.name || meta.name === meta.id) && meta.id?.startsWith('tt')) {
+      lastSharedContentKey = shareKey;
       fetch(`https://v3-cinemeta.strem.io/meta/${meta.type}/${meta.id}.json`, { signal: AbortSignal.timeout(3000) })
         .then(r => r.ok ? r.json() : null)
         .then(data => {
           if (data?.meta?.name) meta.name = data.meta.name;
-          WPWS.send({ type: WPProtocol.C2S.ROOM_UPDATE_STREAM, payload: { stream: { url: 'https://watchparty.mertd.me/sync' }, meta } });
+          lastSharedContentKey = `${meta.type}:${meta.id}:${meta.name || ''}:${stream.url}`;
+          WPWS.send({ type: WPProtocol.C2S.ROOM_UPDATE_STREAM, payload: { stream, meta } });
         })
         .catch(() => {
-          WPWS.send({ type: WPProtocol.C2S.ROOM_UPDATE_STREAM, payload: { stream: { url: 'https://watchparty.mertd.me/sync' }, meta } });
+          WPWS.send({ type: WPProtocol.C2S.ROOM_UPDATE_STREAM, payload: { stream, meta } });
         });
     } else {
-      WPWS.send({ type: WPProtocol.C2S.ROOM_UPDATE_STREAM, payload: { stream: { url: 'https://watchparty.mertd.me/sync' }, meta } });
+      lastSharedContentKey = shareKey;
+      WPWS.send({ type: WPProtocol.C2S.ROOM_UPDATE_STREAM, payload: { stream, meta } });
     }
   }
 
@@ -512,10 +544,62 @@
   }
 
   // --- Stremio page info ---
+  function parseDetailHash(hash) {
+    const m = (hash || '').match(/^#\/(?:detail|metadetails)\/([^/?#]+)\/([^/?#]+)/);
+    if (!m) return null;
+    return {
+      type: decodeURIComponent(m[1]),
+      id: decodeURIComponent(m[2]),
+    };
+  }
+
+  function getCurrentLaunchUrl(hash = window.location.hash) {
+    if (!/^#\/(?:detail|metadetails|player)\//.test(hash || '')) return null;
+    return `${window.location.origin}/${hash}`;
+  }
+
+  function updateKnownContentMeta() {
+    const info = parseDetailHash(window.location.hash);
+    if (!info) return lastKnownContentMeta;
+    lastKnownContentMeta = {
+      id: info.id,
+      type: info.type,
+      name: getContentTitle() || lastKnownContentMeta?.name || info.id,
+    };
+    return lastKnownContentMeta;
+  }
+
+  function getCurrentContentContext() {
+    const hash = window.location.hash || '';
+    const launchUrl = getCurrentLaunchUrl(hash);
+    const detailInfo = parseDetailHash(hash);
+    const title = getContentTitle();
+
+    if (detailInfo) {
+      lastKnownContentMeta = {
+        id: detailInfo.id,
+        type: detailInfo.type,
+        name: title || lastKnownContentMeta?.name || detailInfo.id,
+      };
+      return { meta: { ...lastKnownContentMeta }, launchUrl };
+    }
+
+    if (hash.startsWith('#/player/') && lastKnownContentMeta) {
+      return {
+        meta: {
+          ...lastKnownContentMeta,
+          name: title || lastKnownContentMeta.name || lastKnownContentMeta.id,
+        },
+        launchUrl,
+      };
+    }
+
+    return { meta: null, launchUrl: null };
+  }
+
   function getCurrentContentInfo() {
-    const hash = window.location.hash;
-    const m = hash.match(/#\/(?:detail|metadetails)\/(\w+)\/(tt\d+)/);
-    if (m) return { type: m[1], id: m[2], url: window.location.href };
+    const info = parseDetailHash(window.location.hash);
+    if (info) return { ...info, url: getCurrentLaunchUrl() || window.location.href };
     return null;
   }
 
@@ -634,15 +718,11 @@
   }, 3000);
 
   // --- Host stream update on SPA navigation (only from tab with video) ---
-  let lastSharedContentId = null;
   window.addEventListener('hashchange', () => {
+    updateKnownContentMeta();
     // Only the active video tab should update stream meta.
     if (inRoom && isHost && isActiveVideoTab) {
-      const info = getCurrentContentInfo();
-      if (info && info.id !== lastSharedContentId) {
-        lastSharedContentId = info.id;
-        shareContentLink();
-      }
+      shareContentLink();
     }
   });
 
@@ -692,6 +772,7 @@
       () => { WPWS.send({ type: WPProtocol.C2S.ROOM_TYPING, payload: { typing: false } }); }
     );
     startVideoObserver();
+    updateKnownContentMeta();
     WPProfile.start();
 
     // Generate or load persistent session ID (shared across all tabs via chrome.storage).

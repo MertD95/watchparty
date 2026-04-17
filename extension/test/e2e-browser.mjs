@@ -581,6 +581,58 @@ async function testPeerContentLink() {
 
 // ── Two-user: Bidirectional chat ──
 
+async function testPeerDirectStreamLink() {
+  console.log('\nâ”€â”€ Test: Peer sees direct host stream link â”€â”€');
+  const env = await setupTwoUsers();
+  try {
+    await injectMockVideo(env.stremio1, 42);
+    await env.stremio1.evaluate(() => {
+      window.location.hash = '/detail/movie/tt0468569/tt0468569';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    await env.stremio1.waitForTimeout(800);
+    await env.stremio1.evaluate(() => {
+      window.location.hash = '/player/eAEBOADH%2F3sieXRJZCI6Ik5LWWVhNjN0UW1JIiwiZGVzY3JpcHRpb24iOiJQcm9qZWN0IEhhaWwgTWFyeSJ9BqUSsQ%3D%3D';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    await env.stremio1.waitForTimeout(1500);
+
+    await env.stremio2.bringToFront();
+    await env.stremio2.waitForTimeout(1000);
+    const overlayLinks = await env.stremio2.evaluate(() => Array.from(
+      document.querySelectorAll('#wp-content-link a')
+    ).map((link) => ({
+      text: link.textContent?.trim() || '',
+      href: link.href || '',
+    })));
+    assert(
+      overlayLinks.some((link) => link.text === 'The Dark Knight' && link.href.includes('/detail/movie/tt0468569')),
+      `Peer overlay keeps the host title link (${JSON.stringify(overlayLinks)})`
+    );
+    assert(
+      overlayLinks.some((link) => link.text === 'Open host stream' && link.href.includes('/#/player/')),
+      `Peer overlay shows the direct host stream link (${JSON.stringify(overlayLinks)})`
+    );
+
+    await env.popup2.bringToFront();
+    await env.popup2.reload({ waitUntil: 'domcontentloaded' });
+    await env.popup2.waitForTimeout(1500);
+    const popupDirectLink = await env.popup2.evaluate(() => {
+      const link = document.getElementById('content-stream-link');
+      return {
+        visible: !!link && !link.classList.contains('hidden'),
+        href: link?.href || '',
+      };
+    });
+    assert(
+      popupDirectLink.visible && popupDirectLink.href.includes('/#/player/'),
+      `Peer popup shows the direct host stream link (${JSON.stringify(popupDirectLink)})`
+    );
+  } finally {
+    await cleanupTwoUsers(env);
+  }
+}
+
 async function testBidirectionalChat() {
   console.log('\n── Test: Bidirectional chat between two real extensions ──');
   const env = await setupTwoUsers();
@@ -765,6 +817,7 @@ async function main() {
     testHostVsPeerSettings,
     testThemePropagation,
     testPeerContentLink,
+    testPeerDirectStreamLink,
     testBidirectionalChat,
     testTypingIndicatorFlow,
     testBookmarkFlow,
