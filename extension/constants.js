@@ -5,17 +5,70 @@
 const WPConstants = (() => {
   'use strict';
 
+  const BACKEND_MODES = Object.freeze({
+    AUTO: 'auto',
+    LOCAL: 'local',
+    LIVE: 'live',
+  });
+
+  const BACKENDS = Object.freeze({
+    [BACKEND_MODES.LOCAL]: Object.freeze({
+      key: BACKEND_MODES.LOCAL,
+      label: 'Local',
+      wsUrl: 'ws://localhost:8181',
+      httpUrl: 'http://localhost:8181',
+      landingOrigin: 'http://localhost:8090',
+    }),
+    [BACKEND_MODES.LIVE]: Object.freeze({
+      key: BACKEND_MODES.LIVE,
+      label: 'Live',
+      wsUrl: 'wss://ws.mertd.me',
+      httpUrl: 'https://ws.mertd.me',
+      landingOrigin: 'https://watchparty.mertd.me',
+    }),
+  });
+
+  function isKnownBackendKey(value) {
+    return value === BACKEND_MODES.LOCAL || value === BACKEND_MODES.LIVE;
+  }
+
+  function normalizeBackendMode(value) {
+    return isKnownBackendKey(value) ? value : BACKEND_MODES.AUTO;
+  }
+
+  function getBackendInfo(key) {
+    return BACKENDS[isKnownBackendKey(key) ? key : BACKEND_MODES.LIVE];
+  }
+
+  function resolveBackendKey(mode, activeKey) {
+    const normalizedMode = normalizeBackendMode(mode);
+    if (normalizedMode === BACKEND_MODES.LOCAL || normalizedMode === BACKEND_MODES.LIVE) return normalizedMode;
+    return isKnownBackendKey(activeKey) ? activeKey : BACKEND_MODES.LIVE;
+  }
+
+  function getBrowseUrl(mode, activeKey) {
+    return getBackendInfo(resolveBackendKey(mode, activeKey)).landingOrigin;
+  }
+
+  function buildInviteUrl(roomId, mode, activeKey) {
+    return `${getBrowseUrl(mode, activeKey)}/r/${roomId}`;
+  }
+
   // Chrome storage keys — single source of truth across all extension files
   const STORAGE = Object.freeze({
     ROOM_STATE: 'wpRoomState',
     USER_ID: 'wpUserId',
     WS_CONNECTED: 'wpWsConnected',
+    BACKEND_MODE: 'wpBackendMode',
+    ACTIVE_BACKEND: 'wpActiveBackend',
+    ACTIVE_BACKEND_URL: 'wpActiveBackendUrl',
     USERNAME: 'wpUsername',
     SESSION_ID: 'wpSessionId',
     CURRENT_ROOM: 'currentRoom',
     ACCENT_COLOR: 'wpAccentColor',
     COMPACT_CHAT: 'wpCompactChat',
     REACTION_SOUND: 'wpReactionSound',
+    FLOATING_REACTIONS: 'wpFloatingReactions',
     STREMIO_PROFILE: 'stremioProfile',
     SAVED_AUTH_KEY: 'savedAuthKey',
     PENDING_ROOM_CREATE: 'pendingRoomCreate',
@@ -27,5 +80,17 @@ const WPConstants = (() => {
     roomKey(roomId) { return `wpRoomKey:${roomId}`; },
   });
 
-  return { STORAGE };
+  const BACKEND = Object.freeze({
+    MODES: BACKEND_MODES,
+    LOCAL: BACKENDS[BACKEND_MODES.LOCAL],
+    LIVE: BACKENDS[BACKEND_MODES.LIVE],
+    isKnownKey: isKnownBackendKey,
+    normalizeMode: normalizeBackendMode,
+    getInfo: getBackendInfo,
+    resolveKey: resolveBackendKey,
+    getBrowseUrl,
+    buildInviteUrl,
+  });
+
+  return { STORAGE, BACKEND };
 })();

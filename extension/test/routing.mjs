@@ -199,7 +199,7 @@ const BG_NON_UI_SENDERS = new Set([
   'chat-message',          // content.js → background (relay to sidepanel)
   'bookmark',              // content.js → background (relay to sidepanel)
   // Overlay actions now use DOM events directly — background.js cases kept for popup relay
-  'send-chat', 'send-typing', 'send-reaction', 'send-bookmark',
+  'send-chat', 'send-typing', 'send-reaction', 'send-bookmark', 'seek-bookmark',
   'ready-check', 'transfer-ownership', 'request-sync',
   // Settings actions now use chrome.storage.local directly (popup → PENDING_ACTION → content script)
   'toggle-public', 'update-room-settings',

@@ -9,8 +9,10 @@ const WPWS = (() => {
   'use strict';
 
   // --- Config ---
-  const WS_URL_PROD = 'wss://ws.mertd.me';
-  const WS_URL_DEV = 'ws://localhost:8181';
+  const BACKEND = WPConstants.BACKEND;
+  const BACKEND_MODES = BACKEND.MODES;
+  const WS_URL_PROD = BACKEND.LIVE.wsUrl;
+  const WS_URL_DEV = BACKEND.LOCAL.wsUrl;
   const RECONNECT_BASE_MS = 1000;
   const RECONNECT_MAX_MS = 30000;
   const CLOCK_SAMPLES = 6;
@@ -25,7 +27,8 @@ const WPWS = (() => {
   let clockOffset = 0;
   let clockSamples = [];
   let clockSyncTimer = null;
-  let detectedWsUrl = null;
+  let backendMode = BACKEND_MODES.AUTO;
+  let resolvedBackend = null;
   let lastSeq = 0; // Track last received sequence number for reconnect replay
 
   // --- Callbacks (set by orchestrator) ---
@@ -33,19 +36,46 @@ const WPWS = (() => {
   let onConnectHandler = null;
   let onDisconnectHandler = null;
 
-  // Detect dev mode: extensions loaded unpacked have installType 'development'
-  const isDev = !('update_url' in chrome.runtime.getManifest());
+  // Auto mode only prefers localhost for unpacked/dev installs.
+  const isDevInstall = !('update_url' in chrome.runtime.getManifest());
+
+  async function probeLocalBackend() {
+    try {
+      const res = await fetch(WS_URL_DEV.replace('ws://', 'http://'), { signal: AbortSignal.timeout(1000) });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  async function getBackend() {
+    if (resolvedBackend) return resolvedBackend;
+
+    if (backendMode === BACKEND_MODES.LOCAL) {
+      resolvedBackend = BACKEND.LOCAL;
+      return resolvedBackend;
+    }
+
+    if (backendMode === BACKEND_MODES.LIVE) {
+      resolvedBackend = BACKEND.LIVE;
+      return resolvedBackend;
+    }
+
+    if (isDevInstall) {
+      try {
+        if (await probeLocalBackend()) {
+          resolvedBackend = BACKEND.LOCAL;
+          return resolvedBackend;
+        }
+      } catch { /* probe failures fall through to live */ }
+    }
+
+    resolvedBackend = BACKEND.LIVE;
+    return resolvedBackend;
+  }
 
   async function getWsUrl() {
-    if (detectedWsUrl) return detectedWsUrl;
-    if (isDev) {
-      try {
-        const res = await fetch(WS_URL_DEV.replace('ws://', 'http://'), { signal: AbortSignal.timeout(1000) });
-        if (res.ok) { detectedWsUrl = WS_URL_DEV; return WS_URL_DEV; }
-      } catch { /* dev server not running */ }
-    }
-    detectedWsUrl = WS_URL_PROD;
-    return WS_URL_PROD;
+    return (await getBackend()).wsUrl;
   }
 
   async function connect() {
@@ -99,7 +129,8 @@ const WPWS = (() => {
     ws.onerror = () => { /* onclose fires after */ };
   }
 
-  function disconnect() {
+  function disconnect(options = {}) {
+    const { resetReplay = false } = options;
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
     clearInterval(clockSyncTimer);
     clockSyncTimer = null;
@@ -107,11 +138,15 @@ const WPWS = (() => {
     pendingPingTimers = [];
     sendQueue = [];
     reconnectAttempts = 0;
+    if (resetReplay) lastSeq = 0;
     if (ws) {
       ws.onclose = null;
       ws.close();
       ws = null;
     }
+    clearInterval(keepAliveTimer);
+    keepAliveTimer = null;
+    if (onDisconnectHandler) onDisconnectHandler();
   }
 
   function scheduleReconnect() {
@@ -192,10 +227,25 @@ const WPWS = (() => {
 
   function getLastSeq() { return lastSeq; }
 
+  function setBackendMode(mode) {
+    const nextMode = BACKEND.normalizeMode(mode);
+    if (backendMode === nextMode) return false;
+    backendMode = nextMode;
+    resolvedBackend = null;
+    return true;
+  }
+
+  function getBackendMode() { return backendMode; }
+
+  function getActiveBackend() { return resolvedBackend?.key || null; }
+
+  function getActiveWsUrl() { return resolvedBackend?.wsUrl || null; }
+
   // --- Public API ---
   return {
     connect, disconnect, send, isConnected, isReady: isConnected,
     startClockSync, getClockOffset, getLastSeq,
+    setBackendMode, getBackendMode, getActiveBackend, getActiveWsUrl,
     // Callback setters
     onMessage(handler) { onMessageHandler = handler; },
     onConnect(handler) { onConnectHandler = handler; },

@@ -9,11 +9,11 @@
 //
 // Requires: WS server on localhost:8181 (for room creation)
 
-import { chromium } from 'playwright';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import { fileURLToPath } from 'url';
+import { getExtensionId, launchExtensionContext } from './extension-context.mjs';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const EXT_PATH = path.resolve(__dirname, '..');
 const SNAP_DIR = path.resolve(__dirname, '__snapshots__');
@@ -110,14 +110,8 @@ async function main() {
   if (UPDATE) console.log('MODE: Updating baselines\n');
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wp-visual-'));
-  const ctx = await chromium.launchPersistentContext(dir, {
-    headless: false,
-    args: [
-      `--disable-extensions-except=${EXT_PATH}`,
-      `--load-extension=${EXT_PATH}`,
-      '--no-first-run',
-      '--disable-blink-features=AutomationControlled',
-    ],
+  const ctx = await launchExtensionContext(EXT_PATH, {
+    userDataDir: dir,
     viewport: { width: 1440, height: 900 },
   });
 
@@ -128,9 +122,7 @@ async function main() {
     await page.waitForTimeout(2000);
 
     // Get extension ID for popup screenshots
-    let sw = ctx.serviceWorkers()[0];
-    if (!sw) sw = await ctx.waitForEvent('serviceworker', { timeout: 10000 });
-    const extId = sw.url().split('/')[2];
+    const extId = await getExtensionId(ctx);
 
     // Helper: screenshot just the sidebar element (avoids Stremio background changes)
     async function sidebarShot(p = page) {

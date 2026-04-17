@@ -184,6 +184,38 @@
       padding: 4px 0 0;
     }
 
+    .backend-toggle {
+      display: flex;
+      gap: 6px;
+    }
+    .backend-btn {
+      flex: 1;
+      padding: 7px 0;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(255,255,255,0.05);
+      color: #b4b4c7;
+      font-size: 12px;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s, color 0.15s;
+    }
+    .backend-btn:hover {
+      border-color: rgba(99,102,241,0.5);
+      color: #fff;
+    }
+    .backend-btn.active {
+      background: rgba(99,102,241,0.2);
+      border-color: rgba(99,102,241,0.75);
+      color: #fff;
+    }
+    .backend-note {
+      margin-top: 8px;
+      font-size: 11px;
+      color: #7d7d98;
+      line-height: 1.4;
+      min-height: 30px;
+    }
+
     /* Settings rows */
     .setting-row {
       display: flex;
@@ -220,6 +252,16 @@
   <div class="status-row">
     <div class="dot" id="ws-dot"></div>
     <span id="ws-status">Connecting...</span>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Backend</div>
+    <div class="backend-toggle" id="backend-toggle">
+      <button class="backend-btn" id="backend-auto" data-mode="auto" type="button">Auto</button>
+      <button class="backend-btn" id="backend-local" data-mode="local" type="button">Local</button>
+      <button class="backend-btn" id="backend-live" data-mode="live" type="button">Live</button>
+    </div>
+    <div class="backend-note" id="backend-note">Auto mode uses localhost when available, otherwise live.</div>
   </div>
 
   <!-- Not in room: create/join -->
@@ -281,6 +323,10 @@
         <input type="checkbox" id="setting-reaction-sound" checked />
         <span>Reaction sounds</span>
       </label>
+      <label class="setting-row">
+        <input type="checkbox" id="setting-floating-reactions" checked />
+        <span>Floating reactions</span>
+      </label>
     </div>
 
     <div class="section" id="theme-settings">
@@ -301,7 +347,7 @@
 
     <div class="section">
       <button class="btn btn-secondary" id="btn-share">📋 Copy Invite Link</button>
-      <a href="https://watchparty.mertd.me" target="_blank" class="btn btn-secondary" style="display:block;text-align:center;text-decoration:none;margin-bottom:6px">🌐 Browse Rooms</a>
+      <a href="https://watchparty.mertd.me" target="_blank" class="btn btn-secondary" id="browse-rooms-link" style="display:block;text-align:center;text-decoration:none;margin-bottom:6px">🌐 Browse Rooms</a>
       <button class="btn btn-danger" id="btn-leave">Leave Room</button>
     </div>
   </div>

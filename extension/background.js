@@ -119,12 +119,23 @@ function storeAndForward(storageData, message, sendResponse) {
 
 const messageHandlers = {
   'get-status': (_m, _s, sendResponse) => {
-    chrome.storage.local.get([WPConstants.STORAGE.STREMIO_PROFILE, WPConstants.STORAGE.ROOM_STATE, WPConstants.STORAGE.USER_ID, WPConstants.STORAGE.WS_CONNECTED], (result) => {
+    chrome.storage.local.get([
+      WPConstants.STORAGE.STREMIO_PROFILE,
+      WPConstants.STORAGE.ROOM_STATE,
+      WPConstants.STORAGE.USER_ID,
+      WPConstants.STORAGE.WS_CONNECTED,
+      WPConstants.STORAGE.BACKEND_MODE,
+      WPConstants.STORAGE.ACTIVE_BACKEND,
+      WPConstants.STORAGE.ACTIVE_BACKEND_URL,
+    ], (result) => {
       sendResponse({
         stremioRunning, stremioSettings,
         profile: result[WPConstants.STORAGE.STREMIO_PROFILE] ?? null,
         stats,
         wsConnected: result[WPConstants.STORAGE.WS_CONNECTED] ?? false,
+        backendMode: result[WPConstants.STORAGE.BACKEND_MODE] ?? WPConstants.BACKEND.MODES.AUTO,
+        activeBackend: result[WPConstants.STORAGE.ACTIVE_BACKEND] ?? null,
+        activeBackendUrl: result[WPConstants.STORAGE.ACTIVE_BACKEND_URL] ?? null,
         userId: result[WPConstants.STORAGE.USER_ID] ?? null,
         room: result[WPConstants.STORAGE.ROOM_STATE] ?? null,
         bgVersion: BG_VERSION,
@@ -132,7 +143,15 @@ const messageHandlers = {
     });
     return true; // async sendResponse
   },
-  'ws-status-changed': () => { updateBadge(); },
+  'ws-status-changed': (m) => {
+    const connectionState = {
+      [WPConstants.STORAGE.WS_CONNECTED]: !!m.connected,
+    };
+    if ('activeBackend' in m) connectionState[WPConstants.STORAGE.ACTIVE_BACKEND] = m.activeBackend || null;
+    if ('activeBackendUrl' in m) connectionState[WPConstants.STORAGE.ACTIVE_BACKEND_URL] = m.activeBackendUrl || null;
+    chrome.storage.local.set(connectionState).catch(() => {});
+    updateBadge();
+  },
   'chat-message': (m) => relayToPanel('chat-message', m.payload),
   'bookmark': (m) => relayToPanel('bookmark', m.payload),
   'create-room': (m, _s, sr) => storeAndForward({
@@ -150,6 +169,7 @@ const messageHandlers = {
   'update-username': (m, _s, sr) => { forwardToStremioTab(m); sr?.({ ok: true }); },
   'ready-check': (m, _s, sr) => { forwardToStremioTab(m); sr?.({ ok: true }); },
   'send-bookmark': (m, _s, sr) => { forwardToStremioTab(m); sr?.({ ok: true }); },
+  'seek-bookmark': (m, _s, sr) => { forwardToStremioTab(m); sr?.({ ok: true }); },
   'send-chat': (m, _s, sr) => { forwardToStremioTab(m); sr?.({ ok: true }); },
   'send-typing': (m, _s, sr) => { forwardToStremioTab(m); sr?.({ ok: true }); },
   'send-reaction': (m, _s, sr) => { forwardToStremioTab(m); sr?.({ ok: true }); },

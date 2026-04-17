@@ -12,9 +12,11 @@
 // Requires: WS server on ws://localhost:8181
 // Usage:    node extension/test/e2e-browser.mjs
 
-import { chromium } from 'playwright';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { createBrowserDiagnostics } from './browser-diagnostics.mjs';
+import { getExtensionId, launchExtensionContext } from './extension-context.mjs';
+import { injectSeekableTestVideo } from './seekable-video.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const EXT_PATH = path.resolve(__dirname, '..');
@@ -23,6 +25,7 @@ const TIMEOUT = 15000;
 
 let passed = 0;
 let failed = 0;
+let currentDiagnostics = null;
 
 function assert(condition, label) {
   if (condition) {
@@ -34,43 +37,65 @@ function assert(condition, label) {
   }
 }
 
-async function launchWithExtension() {
-  const context = await chromium.launchPersistentContext('', {
-    headless: false,
-    args: [
-      `--disable-extensions-except=${EXT_PATH}`,
-      `--load-extension=${EXT_PATH}`,
-      '--no-first-run',
-      '--disable-blink-features=AutomationControlled',
-    ],
-    viewport: { width: 1440, height: 900 },
-  });
-  return context;
+function trackPageDiagnostics(page, label) {
+  currentDiagnostics?.attachPage(page, label);
 }
 
-/** Get the extension ID from the service worker URL */
-async function getExtensionId(context) {
-  let sw = context.serviceWorkers()[0];
-  if (!sw) sw = await context.waitForEvent('serviceworker', { timeout: 5000 });
-  const url = sw.url(); // chrome-extension://<id>/background.js
-  return url.split('/')[2];
+function assertCleanDiagnostics(label) {
+  if (!currentDiagnostics) return;
+  const unexpected = currentDiagnostics.popUnexpected();
+  const message = unexpected.length === 0
+    ? `${label}: no unexpected browser errors`
+    : `${label}: unexpected browser errors (${currentDiagnostics.format(unexpected)})`;
+  assert(unexpected.length === 0, message);
+  currentDiagnostics = null;
+}
+
+async function launchWithExtension() {
+  return launchExtensionContext(EXT_PATH, {
+    viewport: { width: 1440, height: 900 },
+  });
 }
 
 /** Open the extension popup in a new tab and return the page */
 async function openPopup(context, extId) {
   const page = await context.newPage();
+  trackPageDiagnostics(page, 'popup');
   await page.goto(`chrome-extension://${extId}/popup.html`, { waitUntil: 'domcontentloaded' });
   await page.waitForTimeout(1000); // Let popup init + get-status response
+  return page;
+}
+
+async function openSidepanel(context, extId) {
+  const page = await context.newPage();
+  trackPageDiagnostics(page, 'sidepanel');
+  await page.goto(`chrome-extension://${extId}/sidepanel.html`, { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(1000);
   return page;
 }
 
 /** Navigate to Stremio and wait for extension overlay */
 async function openStremio(context) {
   const page = await context.newPage();
+  trackPageDiagnostics(page, 'stremio');
   await page.goto(STREMIO_URL, { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => document.getElementById('wp-overlay') !== null, { timeout: TIMEOUT });
   await page.waitForTimeout(1000);
   return page;
+}
+
+async function openSidebarIfHidden(page) {
+  const sidebarHidden = await page.evaluate(() =>
+    document.getElementById('wp-sidebar')?.classList.contains('wp-sidebar-hidden')
+  );
+  if (sidebarHidden) {
+    await page.evaluate(() => document.getElementById('wp-toggle-host')?.click());
+    await page.waitForTimeout(500);
+  }
+}
+
+async function injectMockVideo(page, currentTime = 0) {
+  await injectSeekableTestVideo(page, currentTime);
 }
 
 // ── Tests ──
@@ -168,6 +193,27 @@ async function testCreateRoomFlow() {
         { timeout: 10000 }
       ).then(() => true).catch(() => false);
       assert(leftRoom, 'Sidebar shows "Not in a room" after leaving (may be slow due to MV3 relay)');
+
+      // Regression: re-create immediately after leaving in the same popup session.
+      await popup.bringToFront();
+      await popup.click('#btn-create');
+      const recreatedRoom = await popup.waitForFunction(
+        () => !document.getElementById('view-room').classList.contains('hidden'),
+        { timeout: TIMEOUT }
+      ).then(() => true).catch(() => false);
+      assert(recreatedRoom, 'Popup can create another room after leaving');
+
+      if (recreatedRoom) {
+        const recreatedRoomId = await popup.evaluate(() => document.getElementById('room-id-display').textContent);
+        assert(recreatedRoomId && recreatedRoomId !== roomId, 'Second create shows a new room ID');
+        const createErrorHidden = await popup.evaluate(() => document.getElementById('create-error').classList.contains('hidden'));
+        assert(createErrorHidden, 'Second create does not show the create-room error');
+
+        await stremio.bringToFront();
+        await stremio.waitForTimeout(1000);
+        const recreatedSidebarText = await stremio.evaluate(() => document.getElementById('wp-sidebar')?.innerText?.substring(0, 300));
+        assert(recreatedSidebarText && !recreatedSidebarText.includes('Not in a room'), 'Sidebar returns to room view after re-creating');
+      }
     }
 
     await stremio.close();
@@ -258,16 +304,7 @@ async function testChatFlow() {
     // Bob types a message in the sidebar chat
     await stremio2.bringToFront();
     await stremio2.waitForTimeout(500);
-
-    // Open sidebar if closed
-    const sidebarHidden = await stremio2.evaluate(() => {
-      const sidebar = document.getElementById('wp-sidebar');
-      return sidebar?.classList.contains('wp-sidebar-hidden');
-    });
-    if (sidebarHidden) {
-      await stremio2.evaluate(() => document.getElementById('wp-toggle-host')?.click());
-      await stremio2.waitForTimeout(500);
-    }
+    await openSidebarIfHidden(stremio2);
 
     // Debug: check chat input state
     const chatDebug = await stremio2.evaluate(() => {
@@ -279,34 +316,44 @@ async function testChatFlow() {
         placeholder: input?.placeholder,
       };
     });
+    assert(chatDebug.exists && chatDebug.visible && !chatDebug.disabled, 'Chat input is interactive');
 
     // Send chat using real browser keyboard events (not JS dispatch)
     // This goes through the browser's input pipeline and reaches content script listeners
     await stremio2.focus('#wp-chat-input');
     await stremio2.keyboard.type('Hello from Bob!');
     await stremio2.keyboard.press('Enter');
-    await stremio2.waitForTimeout(2000);
+    await stremio2.waitForTimeout(1000);
 
-    // Check Bob sees his own message (local echo)
-    const bobChat = await stremio2.evaluate(() => document.getElementById('wp-chat-messages')?.innerText || '');
-    const bobInputVal = await stremio2.evaluate(() => document.getElementById('wp-chat-input')?.value || '');
-    // Debug: if chat is empty, the sendChat might not have fired
-    if (!bobChat.includes('Hello from Bob!')) {
-      console.log(`    DEBUG: bobChat="${bobChat.substring(0, 100)}", inputVal="${bobInputVal}"`);
-    }
-    assert(bobChat.includes('Hello from Bob!'), `Bob sees own message in chat`);
+    // Check Bob sees his own message and doesn't end up with duplicate local+server echoes
+    const bobChatState = await stremio2.evaluate(() => {
+      const messages = [...document.querySelectorAll('#wp-chat-messages .wp-chat-msg')].map((el) => el.innerText || '');
+      const sendBtn = document.getElementById('wp-chat-send');
+      return {
+        messageCount: messages.filter((text) => text.includes('Hello from Bob!')).length,
+        inputValue: document.getElementById('wp-chat-input')?.value || '',
+        sendDisabled: !!sendBtn?.disabled,
+      };
+    });
+    assert(bobChatState.messageCount === 1, 'Bob sees a single chat entry for his own message');
+    assert(bobChatState.inputValue === '', 'Chat input clears after sending');
+    assert(bobChatState.sendDisabled, 'Send button enters cooldown after sending');
+
+    // Client-side cooldown should block a rapid second send before the server cooldown even matters.
+    await stremio2.focus('#wp-chat-input');
+    await stremio2.keyboard.type('Too fast');
+    await stremio2.keyboard.press('Enter');
+    await stremio2.waitForTimeout(500);
+    const rapidSecondSendCount = await stremio2.evaluate(() =>
+      [...document.querySelectorAll('#wp-chat-messages .wp-chat-msg')]
+        .filter((el) => (el.innerText || '').includes('Too fast')).length
+    );
+    assert(rapidSecondSendCount === 0, 'Rapid second send is blocked by the client cooldown');
 
     // Check Alice sees Bob's message
     await stremio1.bringToFront();
     await stremio1.waitForTimeout(1000);
-    // Open sidebar if closed
-    await stremio1.evaluate(() => {
-      const sidebar = document.getElementById('wp-sidebar');
-      if (sidebar?.classList.contains('wp-sidebar-hidden')) {
-        document.getElementById('wp-toggle-host')?.click();
-      }
-    });
-    await stremio1.waitForTimeout(500);
+    await openSidebarIfHidden(stremio1);
     const aliceChat = await stremio1.evaluate(() => document.getElementById('wp-chat-messages')?.innerText || '');
     assert(aliceChat.includes('Hello from Bob!'), `Alice sees Bob's message in chat`);
 
@@ -504,19 +551,29 @@ async function testPeerContentLink() {
   console.log('\n── Test: Peer sees host content link ──');
   const env = await setupTwoUsers();
   try {
+    await injectMockVideo(env.stremio1, 42);
+    await env.stremio1.evaluate(() => {
+      window.location.hash = '/detail/movie/tt31193180/tt31193180';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    await env.stremio1.waitForTimeout(1500);
+
     // Bob's sidebar should show content link (host is watching something)
     await env.stremio2.bringToFront();
     await env.stremio2.waitForTimeout(1000);
     const contentLink = await env.stremio2.evaluate(() => {
-      const link = document.getElementById('wp-content-link');
+      const wrapper = document.getElementById('wp-content-link');
+      const link = wrapper?.querySelector('a');
       return {
-        exists: !!link,
-        visible: link && !link.classList.contains('wp-hidden-el'),
-        text: link?.textContent?.substring(0, 60),
+        exists: !!wrapper,
+        visible: wrapper && !wrapper.classList.contains('wp-hidden-el'),
+        text: wrapper?.textContent?.substring(0, 80),
+        href: link?.href || '',
       };
     });
-    // Content link shows when host has a meta.id and peer is not the owner
     assert(contentLink.exists, 'Content link element exists for peer');
+    assert(contentLink.visible, 'Content link is visible for the peer');
+    assert(contentLink.href.includes('/detail/movie/tt31193180'), `Content link targets the host title (${contentLink.href})`);
   } finally {
     await cleanupTwoUsers(env);
   }
@@ -554,6 +611,71 @@ async function testBidirectionalChat() {
       { timeout: 5000 }
     ).then(() => true).catch(() => false);
     assert(aliceSentOk, 'Alice sent message (local echo + server broadcast)');
+  } finally {
+    await cleanupTwoUsers(env);
+  }
+}
+
+async function testTypingIndicatorFlow() {
+  console.log('\n── Test: Typing indicator syncs across users ──');
+  const env = await setupTwoUsers();
+  try {
+    await env.stremio2.bringToFront();
+    await env.stremio2.focus('#wp-chat-input');
+    await env.stremio2.keyboard.type('T');
+
+    const aliceSawTyping = await env.stremio1.waitForFunction(
+      () => {
+        const el = document.getElementById('wp-typing-indicator');
+        return el && !el.classList.contains('wp-hidden-el') && el.textContent.includes('Bob is typing');
+      },
+      { timeout: 5000 }
+    ).then(() => true).catch(() => false);
+    assert(aliceSawTyping, 'Alice sees Bob typing');
+
+    await env.stremio2.keyboard.type('yping...');
+    await env.stremio2.waitForTimeout(300);
+    await env.stremio2.keyboard.press('Enter');
+
+    const typingCleared = await env.stremio1.waitForFunction(
+      () => document.getElementById('wp-typing-indicator')?.classList.contains('wp-hidden-el'),
+      { timeout: 5000 }
+    ).then(() => true).catch(() => false);
+    assert(typingCleared, 'Typing indicator clears after Bob sends the message');
+  } finally {
+    await cleanupTwoUsers(env);
+  }
+}
+
+async function testBookmarkFlow() {
+  console.log('\n── Test: Bookmarks sync and seek the peer video ──');
+  const env = await setupTwoUsers();
+  try {
+    await injectMockVideo(env.stremio1, 2);
+    await injectMockVideo(env.stremio2, 0.1);
+
+    const hostHasBookmarkButton = await env.stremio1.waitForFunction(
+      () => !!document.getElementById('wp-bookmark-btn'),
+      { timeout: TIMEOUT }
+    ).then(() => true).catch(() => false);
+    assert(hostHasBookmarkButton, 'Host sees the bookmark action when video is present');
+
+    if (hostHasBookmarkButton) {
+      await env.stremio1.click('#wp-bookmark-btn');
+
+      const peerSawBookmark = await env.stremio2.waitForFunction(
+        () => document.querySelector('.wp-bookmark-msg .wp-bookmark-time')?.textContent === '0:02',
+        { timeout: 5000 }
+      ).then(() => true).catch(() => false);
+      assert(peerSawBookmark, 'Peer receives the bookmark entry');
+
+      if (peerSawBookmark) {
+        await env.stremio2.click('.wp-bookmark-time');
+        await env.stremio2.waitForTimeout(300);
+        const peerVideoTime = await env.stremio2.evaluate(() => document.querySelector('video')?.currentTime || 0);
+        assert(Math.abs(peerVideoTime - 2) < 0.1, `Clicking the bookmark seeks the peer video (${peerVideoTime.toFixed(1)}s)`);
+      }
+    }
   } finally {
     await cleanupTwoUsers(env);
   }
@@ -644,15 +766,20 @@ async function main() {
     testThemePropagation,
     testPeerContentLink,
     testBidirectionalChat,
+    testTypingIndicatorFlow,
+    testBookmarkFlow,
     testNamedRoom,
   ];
 
   for (const test of tests) {
+    currentDiagnostics = createBrowserDiagnostics();
     try {
       await test();
     } catch (e) {
       console.error(`  ✗ FATAL: ${e.message}`);
       failed++;
+    } finally {
+      assertCleanDiagnostics(test.name);
     }
   }
 

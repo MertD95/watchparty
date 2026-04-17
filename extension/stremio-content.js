@@ -54,19 +54,36 @@
       [WPConstants.STORAGE.ROOM_STATE]: roomState,
       [WPConstants.STORAGE.USER_ID]: userId,
       [WPConstants.STORAGE.WS_CONNECTED]: WPWS.isConnected(),
-    }).catch(() => {});
+      [WPConstants.STORAGE.ACTIVE_BACKEND]: WPWS.getActiveBackend(),
+      [WPConstants.STORAGE.ACTIVE_BACKEND_URL]: WPWS.getActiveWsUrl(),
+    }).catch(() => { });
+  }
+
+  function persistConnectionState() {
+    if (!extOk()) return;
+    chrome.storage.local.set({
+      [WPConstants.STORAGE.WS_CONNECTED]: WPWS.isConnected(),
+      [WPConstants.STORAGE.ACTIVE_BACKEND]: WPWS.getActiveBackend(),
+      [WPConstants.STORAGE.ACTIVE_BACKEND_URL]: WPWS.getActiveWsUrl(),
+    }).catch(() => { });
   }
 
   function notifyBackground(data) {
     if (!extOk()) return;
     try {
-      chrome.runtime.sendMessage({ type: 'watchparty-ext', ...data }).catch(() => {});
+      chrome.runtime.sendMessage({ type: 'watchparty-ext', ...data }).catch(() => { });
     } catch { /* context invalidated */ }
   }
 
   // --- WS callbacks ---
   WPWS.onConnect(() => {
-    notifyBackground({ action: 'ws-status-changed', connected: true });
+    persistConnectionState();
+    notifyBackground({
+      action: 'ws-status-changed',
+      connected: true,
+      activeBackend: WPWS.getActiveBackend(),
+      activeBackendUrl: WPWS.getActiveWsUrl(),
+    });
     WPSync.resetCorrection();
     // If we were in a room, rejoin (with replay if we have a sequence number)
     if (roomState?.id) {
@@ -89,7 +106,13 @@
   });
 
   WPWS.onDisconnect(() => {
-    notifyBackground({ action: 'ws-status-changed', connected: false });
+    persistConnectionState();
+    notifyBackground({
+      action: 'ws-status-changed',
+      connected: false,
+      activeBackend: WPWS.getActiveBackend(),
+      activeBackendUrl: WPWS.getActiveWsUrl(),
+    });
   });
 
   function processWsEvent(msg) {
@@ -512,6 +535,25 @@
     }
   }
 
+  function getActiveVideoElement() {
+    return video || document.querySelector('video');
+  }
+
+  function resolveBookmarkTime(explicitTime) {
+    if (Number.isFinite(explicitTime)) return Math.max(0, explicitTime);
+    const activeVideo = getActiveVideoElement();
+    return Number.isFinite(activeVideo?.currentTime) ? Math.max(0, activeVideo.currentTime) : 0;
+  }
+
+  function seekToBookmarkTime(targetTime) {
+    const activeVideo = getActiveVideoElement();
+    if (!activeVideo || !Number.isFinite(targetTime)) {
+      WPOverlay.showToast('No video available for bookmark seek', 1500);
+      return;
+    }
+    activeVideo.currentTime = Math.max(0, targetTime);
+  }
+
   // --- Action dispatch (from overlay events + background/popup messages) ---
   document.addEventListener('wp-action', (e) => handleAction(e.detail));
   chrome.runtime.onMessage.addListener((message) => {
@@ -531,7 +573,7 @@
       releaseActiveTab();
       if (extOk()) {
         chrome.storage.local.remove(WPConstants.STORAGE.CURRENT_ROOM);
-        if (leavingRoomId) chrome.storage.session.remove(WPConstants.STORAGE.roomKey(leavingRoomId)).catch(() => {});
+        if (leavingRoomId) chrome.storage.session.remove(WPConstants.STORAGE.roomKey(leavingRoomId)).catch(() => { });
       }
       WPSync.detach();
       WPCrypto.clear();
@@ -544,7 +586,8 @@
     'transfer-ownership': (m) => WPWS.send({ type: WPProtocol.C2S.ROOM_UPDATE_OWNERSHIP, payload: { userId: m.targetUserId } }),
     'update-username': (m) => WPWS.send({ type: WPProtocol.C2S.USER_UPDATE, payload: { username: m.username, sessionId } }),
     'ready-check': (m) => WPWS.send({ type: WPProtocol.C2S.ROOM_READY_CHECK, payload: { action: m.readyAction } }),
-    'send-bookmark': (m) => WPWS.send({ type: WPProtocol.C2S.ROOM_BOOKMARK, payload: { time: m.time, label: m.label } }),
+    'send-bookmark': (m) => WPWS.send({ type: WPProtocol.C2S.ROOM_BOOKMARK, payload: { time: resolveBookmarkTime(m.time), label: m.label } }),
+    'seek-bookmark': (m) => seekToBookmarkTime(m.time),
     'send-chat': async (m) => {
       lastUserAction = 'send-chat';
       const content = WPCrypto.isEnabled() ? await WPCrypto.encrypt(m.content) : m.content;
@@ -618,6 +661,14 @@
         chrome.storage.local.remove(WPConstants.STORAGE.PENDING_ACTION);
         handleAction(changes[WPConstants.STORAGE.PENDING_ACTION].newValue);
       }
+      if (changes[WPConstants.STORAGE.BACKEND_MODE]) {
+        const nextMode = WPConstants.BACKEND.normalizeMode(changes[WPConstants.STORAGE.BACKEND_MODE].newValue);
+        if (WPWS.setBackendMode(nextMode)) {
+          WPWS.disconnect({ resetReplay: true });
+          persistConnectionState();
+          WPWS.connect();
+        }
+      }
       // Active video tab election — another tab claimed active status
       if (changes[WPConstants.STORAGE.ACTIVE_VIDEO_TAB]) {
         const newActiveId = changes[WPConstants.STORAGE.ACTIVE_VIDEO_TAB].newValue;
@@ -645,7 +696,7 @@
 
     // Generate or load persistent session ID (shared across all tabs via chrome.storage).
     // This lets the server identify all tabs as the same user — Twitch-style multi-tab.
-    chrome.storage.local.get(WPConstants.STORAGE.SESSION_ID, (result) => {
+    chrome.storage.local.get([WPConstants.STORAGE.SESSION_ID, WPConstants.STORAGE.BACKEND_MODE], (result) => {
       const storedSessionId = result[WPConstants.STORAGE.SESSION_ID];
       if (storedSessionId) {
         sessionId = storedSessionId;
@@ -653,6 +704,8 @@
         sessionId = crypto.randomUUID();
         chrome.storage.local.set({ [WPConstants.STORAGE.SESSION_ID]: sessionId });
       }
+      WPWS.setBackendMode(result[WPConstants.STORAGE.BACKEND_MODE]);
+      persistConnectionState();
       // Every tab connects its own WS independently (like Twitch).
       // The server deduplicates by sessionId — multiple connections, one user.
       WPWS.connect();

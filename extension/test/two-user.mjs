@@ -5,12 +5,13 @@
 // Requires: WS server on ws://localhost:8181
 // Usage:    node extension/test/two-user.mjs
 
-import { chromium } from 'playwright';
 import WebSocket from 'ws';
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import { createBrowserDiagnostics } from './browser-diagnostics.mjs';
+import { getExtensionId, launchExtensionContext } from './extension-context.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const EXT_PATH = path.resolve(__dirname, '..');
@@ -20,6 +21,22 @@ const TEST_TIMEOUT = 60000;
 
 let passed = 0, failed = 0;
 function ok(cond, label) { if (cond) { console.log(`  ✓ ${label}`); passed++; } else { console.error(`  ✗ ${label}`); failed++; } }
+
+let currentDiagnostics = null;
+
+function trackPageDiagnostics(page, label) {
+  currentDiagnostics?.attachPage(page, label);
+}
+
+function assertCleanDiagnostics(label) {
+  if (!currentDiagnostics) return;
+  const unexpected = currentDiagnostics.popUnexpected();
+  const message = unexpected.length === 0
+    ? `${label}: no unexpected browser errors`
+    : `${label}: unexpected browser errors (${currentDiagnostics.format(unexpected)})`;
+  ok(unexpected.length === 0, message);
+  currentDiagnostics = null;
+}
 
 const CHROME_FLAGS = [
   '--disable-background-timer-throttling',
@@ -33,21 +50,16 @@ const dirs = [];
 async function launch(label) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `wp-${label}-`));
   dirs.push(dir);
-  return chromium.launchPersistentContext(dir, {
-    headless: false,
-    args: [`--disable-extensions-except=${EXT_PATH}`, `--load-extension=${EXT_PATH}`, ...CHROME_FLAGS],
+  return launchExtensionContext(EXT_PATH, {
+    userDataDir: dir,
+    args: CHROME_FLAGS,
     viewport: { width: 1280, height: 720 },
   });
 }
 
-async function getExtId(ctx) {
-  let sw = ctx.serviceWorkers()[0];
-  if (!sw) sw = await ctx.waitForEvent('serviceworker', { timeout: 10000 });
-  return sw.url().split('/')[2];
-}
-
 async function stremio(ctx) {
   const p = await ctx.newPage();
+  trackPageDiagnostics(p, 'stremio');
   await p.goto(STREMIO, { waitUntil: 'domcontentloaded' });
   await p.waitForFunction(() => !!document.getElementById('wp-overlay'), { timeout: TIMEOUT });
   await p.waitForTimeout(1000);
@@ -56,6 +68,7 @@ async function stremio(ctx) {
 
 async function popup(ctx, extId) {
   const p = await ctx.newPage();
+  trackPageDiagnostics(p, 'popup');
   await p.goto(`chrome-extension://${extId}/popup.html`, { waitUntil: 'domcontentloaded' });
   await p.waitForTimeout(1500);
   return p;
@@ -69,6 +82,7 @@ async function sidebar(page) {
 async function runTest(name, fn) {
   console.log(`\n── ${name} ──`);
   const contexts = [];
+  currentDiagnostics = createBrowserDiagnostics();
   const wrappedLaunch = async (label) => { const ctx = await launch(label); contexts.push(ctx); return ctx; };
   try {
     await Promise.race([
@@ -80,6 +94,7 @@ async function runTest(name, fn) {
     failed++;
   } finally {
     for (const ctx of contexts) { try { await ctx.close(); } catch {} }
+    assertCleanDiagnostics(name);
   }
 }
 
@@ -103,7 +118,7 @@ async function main() {
     ok(await pageA.evaluate(() => document.getElementById('wp-sidebar')?.innerText?.includes('Not in a room')), 'Alice clean');
     ok(await pageB.evaluate(() => document.getElementById('wp-sidebar')?.innerText?.includes('Not in a room')), 'Bob clean');
 
-    const extA = await getExtId(ctxA);
+    const extA = await getExtensionId(ctxA);
     const popA = await popup(ctxA, extA);
     await popA.fill('#username-input', 'Alice');
     await popA.click('#btn-create');
@@ -117,7 +132,7 @@ async function main() {
     await pageA.waitForFunction(() => !document.getElementById('wp-sidebar')?.innerText?.includes('Not in a room'), { timeout: 8000 });
     ok(true, 'Alice sidebar in room');
 
-    const extB = await getExtId(ctxB);
+    const extB = await getExtensionId(ctxB);
     const popB = await popup(ctxB, extB);
     await popB.fill('#username-input', 'Bob');
     await popB.fill('#room-id-input', roomId);
@@ -191,7 +206,7 @@ async function main() {
   await runTest('Sidebar UI', async (launch) => {
     const ctx = await launch('ui');
     const page = await stremio(ctx);
-    const ext = await getExtId(ctx);
+    const ext = await getExtensionId(ctx);
     const pop = await popup(ctx, ext);
     await pop.fill('#username-input', 'Host');
     await pop.click('#btn-create');
@@ -237,7 +252,7 @@ async function main() {
   await runTest('SPA navigation in room', async (launch) => {
     const ctx = await launch('spa');
     const page = await stremio(ctx);
-    const ext = await getExtId(ctx);
+    const ext = await getExtensionId(ctx);
     const pop = await popup(ctx, ext);
     await pop.fill('#username-input', 'Nav');
     await pop.click('#btn-create');
@@ -256,7 +271,7 @@ async function main() {
   await runTest('Named room rejoin', async (launch) => {
     const ctx = await launch('named');
     const page = await stremio(ctx);
-    const ext = await getExtId(ctx);
+    const ext = await getExtensionId(ctx);
     const pop1 = await popup(ctx, ext);
     await pop1.fill('#username-input', 'Alice');
     await pop1.fill('#room-name-input', 'persist-test');
@@ -284,7 +299,7 @@ async function main() {
   await runTest('Invite link copy', async (launch) => {
     const ctx = await launch('inv');
     await stremio(ctx);
-    const ext = await getExtId(ctx);
+    const ext = await getExtensionId(ctx);
     const pop = await popup(ctx, ext);
     await pop.fill('#username-input', 'Host');
     await pop.click('#btn-create');

@@ -12,6 +12,17 @@ import WebSocket from 'ws';
 const WS_URL = 'ws://localhost:8181';
 const TIMEOUT = 10000;
 
+async function ensureServerRunning() {
+  try {
+    const res = await fetch('http://localhost:8181/health', { signal: AbortSignal.timeout(3000) });
+    if (!res.ok) throw new Error('health check failed');
+  } catch {
+    console.error('ERROR: WS server not running on localhost:8181');
+    console.error('Start it with: cd ../watchparty-server && npm run dev');
+    process.exit(1);
+  }
+}
+
 // ── WebSocket helpers ──
 
 // Track all open connections so we can force-close leaked ones between tests
@@ -996,6 +1007,8 @@ async function testMCPPairing(roomId) {
 async function main() {
   const args = process.argv.slice(2);
   const roomIdx = args.indexOf('--room');
+
+  await ensureServerRunning();
 
   if (roomIdx !== -1 && args[roomIdx + 1]) {
     // MCP pairing mode

@@ -122,7 +122,7 @@ const WPOverlay = (() => {
   function ensureAudioCtx() {
     if (!userHasInteracted) return null;
     if (!audioCtx) audioCtx = new AudioContext();
-    if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+    if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => { });
     return audioCtx;
   }
   document.addEventListener('click', () => { userHasInteracted = true; ensureAudioCtx(); }, { once: true });
@@ -173,8 +173,34 @@ const WPOverlay = (() => {
     }
   }
 
-  // --- Render cache (avoids storing state on DOM elements) ---
-  const renderCache = { lastStatusHtml: '', lastUsersKey: '' };
+  // --- Render cache (avoids rewriting unchanged DOM) ---
+  const renderCache = {
+    lastStatusHtml: '',
+    lastUsersKey: '',
+    lastRoomCode: '',
+    lastMinInfo: '',
+    lastContentLinkKey: 'hidden',
+    lastSyncIndicatorKey: 'hidden',
+    lastCatchUpLabel: '',
+    catchUpVisible: false,
+  };
+
+  function resetRenderCache() {
+    renderCache.lastStatusHtml = '';
+    renderCache.lastUsersKey = '';
+    renderCache.lastRoomCode = '';
+    renderCache.lastMinInfo = '';
+    renderCache.lastContentLinkKey = 'hidden';
+    renderCache.lastSyncIndicatorKey = 'hidden';
+    renderCache.lastCatchUpLabel = '';
+    renderCache.catchUpVisible = false;
+  }
+
+  function removeCatchUpButton() {
+    document.getElementById('wp-catchup-btn')?.remove();
+    renderCache.lastCatchUpLabel = '';
+    renderCache.catchUpVisible = false;
+  }
 
   // --- Action dispatch helper ---
   function dispatchAction(action, detail = {}) {
@@ -596,24 +622,36 @@ const WPOverlay = (() => {
 
     const chatContainer = document.getElementById('wp-chat-container');
     if (!inRoom || !roomState) {
+      resetRenderCache();
       if (status) status.innerHTML = '<div class="wp-empty-state">Not in a room.<br/>Use the extension popup to create or join one.</div>';
       if (roomCode) roomCode.textContent = '';
       if (usersDiv) usersDiv.innerHTML = '';
       if (contentLink) contentLink.classList.add('wp-hidden-el');
       if (syncInd) syncInd.classList.add('wp-hidden-el');
       if (chatContainer) chatContainer.classList.add('wp-hidden-el');
+      removeCatchUpButton();
       return;
     }
 
     // Show chat when in room
     if (chatContainer) chatContainer.classList.remove('wp-hidden-el');
 
-    if (roomCode) roomCode.textContent = roomState.id?.slice(0, 8) || '';
-    if (minInfo) minInfo.textContent = `${roomState.users?.length || 0} watching`;
+    const nextRoomCode = roomState.id?.slice(0, 8) || '';
+    if (roomCode && renderCache.lastRoomCode !== nextRoomCode) {
+      roomCode.textContent = nextRoomCode;
+      renderCache.lastRoomCode = nextRoomCode;
+    }
+
+    const nextMinInfo = `${roomState.users?.length || 0} watching`;
+    if (minInfo && renderCache.lastMinInfo !== nextMinInfo) {
+      minInfo.textContent = nextMinInfo;
+      renderCache.lastMinInfo = nextMinInfo;
+    }
 
     if (status) renderStatusButtons(status, isHost, hasVideo);
     if (contentLink) renderContentLink(contentLink, isHost, roomState);
     if (usersDiv && roomState.users) renderUsersList(usersDiv, roomState, userId, isHost);
+    if (isHost || !hasVideo) removeCatchUpButton();
   }
 
   function renderStatusButtons(status, isHost, hasVideo) {
@@ -645,18 +683,25 @@ const WPOverlay = (() => {
   }
 
   function renderContentLink(contentLink, isHost, roomState) {
-    if (!isHost && roomState.meta?.id && roomState.meta.id !== 'pending' && roomState.meta.id !== 'unknown') {
-      const name = escapeHtml(roomState.meta.name || roomState.meta.id);
-      const link = `https://web.stremio.com/#/detail/${encodeURIComponent(roomState.meta.type)}/${encodeURIComponent(roomState.meta.id)}`;
-      if (document.querySelector('video')) {
+    if (isHost || !roomState.meta?.id || roomState.meta.id === 'pending' || roomState.meta.id === 'unknown' || document.querySelector('video')) {
+      if (renderCache.lastContentLinkKey !== 'hidden') {
         contentLink.classList.add('wp-hidden-el');
-      } else {
-        contentLink.classList.remove('wp-hidden-el');
-        contentLink.innerHTML = `<span class="wp-content-label">Host is watching:</span> <a href="${link}" class="wp-content-link-a">${name}</a>`;
+        renderCache.lastContentLinkKey = 'hidden';
       }
-    } else {
-      contentLink.classList.add('wp-hidden-el');
+      return;
     }
+
+    const name = escapeHtml(roomState.meta.name || roomState.meta.id);
+    const link = `https://web.stremio.com/#/detail/${encodeURIComponent(roomState.meta.type)}/${encodeURIComponent(roomState.meta.id)}`;
+    const contentLinkKey = `${roomState.meta.type}:${roomState.meta.id}:${roomState.meta.name || ''}`;
+    if (renderCache.lastContentLinkKey === contentLinkKey) {
+      if (contentLink.classList.contains('wp-hidden-el')) contentLink.classList.remove('wp-hidden-el');
+      return;
+    }
+
+    contentLink.classList.remove('wp-hidden-el');
+    contentLink.innerHTML = `<span class="wp-content-label">Host is watching:</span> <a href="${link}" class="wp-content-link-a">${name}</a>`;
+    renderCache.lastContentLinkKey = contentLinkKey;
   }
 
   function renderUsersList(usersDiv, roomState, userId, isHost) {
@@ -690,17 +735,33 @@ const WPOverlay = (() => {
   function updateSyncIndicator(isHost, drift) {
     const el = document.getElementById('wp-sync-indicator');
     if (!el) return;
-    if (isHost) { el.classList.add('wp-hidden-el'); return; }
-    el.classList.remove('wp-hidden-el');
-    const abs = Math.abs(drift);
-    if (abs < WPSync.SOFT_DRIFT_ENTER) {
-      el.innerHTML = '<span class="wp-sync-ok">Synced</span>';
-    } else if (abs < WPSync.SOFT_DRIFT_MAX) {
-      const dir = drift > 0 ? 'behind' : 'ahead';
-      el.innerHTML = `<span class="wp-sync-drift">Catching up (${abs.toFixed(1)}s ${dir})</span>`;
-    } else {
-      el.innerHTML = '<span class="wp-sync-seek">Seeking...</span>';
+
+    let nextKey = 'hidden';
+    let nextHtml = '';
+    if (!isHost) {
+      const abs = Math.abs(drift);
+      if (abs < WPSync.SOFT_DRIFT_ENTER) {
+        nextKey = 'ok';
+        nextHtml = '<span class="wp-sync-ok">Synced</span>';
+      } else if (abs < WPSync.SOFT_DRIFT_MAX) {
+        const dir = drift > 0 ? 'behind' : 'ahead';
+        const rounded = abs.toFixed(1);
+        nextKey = `drift:${rounded}:${dir}`;
+        nextHtml = `<span class="wp-sync-drift">Catching up (${rounded}s ${dir})</span>`;
+      } else {
+        nextKey = 'seek';
+        nextHtml = '<span class="wp-sync-seek">Seeking...</span>';
+      }
     }
+
+    if (renderCache.lastSyncIndicatorKey === nextKey) return;
+    renderCache.lastSyncIndicatorKey = nextKey;
+    if (nextKey === 'hidden') {
+      el.classList.add('wp-hidden-el');
+      return;
+    }
+    el.classList.remove('wp-hidden-el');
+    el.innerHTML = nextHtml;
   }
 
   // Track displayed message IDs to prevent duplicates (covers TTL expiry edge case)
@@ -754,14 +815,16 @@ const WPOverlay = (() => {
     }
   }
 
-  // --- Reaction sound (toggleable) ---
+  // --- Reaction settings (sound + floating emojis, both toggleable) ---
   let reactionSoundEnabled = true;
-  chrome.storage?.local?.get(WPConstants.STORAGE.REACTION_SOUND, (r) => {
+  let floatingReactionsEnabled = true;
+  chrome.storage?.local?.get([WPConstants.STORAGE.REACTION_SOUND, WPConstants.STORAGE.FLOATING_REACTIONS], (r) => {
     if (r && r[WPConstants.STORAGE.REACTION_SOUND] === false) reactionSoundEnabled = false;
+    if (r && r[WPConstants.STORAGE.FLOATING_REACTIONS] === false) floatingReactionsEnabled = false;
   });
-  // Live-update when toggled from popup
   chrome.storage?.onChanged?.addListener((changes) => {
     if (changes[WPConstants.STORAGE.REACTION_SOUND]) reactionSoundEnabled = changes[WPConstants.STORAGE.REACTION_SOUND].newValue !== false;
+    if (changes[WPConstants.STORAGE.FLOATING_REACTIONS]) floatingReactionsEnabled = changes[WPConstants.STORAGE.FLOATING_REACTIONS].newValue !== false;
   });
 
   function playReactionSound() {
@@ -770,10 +833,12 @@ const WPOverlay = (() => {
   }
 
   function showReaction(uid, emoji, roomState) {
-    // Don't play sound for own reactions (match by sessionId for multi-tab)
     const reactionUser = roomState?.users?.find(u => u.id === uid);
     const isOwnReaction = uid === cachedUserId || (cachedSessionId && reactionUser?.sessionId === cachedSessionId);
-    if (!isOwnReaction) playReactionSound();
+    // Play sound for all reactions (own + others) — user expects audio feedback
+    playReactionSound();
+    // Floating emoji animation (can be disabled)
+    if (!floatingReactionsEnabled) return;
     const container = document.getElementById('wp-reaction-container');
     if (!container) return;
     const userName = reactionUser?.name || '';
@@ -854,7 +919,16 @@ const WPOverlay = (() => {
     const el = document.getElementById('wp-room-code');
     if (!el) return;
     el.onclick = async () => {
-      let inviteUrl = `https://watchparty.mertd.me/r/${roomState?.id || el.textContent}`;
+      const roomId = roomState?.id || el.textContent;
+      let inviteUrl = await new Promise((resolve) => {
+        chrome.storage.local.get([WPConstants.STORAGE.BACKEND_MODE, WPConstants.STORAGE.ACTIVE_BACKEND], (result) => {
+          resolve(WPConstants.BACKEND.buildInviteUrl(
+            roomId,
+            result[WPConstants.STORAGE.BACKEND_MODE],
+            result[WPConstants.STORAGE.ACTIVE_BACKEND]
+          ));
+        });
+      });
       // Include E2E encryption key in URL fragment (never sent to server)
       if (typeof WPCrypto !== 'undefined' && WPCrypto.isEnabled()) {
         const key = await WPCrypto.exportKey();
@@ -933,21 +1007,25 @@ const WPOverlay = (() => {
 
   // --- Catch-up button (shown when user is behind host) ---
   function showCatchUpButton(drift) {
-    let btn = document.getElementById('wp-catchup-btn');
     if (Math.abs(drift) < 5) {
-      if (btn) btn.remove();
+      if (renderCache.catchUpVisible) removeCatchUpButton();
       return;
     }
+    let btn = document.getElementById('wp-catchup-btn');
     if (!btn) {
       btn = document.createElement('button');
       btn.id = 'wp-catchup-btn';
       btn.addEventListener('click', () => {
         dispatchAction('request-sync');
-        btn.remove();
+        removeCatchUpButton();
       });
       document.getElementById('wp-overlay')?.appendChild(btn);
     }
     const secs = Math.abs(drift).toFixed(0);
+    const label = `⚡ Catch up (${secs}s behind)`;
+    renderCache.catchUpVisible = true;
+    if (renderCache.lastCatchUpLabel === label) return;
+    renderCache.lastCatchUpLabel = label;
     btn.textContent = `⚡ Catch up (${secs}s behind)`;
   }
 

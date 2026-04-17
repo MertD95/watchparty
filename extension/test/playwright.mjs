@@ -7,9 +7,9 @@
 //
 // Requires: WS server on localhost:8181, Stremio desktop not required (tests UI only)
 
-import { chromium } from 'playwright';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { launchExtensionContext } from './extension-context.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const EXT_PATH = path.resolve(__dirname, '..');
@@ -30,14 +30,7 @@ function assert(condition, label) {
 }
 
 async function launchWithExtension() {
-  const context = await chromium.launchPersistentContext('', {
-    headless: false,
-    args: [
-      `--disable-extensions-except=${EXT_PATH}`,
-      `--load-extension=${EXT_PATH}`,
-      '--no-first-run',
-      '--disable-blink-features=AutomationControlled',
-    ],
+  const context = await launchExtensionContext(EXT_PATH, {
     viewport: { width: 1440, height: 900 },
   });
   const page = await context.newPage();

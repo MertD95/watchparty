@@ -1,5 +1,102 @@
 const $ = (id) => document.getElementById(id);
 
+let currentBackendMode = WPConstants.BACKEND.MODES.AUTO;
+let currentActiveBackend = null;
+let currentActiveBackendUrl = null;
+let currentWsConnected = false;
+
+function setStremioStatus(isRunning) {
+  if (isRunning) {
+    $('stremio-dot').className = 'dot on';
+    $('stremio-status').textContent = 'Stremio is running';
+  } else {
+    $('stremio-dot').className = 'dot off';
+    $('stremio-status').textContent = 'Stremio not detected';
+  }
+}
+
+function getKnownBackendKey(value) {
+  return WPConstants.BACKEND.isKnownKey(value) ? value : null;
+}
+
+function getDisplayBackendKey() {
+  if (currentActiveBackend) return currentActiveBackend;
+  if (currentBackendMode === WPConstants.BACKEND.MODES.LOCAL || currentBackendMode === WPConstants.BACKEND.MODES.LIVE) {
+    return currentBackendMode;
+  }
+  return null;
+}
+
+function setWsStatus(isConnected) {
+  const displayBackendKey = getDisplayBackendKey();
+  const backendInfo = displayBackendKey ? WPConstants.BACKEND.getInfo(displayBackendKey) : null;
+  if (isConnected) {
+    $('ws-dot').className = 'dot on';
+    $('ws-status').textContent = backendInfo ? `Connected to ${backendInfo.label} server` : 'Connected to server';
+  } else {
+    $('ws-dot').className = 'dot off';
+    $('ws-status').textContent = backendInfo ? `${backendInfo.label} server disconnected` : 'Server disconnected';
+  }
+}
+
+function buildInviteUrl(roomId) {
+  return WPConstants.BACKEND.buildInviteUrl(roomId, currentBackendMode, currentActiveBackend);
+}
+
+function renderBackendControls() {
+  const selectedMode = WPConstants.BACKEND.normalizeMode(currentBackendMode);
+  document.querySelectorAll('#backend-toggle .backend-btn').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.mode === selectedMode);
+  });
+
+  const browseLink = $('browse-rooms-link');
+  if (browseLink) browseLink.href = WPConstants.BACKEND.getBrowseUrl(selectedMode, currentActiveBackend);
+
+  const displayBackendKey = getDisplayBackendKey();
+  const backendNote = $('backend-note');
+  if (!backendNote) return;
+
+  if (selectedMode === WPConstants.BACKEND.MODES.AUTO) {
+    if (displayBackendKey) {
+      const info = WPConstants.BACKEND.getInfo(displayBackendKey);
+      backendNote.textContent = `Auto mode is selected. Current backend: ${info.label}${currentActiveBackendUrl ? ` (${currentActiveBackendUrl})` : ''}.`;
+    } else {
+      backendNote.textContent = 'Auto mode is selected. Unpacked builds use localhost when available, otherwise live.';
+    }
+    return;
+  }
+
+  const info = WPConstants.BACKEND.getInfo(selectedMode);
+  const targetUrl = currentActiveBackendUrl || info.wsUrl;
+  backendNote.textContent = `${info.label} mode is selected. ${currentWsConnected ? `Connected via ${targetUrl}.` : `Next connection will use ${targetUrl}.`}`;
+}
+
+function applyStatusResponse(response) {
+  currentBackendMode = WPConstants.BACKEND.normalizeMode(response.backendMode);
+  currentActiveBackend = getKnownBackendKey(response.activeBackend);
+  currentActiveBackendUrl = response.activeBackendUrl || null;
+  currentWsConnected = !!response.wsConnected;
+  renderBackendControls();
+  setWsStatus(currentWsConnected);
+}
+
+function setBackendMode(mode) {
+  const normalizedMode = WPConstants.BACKEND.normalizeMode(mode);
+  if (currentBackendMode === normalizedMode) return;
+  currentBackendMode = normalizedMode;
+  currentActiveBackend = null;
+  currentActiveBackendUrl = null;
+  currentWsConnected = false;
+  renderBackendControls();
+  setWsStatus(false);
+  chrome.storage.local.set({
+    [WPConstants.STORAGE.BACKEND_MODE]: normalizedMode,
+    [WPConstants.STORAGE.WS_CONNECTED]: false,
+    [WPConstants.STORAGE.ACTIVE_BACKEND]: null,
+    [WPConstants.STORAGE.ACTIVE_BACKEND_URL]: null,
+  });
+}
+
 // --- Reactive room state watcher (replaces polling) ---
 function waitForRoomState(onRoom, onTimeout) {
   let resolved = false;
@@ -35,22 +132,9 @@ chrome.runtime.sendMessage(
     $('version').textContent = `v${chrome.runtime.getManifest().version} [${response.bgVersion || 'OLD'}]`;
 
     // Stremio status
-    if (response.stremioRunning) {
-      $('stremio-dot').className = 'dot on';
-      $('stremio-status').textContent = 'Stremio is running';
-    } else {
-      $('stremio-dot').className = 'dot off';
-      $('stremio-status').textContent = 'Stremio not detected';
-    }
+    setStremioStatus(response.stremioRunning);
 
-    // WebSocket status
-    if (response.wsConnected) {
-      $('ws-dot').className = 'dot on';
-      $('ws-status').textContent = 'Connected to server';
-    } else {
-      $('ws-dot').className = 'dot off';
-      $('ws-status').textContent = 'Server disconnected';
-    }
+    applyStatusResponse(response);
 
     // Load saved username
     chrome.storage.local.get(WPConstants.STORAGE.USERNAME, (result) => {
@@ -65,6 +149,31 @@ chrome.runtime.sendMessage(
     }
   }
 );
+
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== 'local') return;
+
+  if (changes[WPConstants.STORAGE.WS_CONNECTED]) {
+    currentWsConnected = !!changes[WPConstants.STORAGE.WS_CONNECTED].newValue;
+  }
+  if (changes[WPConstants.STORAGE.BACKEND_MODE]) {
+    currentBackendMode = WPConstants.BACKEND.normalizeMode(changes[WPConstants.STORAGE.BACKEND_MODE].newValue);
+  }
+  if (changes[WPConstants.STORAGE.ACTIVE_BACKEND]) {
+    currentActiveBackend = getKnownBackendKey(changes[WPConstants.STORAGE.ACTIVE_BACKEND].newValue);
+  }
+  if (changes[WPConstants.STORAGE.ACTIVE_BACKEND_URL]) {
+    currentActiveBackendUrl = changes[WPConstants.STORAGE.ACTIVE_BACKEND_URL].newValue || null;
+  }
+  renderBackendControls();
+  setWsStatus(currentWsConnected);
+});
+
+document.querySelectorAll('#backend-toggle .backend-btn').forEach((btn) => {
+  btn.addEventListener('click', () => setBackendMode(btn.dataset.mode));
+});
+renderBackendControls();
+setWsStatus(false);
 
 // --- Views ---
 
@@ -148,9 +257,10 @@ function renderRoomDetails(room, myUserId, mySessionId) {
     autopauseRow.classList.add('hidden');
   }
 
-  // Load reaction sound preference
-  chrome.storage.local.get(WPConstants.STORAGE.REACTION_SOUND, (result) => {
+  // Load reaction preferences
+  chrome.storage.local.get([WPConstants.STORAGE.REACTION_SOUND, WPConstants.STORAGE.FLOATING_REACTIONS], (result) => {
     $('setting-reaction-sound').checked = result[WPConstants.STORAGE.REACTION_SOUND] !== false;
+    $('setting-floating-reactions').checked = result[WPConstants.STORAGE.FLOATING_REACTIONS] !== false;
   });
 }
 
@@ -175,6 +285,17 @@ $('btn-create').addEventListener('click', () => {
     return;
   }
 
+  // Arm the watcher before sending create-room so a warm WS can't win the race.
+  waitForRoomState(
+    (room, userId) => showRoomView(room, userId),
+    () => {
+      $('btn-create').disabled = false;
+      $('btn-create').textContent = 'Create Room';
+      $('create-error').textContent = 'Failed to create room. Make sure web.stremio.com is open.';
+      $('create-error').classList.remove('hidden');
+    }
+  );
+
   chrome.runtime.sendMessage({
     type: 'watchparty-ext',
     action: 'create-room',
@@ -187,17 +308,6 @@ $('btn-create').addEventListener('click', () => {
 
   $('btn-create').disabled = true;
   $('btn-create').textContent = 'Creating...';
-
-  // Listen for room state change reactively instead of polling
-  waitForRoomState(
-    (room, userId) => showRoomView(room, userId),
-    () => {
-      $('btn-create').disabled = false;
-      $('btn-create').textContent = 'Create Room';
-      $('create-error').textContent = 'Failed to create room. Make sure web.stremio.com is open.';
-      $('create-error').classList.remove('hidden');
-    }
-  );
 });
 
 $('btn-join').addEventListener('click', () => {
@@ -209,16 +319,7 @@ $('btn-join').addEventListener('click', () => {
   $('join-error').classList.add('hidden');
   chrome.storage.local.set({ [WPConstants.STORAGE.USERNAME]: username });
 
-  chrome.runtime.sendMessage({
-    type: 'watchparty-ext',
-    action: 'join-room',
-    username,
-    roomId,
-  });
-
-  $('btn-join').disabled = true;
-  $('btn-join').textContent = 'Joining...';
-
+  // Arm the watcher before sending join-room so fast local updates aren't missed.
   waitForRoomState(
     (room, userId) => showRoomView(room, userId),
     () => {
@@ -228,6 +329,16 @@ $('btn-join').addEventListener('click', () => {
       $('join-error').classList.remove('hidden');
     }
   );
+
+  chrome.runtime.sendMessage({
+    type: 'watchparty-ext',
+    action: 'join-room',
+    username,
+    roomId,
+  });
+
+  $('btn-join').disabled = true;
+  $('btn-join').textContent = 'Joining...';
 });
 
 $('btn-leave').addEventListener('click', () => {
@@ -252,6 +363,9 @@ $('setting-autopause').addEventListener('change', (e) => {
 
 $('setting-reaction-sound').addEventListener('change', (e) => {
   chrome.storage.local.set({ [WPConstants.STORAGE.REACTION_SOUND]: e.target.checked });
+});
+$('setting-floating-reactions').addEventListener('change', (e) => {
+  chrome.storage.local.set({ [WPConstants.STORAGE.FLOATING_REACTIONS]: e.target.checked });
 });
 
 // Theme: accent color
@@ -279,21 +393,21 @@ chrome.storage.local.get(WPConstants.STORAGE.COMPACT_CHAT, (result) => {
 $('btn-share').addEventListener('click', () => {
   const roomId = $('room-id-display').textContent;
   if (!roomId) return;
-  navigator.clipboard.writeText(`https://watchparty.mertd.me/r/${roomId}`).then(() => {
+  navigator.clipboard.writeText(buildInviteUrl(roomId)).then(() => {
     $('btn-share').textContent = '✅ Link Copied!';
     setTimeout(() => { $('btn-share').textContent = '📋 Copy Invite Link'; }, 1500);
-  }).catch(() => {});
+  }).catch(() => { });
 });
 
 // Copy room ID on click (also copies invite link)
 document.addEventListener('click', (e) => {
   if (e.target.id === 'room-id-display') {
     const roomId = e.target.textContent;
-    navigator.clipboard.writeText(`https://watchparty.mertd.me/r/${roomId}`).then(() => {
+    navigator.clipboard.writeText(buildInviteUrl(roomId)).then(() => {
       const original = e.target.textContent;
       e.target.textContent = 'Link copied!';
       setTimeout(() => { e.target.textContent = original; }, 1500);
-    }).catch(() => {});
+    }).catch(() => { });
   }
 });
 

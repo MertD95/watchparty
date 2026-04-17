@@ -467,15 +467,16 @@
       const empty = document.getElementById('rooms-empty');
       if (!list || !empty) return;
 
-      if (!data.rooms || data.rooms.length === 0) {
+      const cards = (data.rooms || []).map(buildRoomCard);
+
+      if (cards.length === 0) {
         empty.style.display = 'block';
-        const cards = list.querySelectorAll('.room-card');
-        cards.forEach(c => c.remove());
+        list.replaceChildren(empty);
         return;
       }
 
       empty.style.display = 'none';
-      list.replaceChildren(...data.rooms.map(buildRoomCard));
+      list.replaceChildren(empty, ...cards);
     }
 
     async function loadPublicRooms() {
@@ -500,6 +501,9 @@
     }
     try {
       const sse = new EventSource(ROOMS_STREAM);
+      sse.onopen = () => {
+        sseActive = true;
+      };
       sse.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
@@ -508,11 +512,10 @@
         } catch {}
       };
       sse.onerror = () => {
-        // SSE failed — fall back to polling
-        if (!sseActive) {
-          sse.close();
-          startPollingFallback();
-        }
+        // If the stream drops after it has worked once, keep the room list fresh via polling.
+        sseActive = false;
+        void loadPublicRooms();
+        startPollingFallback();
       };
     } catch {
       // EventSource not available — fall back to polling
