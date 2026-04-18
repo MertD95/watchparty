@@ -240,6 +240,39 @@ async function main() {
     await page.waitForTimeout(300);
     ok(await page.evaluate(() => !document.getElementById('wp-sidebar')?.classList.contains('wp-sidebar-hidden')), 'Alt+W opens');
 
+    await page.setViewportSize({ width: 360, height: 844 });
+    await page.waitForTimeout(600);
+    ok(await page.evaluate(() => !document.getElementById('wp-sidebar')?.classList.contains('wp-sidebar-hidden')), 'Sidebar stays open on narrow viewport');
+    ok(await page.evaluate(() => {
+      const toggle = document.getElementById('wp-toggle-host');
+      if (!toggle) return false;
+      const style = getComputedStyle(toggle);
+      const rect = toggle.getBoundingClientRect();
+      return style.display === 'none' || style.visibility === 'hidden' || rect.width === 0 || rect.height === 0;
+    }), 'Mobile open hides launcher');
+    ok(await page.evaluate(() => {
+      const tabbar = document.getElementById('wp-tabbar');
+      const roomTab = document.querySelector('[data-panel="room"]');
+      if (!tabbar || !roomTab) return false;
+      const tabRect = tabbar.getBoundingClientRect();
+      const roomRect = roomTab.getBoundingClientRect();
+      return roomRect.left >= tabRect.left - 1 && roomRect.right <= tabRect.right + 1 && roomRect.width > 0;
+    }), 'Room tab remains unobstructed on mobile');
+    await page.evaluate(() => document.getElementById('wp-close-sidebar')?.click());
+    await page.waitForTimeout(400);
+    ok(await page.evaluate(() => document.getElementById('wp-sidebar')?.classList.contains('wp-sidebar-hidden')), 'Mobile close button closes sidebar');
+    ok(await page.evaluate(() => {
+      const toggle = document.getElementById('wp-toggle-host');
+      if (!toggle) return false;
+      const style = getComputedStyle(toggle);
+      const rect = toggle.getBoundingClientRect();
+      return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+    }), 'Mobile close restores launcher');
+    await page.evaluate(() => document.getElementById('wp-toggle-host')?.click());
+    await page.waitForTimeout(300);
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.waitForTimeout(400);
+
     await page.evaluate(() => document.querySelector('#wp-emoji-btn')?.click());
     await page.waitForTimeout(300);
     ok(await page.evaluate(() => !document.getElementById('wp-emoji-picker')?.classList.contains('wp-hidden-el')), 'Emoji opens');

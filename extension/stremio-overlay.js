@@ -239,10 +239,12 @@ const WPOverlay = (() => {
     if (!launcherHost || !launcherButton || !launcherLabel) return;
     const open = options.open ?? isSidebarOpen();
     const inRoom = options.inRoom ?? launcherInRoom;
+    const compact = window.innerWidth <= 640;
     const positionLauncher = launcherHost._wpPosition;
     if (typeof positionLauncher === 'function') positionLauncher(open);
     launcherButton.classList.toggle('is-open', open);
     launcherButton.classList.toggle('is-room', inRoom);
+    launcherButton.classList.toggle('is-compact', compact);
     launcherLabel.textContent = !inRoom ? 'WatchParty' : (open ? 'Hide' : 'Chat');
     launcherButton.title = open
       ? 'Hide WatchParty'
@@ -334,15 +336,37 @@ const WPOverlay = (() => {
     let placementFrame = null;
 
     function getLauncherRow() {
-      const container = document.querySelector('[class*="buttons-container"]');
-      if (!container || !(container instanceof HTMLElement) || !container.isConnected) return null;
-      const rect = container.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) return null;
-      if (window.innerWidth <= 640) return null;
-      return container;
+      const containers = [...document.querySelectorAll('[class*="buttons-container"]')]
+        .filter((container) => container instanceof HTMLElement && container.isConnected)
+        .map((container) => ({ container, rect: container.getBoundingClientRect(), style: getComputedStyle(container) }))
+        .filter(({ rect, style }) =>
+          rect.width > 0
+          && rect.height > 0
+          && style.display !== 'none'
+          && style.visibility !== 'hidden'
+          && style.opacity !== '0'
+          && rect.top >= 0
+          && rect.top < 120
+          && rect.right > window.innerWidth / 2
+          && rect.width < 400
+        )
+        .sort((a, b) => {
+          if (a.rect.top !== b.rect.top) return a.rect.top - b.rect.top;
+          return b.rect.right - a.rect.right;
+        });
+      return containers[0]?.container || null;
     }
 
     function placeLauncher(forceOpen = isSidebarOpen()) {
+      const compact = window.innerWidth <= 640;
+      if (compact && forceOpen) {
+        toggleHost.dataset.wpPlacement = 'mobile-hidden';
+        toggleHost.style.display = 'none';
+        toggleHost.style.visibility = 'hidden';
+        toggleHost.style.pointerEvents = 'none';
+        return true;
+      }
+
       const row = getLauncherRow();
       if (row) {
         if (toggleHost.parentElement !== row) row.prepend(toggleHost);
@@ -358,6 +382,7 @@ const WPOverlay = (() => {
         toggleHost.style.marginLeft = '0';
         toggleHost.style.alignSelf = 'center';
         toggleHost.style.zIndex = '1';
+        toggleHost.style.pointerEvents = 'auto';
         toggleHost.style.visibility = 'visible';
         return true;
       }
@@ -367,8 +392,8 @@ const WPOverlay = (() => {
       toggleHost.style.position = 'fixed';
       toggleHost.style.top = forceOpen ? '64px' : '18px';
       toggleHost.style.right = `${forceOpen
-        ? (window.innerWidth <= 640 ? 16 : SIDEBAR_WIDTH + 16)
-        : 128}px`;
+        ? (compact ? 16 : SIDEBAR_WIDTH + 16)
+        : (compact ? 16 : 128)}px`;
       toggleHost.style.left = 'auto';
       toggleHost.style.bottom = 'auto';
       toggleHost.style.display = '';
@@ -376,6 +401,7 @@ const WPOverlay = (() => {
       toggleHost.style.marginRight = '0';
       toggleHost.style.marginLeft = '0';
       toggleHost.style.alignSelf = '';
+      toggleHost.style.pointerEvents = 'auto';
       toggleHost.style.zIndex = '2147483647';
       toggleHost.style.visibility = 'visible';
       return true;
@@ -394,6 +420,12 @@ const WPOverlay = (() => {
       schedulePlacement();
       if (++placementAttempts >= 30 || getLauncherRow()) clearInterval(placementInterval);
     }, 150);
+    setInterval(() => {
+      if (!launcherHost?.isConnected) return;
+      if (launcherHost.dataset.wpPlacement !== 'inline' || isSidebarOpen()) {
+        schedulePlacement();
+      }
+    }, 1000);
     window.addEventListener('resize', () => schedulePlacement());
     const shadow = toggleHost.attachShadow({ mode: 'closed' });
     shadow.innerHTML = `
@@ -414,6 +446,18 @@ const WPOverlay = (() => {
         }
         button.is-open:hover { background:rgba(30,41,59,0.98); }
         button.is-room .label { letter-spacing:0.01em; }
+        button.is-compact {
+          min-width:42px;
+          width:42px;
+          padding:0;
+          gap:0;
+          justify-content:center;
+        }
+        button.is-compact .label { display:none; }
+        button.is-compact .icon {
+          width:18px;
+          height:18px;
+        }
         .icon {
           width:20px; height:20px; flex-shrink:0;
           display:flex; align-items:center; justify-content:center;
