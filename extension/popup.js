@@ -316,7 +316,7 @@ function renderRoomKeyDetails(room, isHost) {
     ? 'Loading room key...'
     : 'This private-room key is part of the invite link.');
 
-  loadStoredRoomKey(room.id).then((roomKey) => {
+  getStoredRoomKey(room.id).then((roomKey) => {
     if (renderSeq !== roomKeyRenderSeq) return;
 
     input.disabled = false;
