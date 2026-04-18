@@ -511,60 +511,53 @@
       });
     }
 
-    function buildRoomCard(room) {
-      const mins = Math.floor((room.time || 0) / 60);
-      const secs = Math.floor((room.time || 0) % 60).toString().padStart(2, '0');
-      const statusIcon = room.paused ? '\u23F8' : '\u25B6';
-      const statusColor = room.paused ? '#f59e0b' : '#22c55e';
-      const isPublic = room.public;
-      const metaId = room.meta?.id || '';
-      const metaType = room.meta?.type || '';
-      const directJoinType = getDirectJoinType(room);
-      const hasDirectJoin = room?.hasDirectJoin === true;
-
-      const card = document.createElement('div');
-      card.className = 'room-card';
-
-      // Poster
-      if (room.meta.poster) {
+    function syncRoomPoster(slot, room) {
+      const posterUrl = room.meta?.poster || '';
+      const current = slot.firstElementChild;
+      if (posterUrl) {
+        if (current?.tagName === 'IMG') {
+          if (current.src !== posterUrl) current.src = posterUrl;
+          return;
+        }
         const img = document.createElement('img');
         img.className = 'room-poster';
-        img.src = room.meta.poster;
+        img.src = posterUrl;
         img.alt = '';
-        card.appendChild(img);
-      } else {
-        const placeholder = document.createElement('div');
-        placeholder.className = 'room-poster';
-        card.appendChild(placeholder);
+        slot.replaceChildren(img);
+        return;
       }
+      if (current?.tagName === 'DIV' && current.classList.contains('room-poster')) return;
+      const placeholder = document.createElement('div');
+      placeholder.className = 'room-poster';
+      slot.replaceChildren(placeholder);
+    }
 
-      // Info section
+    function createRoomCard() {
+      const card = document.createElement('div');
+      card.className = 'room-card';
+      card.__room = null;
+
+      const posterSlot = document.createElement('div');
+      card.appendChild(posterSlot);
+
       const info = document.createElement('div');
       info.className = 'room-info';
       const title = document.createElement('div');
       title.className = 'room-title';
-      title.textContent = room.meta.name || 'Untitled';
       info.appendChild(title);
       const metaLine1 = document.createElement('div');
       metaLine1.className = 'room-meta';
-      metaLine1.innerHTML = `Hosted by ${escapeHtml(room.owner)}${room.meta.year ? ` &middot; ${room.meta.year}` : ''}`;
       info.appendChild(metaLine1);
       const metaLine2 = document.createElement('div');
       metaLine2.className = 'room-meta';
-      metaLine2.innerHTML = `<span style="color:${statusColor}">${statusIcon}</span> ${mins}:${secs}${room.bookmarks ? ` &middot; \uD83D\uDCCC ${room.bookmarks}` : ''}`;
       info.appendChild(metaLine2);
       card.appendChild(info);
 
-      // Badge
       const badge = document.createElement('span');
-      badge.className = isPublic ? 'room-badge room-badge-public' : 'room-badge room-badge-private';
-      badge.textContent = isPublic ? 'Public' : 'Private';
       card.appendChild(badge);
 
-      // Users count
       const users = document.createElement('div');
       users.className = 'room-users';
-      users.textContent = `${room.users} watching`;
       card.appendChild(users);
 
       const actions = document.createElement('div');
@@ -573,48 +566,102 @@
       const joinBtn = document.createElement('button');
       joinBtn.className = 'room-join-btn';
       joinBtn.textContent = 'Join Room';
-      joinBtn.addEventListener('click', () => joinRoom(room.id, metaId, metaType));
+      joinBtn.addEventListener('click', () => {
+        const room = card.__room;
+        if (!room) return;
+        joinRoom(room.id, room.meta?.id || '', room.meta?.type || '');
+      });
       actions.appendChild(joinBtn);
 
       const directBtn = document.createElement('button');
       directBtn.className = 'room-direct-btn';
       directBtn.textContent = 'Direct Join';
-      if (hasDirectJoin) {
-        directBtn.addEventListener('click', () => joinRoom(room.id, metaId, metaType, { preferDirectJoin: true }));
-        directBtn.title = getDirectJoinTitle(room);
-      } else if (directJoinType === 'debrid-url') {
-        directBtn.title = getDirectJoinTitle(room);
-        directBtn.addEventListener('click', () => {
+      directBtn.addEventListener('click', () => {
+        const room = card.__room;
+        if (!room) return;
+        const directJoinType = getDirectJoinType(room);
+        if (room?.hasDirectJoin === true) {
+          joinRoom(room.id, room.meta?.id || '', room.meta?.type || '', { preferDirectJoin: true });
+          return;
+        }
+        if (directJoinType === 'debrid-url') {
           showDirectJoinNotice(getDirectJoinTitle(room));
-          joinRoom(room.id, metaId, metaType);
-        });
-      } else {
-        directBtn.disabled = true;
-        directBtn.title = getDirectJoinTitle(room);
-      }
+          joinRoom(room.id, room.meta?.id || '', room.meta?.type || '');
+        }
+      });
       actions.appendChild(directBtn);
 
       card.appendChild(actions);
-
+      card.__elements = {
+        posterSlot,
+        title,
+        metaLine1,
+        metaLine2,
+        badge,
+        users,
+        directBtn,
+      };
       return card;
     }
 
-    function renderRooms(data) {
+    function updateRoomCard(card, room) {
+      card.__room = room;
+      card.dataset.roomId = room.id;
+      const { posterSlot, title, metaLine1, metaLine2, badge, users, directBtn } = card.__elements;
+      const mins = Math.floor((room.time || 0) / 60);
+      const secs = Math.floor((room.time || 0) % 60).toString().padStart(2, '0');
+      const statusIcon = room.paused ? '\u23F8' : '\u25B6';
+      const statusColor = room.paused ? '#f59e0b' : '#22c55e';
+      const isPublic = room.public;
+      const directJoinType = getDirectJoinType(room);
+
+      syncRoomPoster(posterSlot, room);
+      title.textContent = room.meta?.name || 'Untitled';
+      metaLine1.innerHTML = `Hosted by ${escapeHtml(room.owner)}${room.meta?.year ? ` &middot; ${room.meta.year}` : ''}`;
+      metaLine2.innerHTML = `<span style="color:${statusColor}">${statusIcon}</span> ${mins}:${secs}${room.bookmarks ? ` &middot; \uD83D\uDCCC ${room.bookmarks}` : ''}`;
+      badge.className = isPublic ? 'room-badge room-badge-public' : 'room-badge room-badge-private';
+      badge.textContent = isPublic ? 'Public' : 'Private';
+      users.textContent = `${room.users} watching`;
+      directBtn.title = getDirectJoinTitle(room);
+      directBtn.disabled = !(room?.hasDirectJoin === true || directJoinType === 'debrid-url');
+    }
+
+    const roomCardNodes = new Map();
+    let lastRoomsRevision = -1;
+
+    function applyRoomsSnapshot(data) {
       const list = document.getElementById('rooms-list');
       const empty = document.getElementById('rooms-empty');
       if (!list || !empty) return;
+      const revision = Number.isFinite(data?.revision) ? Number(data.revision) : null;
+      if (revision !== null && revision < lastRoomsRevision) return;
+      if (revision !== null) lastRoomsRevision = revision;
       lastRoomsUpdateAt = Date.now();
 
-      const cards = (data.rooms || []).map(buildRoomCard);
+      const rooms = Array.isArray(data?.rooms) ? data.rooms : [];
+      const nextRoomIds = new Set();
+      let anchor = empty;
+      empty.style.display = rooms.length === 0 ? 'block' : 'none';
 
-      if (cards.length === 0) {
-        empty.style.display = 'block';
-        list.replaceChildren(empty);
-        return;
+      for (const room of rooms) {
+        nextRoomIds.add(room.id);
+        let card = roomCardNodes.get(room.id);
+        if (!card) {
+          card = createRoomCard();
+          roomCardNodes.set(room.id, card);
+        }
+        updateRoomCard(card, room);
+        if (anchor.nextSibling !== card) {
+          list.insertBefore(card, anchor.nextSibling);
+        }
+        anchor = card;
       }
 
-      empty.style.display = 'none';
-      list.replaceChildren(empty, ...cards);
+      for (const [roomId, card] of roomCardNodes.entries()) {
+        if (nextRoomIds.has(roomId)) continue;
+        roomCardNodes.delete(roomId);
+        card.remove();
+      }
     }
 
     let roomsEventSource = null;
@@ -625,7 +672,7 @@
         const res = await fetch(ROOMS_API, { signal: AbortSignal.timeout(5000) });
         if (!res.ok) return;
         const data = await res.json();
-        renderRooms(data);
+        applyRoomsSnapshot(data);
       } catch {
         // Server unavailable — show empty state
       }
@@ -666,7 +713,11 @@
           if (roomsEventSource !== source) return;
           try {
             const data = JSON.parse(event.data);
-            renderRooms(data);
+            if (!Number.isFinite(data?.revision) && event.lastEventId) {
+              const revision = Number.parseInt(event.lastEventId, 10);
+              if (Number.isFinite(revision)) data.revision = revision;
+            }
+            applyRoomsSnapshot(data);
             sseActive = true;
           } catch {}
         };

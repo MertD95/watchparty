@@ -22,14 +22,17 @@ function ok(condition, label) {
 
 function createServers() {
   let rooms = [];
+  let revision = 0;
+  let queuedRoomsResponse = null;
   const sseClients = new Set();
 
-  function snapshot() {
-    return JSON.stringify({ rooms, total: rooms.length });
+  function snapshot(override) {
+    const payload = override || { rooms, total: rooms.length, revision };
+    return JSON.stringify(payload);
   }
 
   function broadcastRooms() {
-    const data = `data: ${snapshot()}\n\n`;
+    const data = `id: ${revision}\ndata: ${snapshot()}\n\n`;
     for (const res of [...sseClients]) {
       try {
         res.write(data);
@@ -76,11 +79,13 @@ function createServers() {
     const url = new URL(req.url || '/', `http://${req.headers.host}`);
 
     if (url.pathname === '/rooms') {
+      const body = queuedRoomsResponse ? snapshot(queuedRoomsResponse) : snapshot();
+      queuedRoomsResponse = null;
       res.writeHead(200, {
         'Content-Type': 'application/json',
         'Access-Control-Allow-Origin': '*',
       });
-      res.end(snapshot());
+      res.end(body);
       return;
     }
 
@@ -91,7 +96,7 @@ function createServers() {
         'Connection': 'keep-alive',
         'Access-Control-Allow-Origin': '*',
       });
-      res.write(`data: ${snapshot()}\n\n`);
+      res.write(`id: ${revision}\ndata: ${snapshot()}\n\n`);
       sseClients.add(res);
       req.on('close', () => sseClients.delete(res));
       return;
@@ -119,8 +124,12 @@ function createServers() {
         new Promise((resolve) => pageServer.listen(PAGE_PORT, resolve)),
       ]);
     },
-    setRooms(nextRooms) {
+    setRooms(nextRooms, options = {}) {
       rooms = nextRooms;
+      if (options.bumpRevision !== false) revision++;
+    },
+    queueRoomsResponseSnapshot(payload) {
+      queuedRoomsResponse = payload;
     },
     broadcastRooms,
     getSseClientCount() {
@@ -175,7 +184,7 @@ async function main() {
     window.EventSource = function (...args) {
       const source = new NativeEventSource(...args);
       source.addEventListener('open', () => window.__sseEvents.push({ type: 'open' }));
-      source.addEventListener('message', (event) => window.__sseEvents.push({ type: 'message', data: event.data }));
+      source.addEventListener('message', (event) => window.__sseEvents.push({ type: 'message', data: event.data, lastEventId: event.lastEventId || null }));
       source.addEventListener('error', () => window.__sseEvents.push({ type: 'error' }));
       return source;
     };
@@ -234,6 +243,45 @@ async function main() {
     }));
     ok(initialButtons.joinText === 'Join Room', 'landing renders a Join Room button');
     ok(initialButtons.directText === 'Direct Join' && initialButtons.directDisabled === false, 'landing renders an enabled Direct Join button when the stream is available');
+
+    const initialRoomNodeToken = await page.evaluate(() => {
+      const card = document.querySelector('.room-card[data-room-id="room-1"]') || document.querySelector('.room-card');
+      card.__nodeToken = card.__nodeToken || 'room-1-stable-node';
+      return card.__nodeToken;
+    });
+
+    servers.setRooms([
+      {
+        id: 'room-1',
+        name: null,
+        meta: { id: 'tt1375666', type: 'movie', name: 'Inception' },
+        hasDirectJoin: true,
+        directJoinType: 'direct-url',
+        users: 2,
+        owner: 'Alice',
+        paused: false,
+        time: 130,
+        bookmarks: 2,
+        public: true,
+      },
+    ]);
+    servers.broadcastRooms();
+
+    const cardPatchedInPlace = await page.waitForFunction(
+      (token) => {
+        const card = document.querySelector('.room-card[data-room-id="room-1"]');
+        return card?.__nodeToken === token && document.body.innerText.includes('2:10');
+      },
+      initialRoomNodeToken,
+      { timeout: 5000 }
+    ).then(() => true).catch(() => false);
+    ok(cardPatchedInPlace, 'landing patches an existing room card in place when the same room updates');
+
+    const sseRevisionObserved = await page.waitForFunction(
+      () => window.__sseEvents.some((event) => event.type === 'message' && !!event.lastEventId),
+      { timeout: 5000 }
+    ).then(() => true).catch(() => false);
+    ok(sseRevisionObserved, 'landing receives SSE revision IDs from the server');
 
     await page.evaluate(() => {
       window.__joinMessages = [];
@@ -428,6 +476,33 @@ async function main() {
       { timeout: 5000 }
     ).then(() => true).catch(() => false);
     ok(sseUpdated, 'landing updates the room list from SSE pushes');
+
+    servers.queueRoomsResponseSnapshot({
+      rooms: [
+        {
+          id: 'room-stale',
+          name: null,
+          meta: { id: 'tt9999999', type: 'movie', name: 'Stale Snapshot' },
+          hasDirectJoin: false,
+          directJoinType: null,
+          users: 1,
+          owner: 'Laggy',
+          paused: true,
+          time: 5,
+          bookmarks: 0,
+          public: true,
+        },
+      ],
+      total: 1,
+      revision: 1,
+    });
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await page.waitForTimeout(200);
+    const staleFetchIgnored = await page.evaluate(() => {
+      const text = document.getElementById('rooms-list')?.innerText || '';
+      return !text.includes('Stale Snapshot') && text.includes('Interstellar');
+    });
+    ok(staleFetchIgnored, 'landing ignores stale /rooms snapshots that arrive after a newer SSE update');
 
     servers.setRooms([
       {
