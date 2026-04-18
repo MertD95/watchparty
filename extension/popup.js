@@ -52,6 +52,48 @@ function buildInviteUrl(roomId) {
   return WPConstants.BACKEND.buildInviteUrl(roomId, currentBackendMode, currentActiveBackend);
 }
 
+function getStoredRoomKey(roomId) {
+  if (!roomId) return Promise.resolve(null);
+  const storageKey = WPConstants.STORAGE.roomKey(roomId);
+  return new Promise((resolve) => {
+    chrome.storage.session.get(storageKey, (result) => {
+      if (!chrome.runtime?.id) return resolve(null);
+      if (!chrome.runtime.lastError && result?.[storageKey]) return resolve(result[storageKey]);
+      chrome.storage.local.get(storageKey, (fallback) => resolve(fallback?.[storageKey] || null));
+    });
+  });
+}
+
+async function buildInviteUrlWithKey(roomId) {
+  const inviteUrl = buildInviteUrl(roomId);
+  const roomKey = await getStoredRoomKey(roomId);
+  return roomKey ? `${inviteUrl}#key=${roomKey}` : inviteUrl;
+}
+
+function parseRoomJoinInput(rawValue) {
+  const value = (rawValue || '').trim();
+  if (!value) return { roomId: '', roomKey: null };
+  const directRoomIdMatch = value.match(/^([a-z0-9-]{8,})(?:#key=([A-Za-z0-9_-]+))?$/i);
+  if (directRoomIdMatch) {
+    return {
+      roomId: directRoomIdMatch[1],
+      roomKey: directRoomIdMatch[2] || null,
+    };
+  }
+  try {
+    const parsed = new URL(value);
+    const roomMatch = parsed.pathname.match(/^\/r\/([a-z0-9-]+)$/i);
+    if (!roomMatch) return { roomId: value, roomKey: null };
+    const keyMatch = parsed.hash.match(/(?:^#|[&#])key=([A-Za-z0-9_-]+)/);
+    return {
+      roomId: roomMatch[1],
+      roomKey: keyMatch ? keyMatch[1] : null,
+    };
+  } catch {
+    return { roomId: value, roomKey: null };
+  }
+}
+
 function renderBackendControls() {
   const selectedMode = WPConstants.BACKEND.normalizeMode(currentBackendMode);
   document.querySelectorAll('#backend-toggle .backend-btn').forEach((btn) => {
@@ -340,7 +382,8 @@ $('btn-create').addEventListener('click', () => {
 
 $('btn-join').addEventListener('click', () => {
   const username = $('username-input').value.trim();
-  const roomId = $('room-id-input').value.trim();
+  const parsedJoin = parseRoomJoinInput($('room-id-input').value);
+  const roomId = parsedJoin.roomId;
   if (!username) { $('username-input').focus(); return; }
   if (!roomId) { $('room-id-input').focus(); return; }
 
@@ -363,6 +406,7 @@ $('btn-join').addEventListener('click', () => {
     action: 'join-room',
     username,
     roomId,
+    roomKey: parsedJoin.roomKey || undefined,
   });
 
   $('btn-join').disabled = true;
@@ -421,9 +465,12 @@ chrome.storage.local.get(WPConstants.STORAGE.COMPACT_CHAT, (result) => {
 $('btn-share').addEventListener('click', () => {
   const roomId = $('room-id-display').textContent;
   if (!roomId) return;
-  navigator.clipboard.writeText(buildInviteUrl(roomId)).then(() => {
-    $('btn-share').textContent = '✅ Link Copied!';
-    setTimeout(() => { $('btn-share').textContent = '📋 Copy Invite Link'; }, 1500);
+  const originalLabel = $('btn-share').textContent;
+  buildInviteUrlWithKey(roomId).then((inviteUrl) => {
+    navigator.clipboard.writeText(inviteUrl).then(() => {
+      $('btn-share').textContent = 'Link Copied!';
+      setTimeout(() => { $('btn-share').textContent = originalLabel; }, 1500);
+    }).catch(() => { });
   }).catch(() => { });
 });
 
@@ -431,10 +478,12 @@ $('btn-share').addEventListener('click', () => {
 document.addEventListener('click', (e) => {
   if (e.target.id === 'room-id-display') {
     const roomId = e.target.textContent;
-    navigator.clipboard.writeText(buildInviteUrl(roomId)).then(() => {
+    buildInviteUrlWithKey(roomId).then((inviteUrl) => {
+      navigator.clipboard.writeText(inviteUrl).then(() => {
       const original = e.target.textContent;
       e.target.textContent = 'Link copied!';
       setTimeout(() => { e.target.textContent = original; }, 1500);
+      }).catch(() => { });
     }).catch(() => { });
   }
 });

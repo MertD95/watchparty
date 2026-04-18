@@ -435,11 +435,11 @@ async function main() {
     const privateReady = await page.waitForFunction(
       () => {
         const text = (document.querySelector('.room-card')?.innerText || '').toLowerCase();
-        return text.includes('neo') && text.includes('private');
+        return text.includes('neo') && text.includes('private') && text.includes('key required');
       },
       { timeout: 5000 }
     ).then(() => true).catch(() => false);
-    ok(privateReady, 'landing renders private rooms in the active room list');
+    ok(privateReady, 'landing renders private rooms in the active room list with a key-required hint');
 
     await page.evaluate(() => {
       window.__joinMessages = [];
@@ -448,12 +448,20 @@ async function main() {
       window.__watchpartyExtStatus = { hasStremioTab: true };
     });
     await page.click('.room-card .room-join-btn');
+    const privateJoinModalReady = await page.waitForFunction(
+      () => getComputedStyle(document.getElementById('uuid-modal')).display !== 'none' && window.__joinMessages.length === 0,
+      { timeout: 3000 }
+    ).then(() => true).catch(() => false);
+    ok(privateJoinModalReady, 'private room Join Room opens the key modal before posting a join');
+    await page.fill('#uuid-input', 'invite-private-room-key');
+    await page.click('#uuid-submit-btn');
     await page.waitForFunction(() => window.__joinMessages.length > 0 && window.__navTargets.length > 0, { timeout: 3000 });
     const privateJoinAction = await page.evaluate(() => ({
       joinMessage: window.__joinMessages[0] || null,
       navTarget: window.__navTargets[0] || null,
     }));
-    ok(privateJoinAction.joinMessage?.roomId === 'room-private', 'private room Join Room posts the listed room ID directly');
+    ok(privateJoinAction.joinMessage?.roomId === 'room-private', 'private room Join Room posts the listed room ID after key entry');
+    ok(privateJoinAction.joinMessage?.roomKey === 'invite-private-room-key', 'private room Join Room forwards the entered room key');
     ok(privateJoinAction.navTarget === 'https://web.stremio.com/#/detail/movie/tt0133093', 'private room Join Room navigates to the Stremio title page');
 
     await page.evaluate(() => {
@@ -463,12 +471,20 @@ async function main() {
       window.__watchpartyExtStatus = { hasStremioTab: true };
     });
     await page.click('.room-card .room-direct-btn');
+    const privateDirectJoinModalReady = await page.waitForFunction(
+      () => getComputedStyle(document.getElementById('uuid-modal')).display !== 'none' && window.__joinMessages.length === 0,
+      { timeout: 3000 }
+    ).then(() => true).catch(() => false);
+    ok(privateDirectJoinModalReady, 'private room Direct Join also waits for the room key');
+    await page.fill('#uuid-input', `http://localhost:${PAGE_PORT}/r/room-private#key=invite-private-room-key`);
+    await page.click('#uuid-submit-btn');
     await page.waitForFunction(() => window.__joinMessages.length > 0, { timeout: 3000 });
     const privateDirectJoinAction = await page.evaluate(() => ({
       joinMessage: window.__joinMessages[0] || null,
       navTarget: window.__navTargets[0] || null,
     }));
-    ok(privateDirectJoinAction.joinMessage?.roomId === 'room-private', 'private room Direct Join posts the listed room ID directly');
+    ok(privateDirectJoinAction.joinMessage?.roomId === 'room-private', 'private room Direct Join posts the listed room ID after key entry');
+    ok(privateDirectJoinAction.joinMessage?.roomKey === 'invite-private-room-key', 'private room Direct Join forwards the entered room key');
     ok(privateDirectJoinAction.joinMessage?.preferDirectJoin === true, 'private room Direct Join keeps the direct-play preference');
     ok(privateDirectJoinAction.navTarget == null, 'private room Direct Join stays on the landing page when the extension has a Stremio tab');
 
@@ -564,7 +580,7 @@ async function main() {
     ).then(() => true).catch(() => false);
     ok(fallbackUpdated, 'landing falls back to polling after the SSE stream drops');
 
-    await page.goto(`http://localhost:${PAGE_PORT}/r/test-room-123`, { waitUntil: 'domcontentloaded' });
+    await page.goto(`http://localhost:${PAGE_PORT}/r/test-room-123#key=redirect-room-key-1234`, { waitUntil: 'domcontentloaded' });
 
     const joinMessageObserved = await page.waitForFunction(() => window.__joinMessages.length > 0, { timeout: 3000 })
       .then(() => true)
@@ -573,6 +589,7 @@ async function main() {
 
     const joinMessage = await page.evaluate(() => window.__joinMessages[0] || null);
     ok(joinMessage?.roomId === 'test-room-123', 'redirect page posts the correct room ID');
+    ok(joinMessage?.roomKey === 'redirect-room-key-1234', 'redirect page forwards the invite room key to the extension bridge');
 
     const noExtensionWarning = await page.waitForFunction(
       () => getComputedStyle(document.getElementById('no-ext-warning')).display !== 'none',

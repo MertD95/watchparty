@@ -121,6 +121,18 @@ function removeStorageKeys(keys, callback) {
   chrome.storage.local.remove(keys, () => callback?.());
 }
 
+function cacheRoomKey(roomId, roomKey, callback) {
+  if (!roomId || !roomKey) {
+    callback?.();
+    return;
+  }
+  const storageKey = WPConstants.STORAGE.roomKey(roomId);
+  chrome.storage.session.set({ [storageKey]: roomKey }).then(
+    () => callback?.(),
+    () => chrome.storage.local.set({ [storageKey]: roomKey }, () => callback?.())
+  );
+}
+
 const messageHandlers = {
   'get-status': (_m, _s, sendResponse) => {
     chrome.storage.local.get([
@@ -181,23 +193,30 @@ const messageHandlers = {
       [WPConstants.STORAGE.PENDING_ROOM_JOIN]: m.roomId,
       [WPConstants.STORAGE.USERNAME]: m.username,
     };
-    if (m.preferDirectJoin) {
-      updates[WPConstants.STORAGE.PENDING_ROOM_JOIN_OPTIONS] = {
-        roomId: m.roomId,
-        preferDirectJoin: true,
-        requestedAt: Date.now(),
-      };
-      removeStorageKeys([WPConstants.STORAGE.PENDING_LEAVE_ROOM], () => {
+    const continueJoin = () => {
+      if (m.preferDirectJoin) {
+        updates[WPConstants.STORAGE.PENDING_ROOM_JOIN_OPTIONS] = {
+          roomId: m.roomId,
+          preferDirectJoin: true,
+          requestedAt: Date.now(),
+        };
+        removeStorageKeys([WPConstants.STORAGE.PENDING_LEAVE_ROOM], () => {
+          storeAndForward(updates, m, sr);
+        });
+        return;
+      }
+      removeStorageKeys([
+        WPConstants.STORAGE.PENDING_ROOM_JOIN_OPTIONS,
+        WPConstants.STORAGE.PENDING_LEAVE_ROOM,
+      ], () => {
         storeAndForward(updates, m, sr);
       });
+    };
+    if (m.roomKey) {
+      cacheRoomKey(m.roomId, m.roomKey, continueJoin);
       return;
     }
-    removeStorageKeys([
-      WPConstants.STORAGE.PENDING_ROOM_JOIN_OPTIONS,
-      WPConstants.STORAGE.PENDING_LEAVE_ROOM,
-    ], () => {
-      storeAndForward(updates, m, sr);
-    });
+    continueJoin();
   },
   'leave-room': (m, _s, sr) => {
     removeStorageKeys([

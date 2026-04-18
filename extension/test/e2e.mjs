@@ -11,6 +11,7 @@ import WebSocket from 'ws';
 
 const WS_URL = 'ws://localhost:8181';
 const TIMEOUT = 10000;
+const PRIVATE_ROOM_KEY = 'private-room-key-1234';
 
 async function ensureServerRunning() {
   try {
@@ -92,19 +93,24 @@ async function setUsername(ws, name) {
 }
 
 async function createRoom(ws, meta, opts = {}) {
+  const payload = {
+    meta,
+    stream: { url: 'https://example.com/stream.m3u8' },
+    public: opts.public || false,
+    ...opts,
+  };
+  if (payload.public !== true && !payload.roomKey) {
+    payload.roomKey = PRIVATE_ROOM_KEY;
+  }
   send(ws, {
     type: 'room.new',
-    payload: {
-      meta,
-      stream: { url: 'https://example.com/stream.m3u8' },
-      public: opts.public || false,
-    },
+    payload,
   });
   return await waitFor(ws, 'room');
 }
 
-async function joinRoom(ws, roomId) {
-  send(ws, { type: 'room.join', payload: { id: roomId } });
+async function joinRoom(ws, roomId, roomKey = PRIVATE_ROOM_KEY) {
+  send(ws, { type: 'room.join', payload: { id: roomId, roomKey } });
   // Server sends 'sync' (not 'room') when joining an existing room
   return await waitFor(ws, 'sync');
 }
@@ -116,6 +122,23 @@ function collectMessages(ws, duration = 2000) {
     ws.on('message', handler);
     setTimeout(() => { ws.off('message', handler); resolve(msgs); }, duration);
   });
+}
+
+async function fetchAllRooms() {
+  const rooms = [];
+  const limit = 50;
+  let offset = 0;
+  let total = 0;
+  do {
+    const res = await fetch(`http://localhost:8181/rooms?offset=${offset}&limit=${limit}`);
+    const data = await res.json();
+    const pageRooms = Array.isArray(data.rooms) ? data.rooms : [];
+    total = Number.isFinite(data.total) ? data.total : pageRooms.length;
+    rooms.push(...pageRooms);
+    offset += pageRooms.length;
+    if (pageRooms.length === 0) break;
+  } while (offset < total);
+  return rooms;
 }
 
 // ── Test runner ──
@@ -384,7 +407,7 @@ async function testDoubleJoinDeduplicates() {
   await joinRoom(ws2, room.payload.id);
 
   // Bob joins again
-  send(ws2, { type: 'room.join', payload: { id: room.payload.id } });
+  send(ws2, { type: 'room.join', payload: { id: room.payload.id, roomKey: PRIVATE_ROOM_KEY } });
   const sync = await waitFor(ws2, 'sync');
   const bobCount = sync.payload.users.filter(u => u.name === 'Bob').length;
   assert(bobCount === 1, 'Bob appears exactly once after double join');
@@ -529,7 +552,7 @@ async function testEmptyRoomGracePeriod() {
   const ws2 = await connect();
   await waitFor(ws2, 'ready');
   await setUsername(ws2, 'Bob');
-  send(ws2, { type: 'room.join', payload: { id: roomId } });
+  send(ws2, { type: 'room.join', payload: { id: roomId, roomKey: PRIVATE_ROOM_KEY } });
   const sync = await waitFor(ws2, 'sync');
   assert(sync.payload.users.length === 1, 'Bob is alone in the room');
   assert(sync.payload.users[0].name === 'Bob', 'Bob joined the empty room');
@@ -557,9 +580,7 @@ async function testPublicRoomListing() {
   const room = await createRoom(ws, { id: 'tt0009', type: 'movie', name: 'Public Movie' }, { public: true });
 
   // Fetch public rooms via HTTP
-  const res = await fetch('http://localhost:8181/rooms');
-  const data = await res.json();
-  const rooms = data.rooms || data;
+  const rooms = await fetchAllRooms();
   const found = rooms.find(r => r.id === room.payload.id);
   assert(found !== undefined, 'Public room appears in /rooms listing');
   assert(found.meta.name === 'Public Movie', 'Listing has correct meta');
@@ -890,9 +911,8 @@ async function testPublicRoomEnhancedData() {
   await waitFor(ws, 'bookmark');
   await new Promise(r => setTimeout(r, 300));
 
-  const res = await fetch('http://localhost:8181/rooms');
-  const data = await res.json();
-  const found = data.rooms?.find(r => r.id === room.payload.id);
+  const rooms = await fetchAllRooms();
+  const found = rooms.find(r => r.id === room.payload.id);
 
   assert(found !== undefined, 'Room in listing');
   assert(found.paused === false, 'Listing shows playing state');
@@ -958,7 +978,7 @@ async function testDisconnectReconnectFlow() {
 
   // Set up listener BEFORE joining
   const syncPromise = waitFor(ws1, 'sync');
-  send(ws3, { type: 'room.join', payload: { id: roomId } });
+  send(ws3, { type: 'room.join', payload: { id: roomId, roomKey: PRIVATE_ROOM_KEY } });
   await waitFor(ws3, 'sync');
 
   const sync = await syncPromise;

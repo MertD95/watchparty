@@ -18,6 +18,7 @@ const EXT_PATH = path.resolve(__dirname, '..');
 const STREMIO = 'https://web.stremio.com';
 const TIMEOUT = 15000;
 const TEST_TIMEOUT = 60000;
+const PRIVATE_ROOM_KEY = 'private-room-key-1234';
 
 let passed = 0, failed = 0;
 function ok(cond, label) { if (cond) { console.log(`  ✓ ${label}`); passed++; } else { console.error(`  ✗ ${label}`); failed++; } }
@@ -192,13 +193,14 @@ async function main() {
     ok(r1.rooms?.some(r => r.id === pubId), 'Public in /rooms');
     ok(r1.rooms?.find(r => r.id === pubId)?.owner === 'Host', 'Owner = Host');
 
-    ws1.send(JSON.stringify({ type: 'room.updatePublic', payload: { public: false } }));
+    ws1.send(JSON.stringify({ type: 'room.updatePublic', payload: { public: false, roomKey: PRIVATE_ROOM_KEY } }));
     await new Promise(r => setTimeout(r, 1000));
-    ok(!(await fetch('http://localhost:8181/rooms').then(r => r.json())).rooms?.some(r => r.id === pubId), 'Hidden after toggle private');
+    const privateListing = await fetch('http://localhost:8181/rooms').then(r => r.json());
+    ok(privateListing.rooms?.some(r => r.id === pubId && r.public === false), 'Private room stays listed after toggle private');
 
     ws1.send(JSON.stringify({ type: 'room.updatePublic', payload: { public: true } }));
     await new Promise(r => setTimeout(r, 1000));
-    ok((await fetch('http://localhost:8181/rooms').then(r => r.json())).rooms?.some(r => r.id === pubId), 'Visible after toggle public');
+    ok((await fetch('http://localhost:8181/rooms').then(r => r.json())).rooms?.some(r => r.id === pubId && r.public === true), 'Visible after toggle public');
     ws1.close();
   });
 

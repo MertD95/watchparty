@@ -101,11 +101,12 @@ window.addEventListener('message', (event) => {
     } else {
       chrome.storage.local.remove(WPConstants.STORAGE.PENDING_ROOM_JOIN_OPTIONS);
     }
-    // Store E2E encryption key in session storage (in-memory only, cleared on browser restart — more secure)
-    if (event.data.cryptoKey) {
-      chrome.storage.session.set({ [WPConstants.STORAGE.roomKey(event.data.roomId)]: event.data.cryptoKey }).catch(() => {
+    const roomKey = event.data.roomKey || event.data.cryptoKey;
+    // Store room/E2E key in session storage (in-memory only, cleared on browser restart — more secure)
+    if (roomKey) {
+      chrome.storage.session.set({ [WPConstants.STORAGE.roomKey(event.data.roomId)]: roomKey }).catch(() => {
         // Fallback to local storage if session storage unavailable (older browsers)
-        chrome.storage.local.set({ [WPConstants.STORAGE.roomKey(event.data.roomId)]: event.data.cryptoKey });
+        chrome.storage.local.set({ [WPConstants.STORAGE.roomKey(event.data.roomId)]: roomKey });
       });
     }
   }

@@ -29,6 +29,8 @@
   let lastKnownContentMeta = null;
   let lastSharedContentKey = null;
   let pendingJoinOptions = null;
+  let pendingCreatedRoomKey = null;
+  let lastJoinAttemptRoomId = null;
   let shareContentLinkInFlight = false;
   let reconnectNoticeTimer = null;
   let reconnectNoticeShown = false;
@@ -109,6 +111,41 @@
     if (roomId && pendingJoinOptions?.roomId && pendingJoinOptions.roomId !== roomId) return;
     pendingJoinOptions = null;
     if (extOk()) chrome.storage.local.remove(WPConstants.STORAGE.PENDING_ROOM_JOIN_OPTIONS).catch(() => { });
+  }
+
+  function cacheRoomKeyForRoom(roomId, roomKey) {
+    if (!roomId || !roomKey || !extOk()) return Promise.resolve();
+    const storageKey = WPConstants.STORAGE.roomKey(roomId);
+    return chrome.storage.session.set({ [storageKey]: roomKey }).catch(() =>
+      chrome.storage.local.set({ [storageKey]: roomKey }).catch(() => { })
+    );
+  }
+
+  function clearRoomKeyForRoom(roomId) {
+    if (!roomId || !extOk()) return Promise.resolve();
+    const storageKey = WPConstants.STORAGE.roomKey(roomId);
+    return chrome.storage.session.remove(storageKey).catch(() =>
+      chrome.storage.local.remove(storageKey).catch(() => { })
+    );
+  }
+
+  function loadStoredRoomKey(roomId) {
+    if (!roomId || !extOk()) return Promise.resolve(null);
+    const storageKey = WPConstants.STORAGE.roomKey(roomId);
+    return new Promise((resolve) => {
+      chrome.storage.session.get(storageKey, (result) => {
+        if (!chrome.runtime?.id) return resolve(null);
+        if (!chrome.runtime.lastError && result?.[storageKey]) return resolve(result[storageKey]);
+        chrome.storage.local.get(storageKey, (fallback) => resolve(fallback?.[storageKey] || null));
+      });
+    });
+  }
+
+  async function generatePrivateRoomKey() {
+    if (typeof WPCrypto === 'undefined') return null;
+    WPCrypto.clear();
+    await WPCrypto.generateKey();
+    return WPCrypto.exportKey();
   }
 
   function hasPendingLeaveIntent(value) {
@@ -338,12 +375,15 @@
             if (result[WPConstants.STORAGE.USERNAME]) {
               WPWS.send({ type: WPProtocol.C2S.USER_UPDATE, payload: { username: result[WPConstants.STORAGE.USERNAME], sessionId } });
             }
-            const seq = WPWS.getLastSeq();
-            if (seq > 0) {
-              WPWS.send({ type: WPProtocol.C2S.ROOM_REJOIN, payload: { id: roomState.id, lastSeq: seq } });
-            } else {
-              WPWS.send({ type: WPProtocol.C2S.ROOM_JOIN, payload: { id: roomState.id } });
-            }
+            loadStoredRoomKey(roomState.id).then((roomKey) => {
+              const seq = WPWS.getLastSeq();
+              lastJoinAttemptRoomId = roomState.id;
+              if (seq > 0) {
+                WPWS.send({ type: WPProtocol.C2S.ROOM_REJOIN, payload: { id: roomState.id, lastSeq: seq, roomKey: roomKey || undefined } });
+              } else {
+                WPWS.send({ type: WPProtocol.C2S.ROOM_JOIN, payload: { id: roomState.id, roomKey: roomKey || undefined } });
+              }
+            });
           });
         });
       });
@@ -383,6 +423,11 @@
         if (!p) return;
         prevPlayerTime = roomState?.player?.time || 0;
         roomState = p;
+        lastJoinAttemptRoomId = null;
+        if (pendingCreatedRoomKey && roomState?.id) {
+          cacheRoomKeyForRoom(roomState.id, pendingCreatedRoomKey);
+          pendingCreatedRoomKey = null;
+        }
         persistState();
         onRoomSync();
         break;
@@ -390,6 +435,11 @@
       case WPProtocol.S2C.ROOM:
         if (!p?.id) return;
         roomState = p;
+        lastJoinAttemptRoomId = null;
+        if (pendingCreatedRoomKey && roomState?.id) {
+          cacheRoomKeyForRoom(roomState.id, pendingCreatedRoomKey);
+          pendingCreatedRoomKey = null;
+        }
         if (extOk()) chrome.storage.local.set({ [WPConstants.STORAGE.CURRENT_ROOM]: roomState.id });
         persistState();
         onRoomJoined();
@@ -427,12 +477,19 @@
             WPOverlay.showToast('Room no longer exists', 3000);
           }
         }
+        if (p?.code === WPProtocol.ERROR_CODE.INVALID_ROOM_KEY && lastJoinAttemptRoomId) {
+          clearRoomKeyForRoom(lastJoinAttemptRoomId);
+        }
         // Show error feedback for non-room errors
         if (p?.code !== WPProtocol.ERROR_CODE.ROOM_NOT_FOUND && p?.message) {
           if (p.code === WPProtocol.ERROR_CODE.COOLDOWN && lastUserAction === 'send-chat') {
             WPOverlay.showToast('Slow down! Wait a moment before sending again.', 2000);
           } else if (p.code === WPProtocol.ERROR_CODE.NOT_OWNER) {
             WPOverlay.showToast('Only the host can do that.', 2000);
+          } else if (p.code === WPProtocol.ERROR_CODE.ROOM_KEY_REQUIRED) {
+            WPOverlay.showToast('This private room requires a room key.', 2500);
+          } else if (p.code === WPProtocol.ERROR_CODE.INVALID_ROOM_KEY) {
+            WPOverlay.showToast('Room key is invalid. Check the invite link or try again.', 3000);
           } else if (p.code !== WPProtocol.ERROR_CODE.COOLDOWN && p.code !== WPProtocol.ERROR_CODE.VALIDATION_FAILED) {
             WPOverlay.showToast(p.message, 2000);
           }
@@ -534,6 +591,17 @@
         const meta = await enrichContentMeta(seedMeta, context.launchUrl);
         const stream = (isPlaceholderStream(rc.stream) && context.launchUrl) ? { url: context.launchUrl } : rc.stream;
         const payload = { meta, stream, public: rc.public || false };
+        if (payload.public === false) {
+          pendingCreatedRoomKey = await generatePrivateRoomKey();
+          if (!pendingCreatedRoomKey) {
+            WPOverlay.showToast('Failed to generate a private room key.', 2500);
+            return;
+          }
+          payload.roomKey = pendingCreatedRoomKey;
+        } else {
+          pendingCreatedRoomKey = null;
+          WPCrypto.clear();
+        }
         if (rc.roomName) payload.name = rc.roomName;
         WPWS.send({ type: WPProtocol.C2S.ROOM_NEW, payload });
       } else {
@@ -589,7 +657,8 @@
     }
     if (!extOk() || !WPWS.isReady()) return;
     if (stored[WPConstants.STORAGE.USERNAME]) WPWS.send({ type: WPProtocol.C2S.USER_UPDATE, payload: { username: stored[WPConstants.STORAGE.USERNAME], sessionId } });
-    WPWS.send({ type: WPProtocol.C2S.ROOM_JOIN, payload: { id: roomToJoin } });
+    lastJoinAttemptRoomId = roomToJoin;
+    WPWS.send({ type: WPProtocol.C2S.ROOM_JOIN, payload: { id: roomToJoin, roomKey: cryptoKeyStr || undefined } });
   }
 
   // --- Room event handlers ---
@@ -947,7 +1016,23 @@
       clearTimeout(presenceTimeout);
       finalizeLeaveIntent({ sendLeave: true });
     },
-    'toggle-public': (m) => WPWS.send({ type: WPProtocol.C2S.ROOM_UPDATE_PUBLIC, payload: { public: m.public } }),
+    'toggle-public': async (m) => {
+      if (m.public === false) {
+        const roomId = roomState?.id;
+        let roomKey = await loadStoredRoomKey(roomId);
+        if (!roomKey) roomKey = await generatePrivateRoomKey();
+        if (!roomKey) {
+          WPOverlay.showToast('Failed to generate a private room key.', 2500);
+          return;
+        }
+        await cacheRoomKeyForRoom(roomId, roomKey);
+        WPWS.send({ type: WPProtocol.C2S.ROOM_UPDATE_PUBLIC, payload: { public: false, roomKey } });
+        return;
+      }
+      await clearRoomKeyForRoom(roomState?.id);
+      WPCrypto.clear();
+      WPWS.send({ type: WPProtocol.C2S.ROOM_UPDATE_PUBLIC, payload: { public: true } });
+    },
     'update-room-settings': (m) => WPWS.send({ type: WPProtocol.C2S.ROOM_UPDATE_SETTINGS, payload: m.settings }),
     'transfer-ownership': (m) => WPWS.send({ type: WPProtocol.C2S.ROOM_UPDATE_OWNERSHIP, payload: { userId: m.targetUserId } }),
     'update-username': (m) => WPWS.send({ type: WPProtocol.C2S.USER_UPDATE, payload: { username: m.username, sessionId } }),

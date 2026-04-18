@@ -55,6 +55,8 @@ const WPProtocol = (() => {
   // Structured error codes
   const ERROR_CODE = Object.freeze({
     ROOM_NOT_FOUND: 'ROOM_NOT_FOUND',
+    ROOM_KEY_REQUIRED: 'ROOM_KEY_REQUIRED',
+    INVALID_ROOM_KEY: 'INVALID_ROOM_KEY',
     NOT_OWNER: 'NOT_OWNER',
     COOLDOWN: 'COOLDOWN',
     VALIDATION_FAILED: 'VALIDATION_FAILED',
