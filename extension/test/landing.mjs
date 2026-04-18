@@ -235,6 +235,8 @@ async function main() {
     ok(initialCard.text.includes('Inception') && initialCard.text.includes('Alice'), 'landing shows room metadata and owner');
     ok(initialCard.text.includes('2:05'), 'landing formats room playback time');
     ok(initialCard.emptyVisible === false, 'empty-state hides when rooms exist');
+    const initialSummary = await page.locator('#hero-live-summary').textContent();
+    ok(initialSummary === '2 people across 1 room, 1 title identified.', 'landing hero summary reflects the initial room and title counts');
 
     const initialButtons = await page.evaluate(() => ({
       joinText: document.querySelector('.room-card .room-join-btn')?.textContent || '',
@@ -330,6 +332,55 @@ async function main() {
     ok(directJoinNoTabAction.joinMessage?.roomId === 'room-1', 'Direct Join still posts the room ID when no Stremio tab is open');
     ok(directJoinNoTabAction.joinMessage?.preferDirectJoin === true, 'Direct Join keeps the prefer-direct intent when it needs to bootstrap Stremio');
     ok(directJoinNoTabAction.navTarget === 'https://web.stremio.com', 'Direct Join falls back to opening Stremio Web when no Stremio tab is available');
+
+    servers.setRooms([
+      {
+        id: 'room-title-a',
+        name: null,
+        meta: { id: 'tt1375666', type: 'movie', name: 'Inception' },
+        hasDirectJoin: true,
+        directJoinType: 'direct-url',
+        users: 2,
+        owner: 'Alice',
+        paused: false,
+        time: 140,
+        bookmarks: 1,
+        public: true,
+      },
+      {
+        id: 'room-title-b',
+        name: null,
+        meta: { id: 'tt1375666', type: 'movie', name: 'Inception' },
+        hasDirectJoin: false,
+        directJoinType: null,
+        users: 1,
+        owner: 'Bob',
+        paused: true,
+        time: 12,
+        bookmarks: 0,
+        public: true,
+      },
+      {
+        id: 'room-placeholder',
+        name: null,
+        meta: { id: 'pending', type: 'movie', name: 'WatchParty Session' },
+        hasDirectJoin: false,
+        directJoinType: null,
+        users: 1,
+        owner: 'Charlie',
+        paused: true,
+        time: 0,
+        bookmarks: 0,
+        public: true,
+      },
+    ]);
+    servers.broadcastRooms();
+
+    const summaryExcludesPlaceholder = await page.waitForFunction(
+      () => (document.getElementById('hero-live-summary')?.textContent || '').trim() === '4 people across 3 rooms, 1 title identified.',
+      { timeout: 5000 }
+    ).then(() => true).catch(() => false);
+    ok(summaryExcludesPlaceholder, 'landing hero summary deduplicates identical titles and ignores WatchParty Session placeholders');
 
     servers.setRooms([
       {

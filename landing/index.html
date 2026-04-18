@@ -796,8 +796,8 @@
           </ul>
           <div class="hero-summary">
             <div class="hero-summary-kicker">Live right now</div>
-            <div class="hero-summary-text" id="hero-live-summary">0 people in 0 rooms watching 0 titles.</div>
-            <div class="hero-summary-note">Updates live from the room list below.</div>
+            <div class="hero-summary-text" id="hero-live-summary">0 people across 0 rooms, 0 titles identified.</div>
+            <div class="hero-summary-note">Only rooms with a real Stremio title count here. Empty lobbies and WatchParty Session placeholders do not.</div>
           </div>
         </div>
       </div>
@@ -925,19 +925,30 @@
       return `${value} ${value === 1 ? singular : plural}`;
     }
 
-    function updateLandingStats(rooms) {
-      const roomList = Array.isArray(rooms) ? rooms : [];
-      const roomCount = roomList.length;
-      const userCount = roomList.reduce((sum, room) => sum + (Number(room?.users) || 0), 0);
-      const titleKeys = new Set(
-        roomList
-          .map((room) => room?.meta?.id || room?.meta?.name || '')
-          .filter(Boolean)
-      );
-      const titleCount = titleKeys.size;
+    function getRecognizedTitleKey(room) {
+      const meta = room?.meta;
+      const metaName = typeof meta?.name === 'string' ? meta.name.trim() : '';
+      const metaId = typeof meta?.id === 'string' ? meta.id.trim() : '';
+      const metaType = typeof meta?.type === 'string' && meta.type.trim() ? meta.type.trim() : 'meta';
+      if (!metaName || metaName === 'WatchParty Session' || metaId === 'pending' || metaId === 'unknown') {
+        return '';
+      }
+      return metaId ? `${metaType}:${metaId}` : `${metaType}:name:${metaName.toLowerCase()}`;
+    }
+
+    function updateLandingStats(dataForStats) {
+      const roomList = Array.isArray(dataForStats?.rooms) ? dataForStats.rooms : [];
+      const providedSummary = dataForStats && typeof dataForStats === 'object' ? dataForStats.summary : null;
+      const roomCount = Number.isFinite(providedSummary?.rooms) ? Number(providedSummary.rooms) : roomList.length;
+      const userCount = Number.isFinite(providedSummary?.users)
+        ? Number(providedSummary.users)
+        : roomList.reduce((sum, room) => sum + (Number(room?.users) || 0), 0);
+      const titleCount = Number.isFinite(providedSummary?.identifiedTitles)
+        ? Number(providedSummary.identifiedTitles)
+        : new Set(roomList.map(getRecognizedTitleKey).filter(Boolean)).size;
       const summaryEl = document.getElementById('hero-live-summary');
       if (!summaryEl) return;
-      summaryEl.textContent = `${pluralize(userCount, 'person', 'people')} in ${pluralize(roomCount, 'room')} watching ${pluralize(titleCount, 'title')}.`;
+      summaryEl.textContent = `${pluralize(userCount, 'person', 'people')} across ${pluralize(roomCount, 'room')}, ${pluralize(titleCount, 'title')} identified.`;
     }
 
     function showDirectJoinNotice(message) {
@@ -1183,7 +1194,7 @@
       lastRoomsUpdateAt = Date.now();
 
       const rooms = Array.isArray(data?.rooms) ? data.rooms : [];
-      updateLandingStats(rooms);
+      updateLandingStats(data);
       const nextRoomIds = new Set();
       let anchor = empty;
       empty.style.display = rooms.length === 0 ? 'block' : 'none';
