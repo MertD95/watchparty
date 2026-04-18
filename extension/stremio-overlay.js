@@ -595,7 +595,7 @@ const WPOverlay = (() => {
 
   let cachedSessionId = null;
 
-  function updateState({ inRoom, isHost, userId, sessionId, roomState, hasVideo }) {
+  function updateState({ inRoom, isHost, userId, sessionId, roomState, hasVideo, wsConnected }) {
     if (sessionId) cachedSessionId = sessionId;
     // Cache username for local echo
     if (userId && roomState?.users) {
@@ -648,20 +648,23 @@ const WPOverlay = (() => {
       renderCache.lastMinInfo = nextMinInfo;
     }
 
-    if (status) renderStatusButtons(status, isHost, hasVideo);
+    if (status) renderStatusButtons(status, isHost, hasVideo, wsConnected);
     if (contentLink) renderContentLink(contentLink, isHost, roomState);
     if (usersDiv && roomState.users) renderUsersList(usersDiv, roomState, userId, isHost);
     if (isHost || !hasVideo) removeCatchUpButton();
   }
 
-  function renderStatusButtons(status, isHost, hasVideo) {
+  function renderStatusButtons(status, isHost, hasVideo, wsConnected) {
     const hostLabel = isHost ? 'You are the host' : 'Synced to host';
     const videoStatus = hasVideo ? 'Video detected' : 'No video detected';
+    const connectionStatus = wsConnected === false
+      ? '<span class="wp-status-line wp-warning">Connection lost — trying to reconnect</span>'
+      : '';
     let actions = '';
     if (hasVideo && isHost) actions += `<button class="wp-action-btn" id="wp-ready-check-btn" title="Ready Check">✋ Ready?</button>`;
     if (hasVideo) actions += `<button class="wp-action-btn" id="wp-bookmark-btn" title="Bookmark this moment">📌 Bookmark</button>`;
     const actionsRow = actions ? `<div class="wp-action-row">${actions}</div>` : '';
-    const newStatusHtml = `<span class="wp-status-line">${hostLabel}</span><span class="wp-status-line wp-muted">${videoStatus}</span>${actionsRow}`;
+    const newStatusHtml = `<span class="wp-status-line">${hostLabel}</span>${connectionStatus}<span class="wp-status-line wp-muted">${videoStatus}</span>${actionsRow}`;
     if (renderCache.lastStatusHtml === newStatusHtml) return;
     status.innerHTML = newStatusHtml;
     renderCache.lastStatusHtml = newStatusHtml;

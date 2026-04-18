@@ -189,6 +189,10 @@
     color: #666;
   }
 
+  .wp-warning {
+    color: #f59e0b;
+  }
+
   .wp-empty-state {
     padding: 32px 20px;
     text-align: center;

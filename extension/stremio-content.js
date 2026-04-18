@@ -30,10 +30,31 @@
   let lastSharedContentKey = null;
   let pendingJoinOptions = null;
   let shareContentLinkInFlight = false;
+  let reconnectNoticeTimer = null;
+  let reconnectNoticeShown = false;
   const cinemetaTitleCache = new Map();
 
   const PLACEHOLDER_ROOM_NAME = 'WatchParty Session';
   const PLACEHOLDER_STREAM_URL = 'https://watchparty.mertd.me/sync';
+
+  function clearReconnectNotice(options = {}) {
+    if (reconnectNoticeTimer) {
+      clearTimeout(reconnectNoticeTimer);
+      reconnectNoticeTimer = null;
+    }
+    if (options.preserveShown !== true) reconnectNoticeShown = false;
+  }
+
+  function scheduleReconnectNotice() {
+    if (reconnectNoticeTimer || !inRoom) return;
+    reconnectNoticeTimer = setTimeout(() => {
+      reconnectNoticeTimer = null;
+      if (!inRoom || WPWS.isConnected()) return;
+      reconnectNoticeShown = true;
+      WPOverlay.showToast('WatchParty disconnected. Trying to reconnect — the room may show as reconnecting until you are back online.', 5000);
+      refreshOverlay();
+    }, 2500);
+  }
 
   function claimActiveTab() {
     if (!extOk() || !userId) return;
@@ -100,6 +121,7 @@
   }
 
   function applyLocalLeaveState(leavingRoomId) {
+    clearReconnectNotice();
     clearPendingJoinOptions();
     inRoom = false;
     roomState = null;
@@ -288,6 +310,8 @@
 
   // --- WS callbacks ---
   WPWS.onConnect(() => {
+    const shouldAnnounceReconnect = reconnectNoticeShown;
+    clearReconnectNotice();
     persistConnectionState();
     notifyBackground({
       action: 'ws-status-changed',
@@ -296,6 +320,10 @@
       activeBackendUrl: WPWS.getActiveWsUrl(),
     });
     WPSync.resetCorrection();
+    refreshOverlay();
+    if (shouldAnnounceReconnect && inRoom) {
+      WPOverlay.showToast('WatchParty reconnected', 1800);
+    }
     // If we were in a room, rejoin (with replay if we have a sequence number)
     if (roomState?.id) {
       chrome.storage.local.get(WPConstants.STORAGE.PENDING_LEAVE_ROOM, (leaveState) => {
@@ -323,6 +351,7 @@
   });
 
   WPWS.onDisconnect(() => {
+    scheduleReconnectNotice();
     persistConnectionState();
     notifyBackground({
       action: 'ws-status-changed',
@@ -330,6 +359,7 @@
       activeBackend: WPWS.getActiveBackend(),
       activeBackendUrl: WPWS.getActiveWsUrl(),
     });
+    refreshOverlay();
   });
 
   function processWsEvent(msg) {
@@ -877,7 +907,7 @@
 
   // --- Overlay state refresh ---
   function refreshOverlay() {
-    WPOverlay.updateState({ inRoom, isHost, userId, sessionId, roomState, hasVideo: !!video });
+    WPOverlay.updateState({ inRoom, isHost, userId, sessionId, roomState, hasVideo: !!video, wsConnected: WPWS.isConnected() });
     if (inRoom && !isHost) {
       WPOverlay.updateSyncIndicator(isHost, WPSync.getLastDrift());
     }

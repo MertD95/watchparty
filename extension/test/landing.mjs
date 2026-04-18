@@ -380,6 +380,43 @@ async function main() {
 
     servers.setRooms([
       {
+        id: 'room-reconnect',
+        name: null,
+        meta: { id: 'tt0103874', type: 'movie', name: 'Dracula' },
+        hasDirectJoin: false,
+        directJoinType: 'debrid-url',
+        users: 0,
+        owner: 'Test',
+        paused: true,
+        time: 3520,
+        bookmarks: 0,
+        public: false,
+        listingState: 'reconnecting',
+        graceRemainingMs: 180000,
+      },
+    ]);
+    servers.broadcastRooms();
+
+    const reconnectingReady = await page.waitForFunction(
+      () => {
+        const text = document.getElementById('rooms-list')?.innerText || '';
+        return text.includes('Dracula') && text.includes('Reconnecting...');
+      },
+      { timeout: 5000 }
+    ).then(() => true).catch(() => false);
+    ok(reconnectingReady, 'landing keeps reconnecting rooms visible during disconnect grace');
+
+    const reconnectingRoomState = await page.evaluate(() => ({
+      usersText: document.querySelector('.room-card .room-users')?.textContent || '',
+      reconnectingClass: document.querySelector('.room-card')?.classList.contains('room-card-reconnecting') ?? false,
+      usersTitle: document.querySelector('.room-card .room-users')?.title || '',
+    }));
+    ok(reconnectingRoomState.usersText === 'Reconnecting...', 'landing labels reconnecting rooms explicitly');
+    ok(reconnectingRoomState.reconnectingClass === true, 'landing styles reconnecting rooms differently');
+    ok(/keeping this room visible/i.test(reconnectingRoomState.usersTitle), 'landing explains the reconnect grace window');
+
+    servers.setRooms([
+      {
         id: 'room-private',
         name: null,
         meta: { id: 'tt0133093', type: 'movie', name: 'The Matrix' },
