@@ -947,6 +947,45 @@ async function testTypingIndicatorFlow() {
   }
 }
 
+async function testLatePeerVideoAttachmentResyncsToHost() {
+  console.log('\n── Test: Peer video added after join catches up to host ──');
+  const env = await setupTwoUsers();
+  try {
+    await env.stremio1.bringToFront();
+    await injectMockVideo(env.stremio1, 2);
+    await env.stremio1.evaluate(() => document.querySelector('[data-panel="room"]')?.click());
+    const hostSawVideo = await env.stremio1.waitForFunction(
+      () => !!document.getElementById('wp-bookmark-btn'),
+      { timeout: TIMEOUT }
+    ).then(() => true).catch(() => false);
+    assert(hostSawVideo, 'Host content script detects the newly opened video');
+
+    if (hostSawVideo) {
+      await env.stremio1.evaluate(() => {
+        const video = document.querySelector('video');
+        if (!video) return;
+        video.currentTime = 11.5;
+        video.dispatchEvent(new Event('seeked'));
+      });
+      await env.stremio1.waitForTimeout(800);
+
+      await env.stremio2.bringToFront();
+      await injectMockVideo(env.stremio2, 0.1);
+
+      const peerCaughtUp = await env.stremio2.waitForFunction(
+        () => {
+          const video = document.querySelector('video');
+          return !!video && Math.abs(video.currentTime - 11.5) < 0.5;
+        },
+        { timeout: TIMEOUT }
+      ).then(() => true).catch(() => false);
+      assert(peerCaughtUp, 'Peer catches up after opening a video late');
+    }
+  } finally {
+    await cleanupTwoUsers(env);
+  }
+}
+
 async function testBookmarkFlow() {
   console.log('\n── Test: Bookmarks sync and seek the peer video ──');
   const env = await setupTwoUsers();
@@ -1076,6 +1115,7 @@ async function main() {
     testPreferDirectJoinOpensPrivatePlayerLocally,
     testBidirectionalChat,
     testTypingIndicatorFlow,
+    testLatePeerVideoAttachmentResyncsToHost,
     testBookmarkFlow,
     testNamedRoom,
   ];

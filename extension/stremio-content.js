@@ -222,6 +222,56 @@
     return inRoom && isActiveVideoTab && amIHost();
   }
 
+  function requestLatestHostSync() {
+    if (!inRoom || isHost || !isActiveVideoTab || !WPWS.isReady()) return;
+    WPWS.send({ type: WPProtocol.C2S.PLAYER_SYNC, payload: roomState?.player || WPProtocol.DEFAULT_PLAYER });
+  }
+
+  function syncPeerVideoToRoom(options = {}) {
+    if (isHost || !video || !roomState?.player) return;
+    WPSync.applyRemote(roomState.player);
+    if (options.requestFresh === true) requestLatestHostSync();
+    const drift = WPSync.getLastDrift();
+    WPOverlay.updateSyncIndicator(isHost, drift);
+    WPOverlay.showCatchUpButton(drift);
+  }
+
+  function schedulePeerVideoResync(videoEl) {
+    if (isHost || !videoEl) return;
+    const events = ['loadedmetadata', 'loadeddata', 'canplay', 'playing'];
+    let fallbackTimer = null;
+    let done = false;
+
+    const cleanup = () => {
+      for (const eventName of events) {
+        videoEl.removeEventListener(eventName, handleReady);
+      }
+      if (fallbackTimer) {
+        clearTimeout(fallbackTimer);
+        fallbackTimer = null;
+      }
+    };
+
+    const handleReady = () => {
+      if (done) return;
+      done = true;
+      cleanup();
+      if (video !== videoEl || !inRoom || isHost) return;
+      syncPeerVideoToRoom({ requestFresh: true });
+    };
+
+    if (videoEl.readyState >= 3) {
+      handleReady();
+      return;
+    }
+
+    for (const eventName of events) {
+      videoEl.addEventListener(eventName, handleReady, { once: true });
+    }
+    fallbackTimer = setTimeout(handleReady, 2500);
+    syncPeerVideoToRoom({ requestFresh: true });
+  }
+
   function maybeRepairSharedPlayerRoute() {
     if (!shouldShareHostContent()) return;
     const hash = window.location.hash || '';
@@ -743,10 +793,7 @@
           const secs = Math.floor(newTime % 60).toString().padStart(2, '0');
           WPOverlay.showToast(`Host seeked to ${mins}:${secs}`);
         }
-        WPSync.applyRemote(roomState.player);
-        const drift = WPSync.getLastDrift();
-        WPOverlay.updateSyncIndicator(isHost, drift);
-        WPOverlay.showCatchUpButton(drift);
+        syncPeerVideoToRoom();
       }
     }
     if (!wasHost && isHost) WPOverlay.playNotifSound();
@@ -828,6 +875,30 @@
     }
   }
 
+  function getVideoElementScore(videoEl) {
+    if (!videoEl?.isConnected) return Number.NEGATIVE_INFINITY;
+    const rect = videoEl.getBoundingClientRect?.() || { width: 0, height: 0 };
+    const area = Math.max(0, rect.width) * Math.max(0, rect.height);
+    const style = typeof getComputedStyle === 'function' ? getComputedStyle(videoEl) : null;
+    const visible = area > 0
+      && style?.display !== 'none'
+      && style?.visibility !== 'hidden'
+      && style?.opacity !== '0';
+    return (visible ? 1000000 : 0)
+      + area
+      + (videoEl.readyState > 0 ? 10000 : 0)
+      + (videoEl.currentSrc ? 1000 : 0)
+      + (!videoEl.paused ? 100 : 0);
+  }
+
+  function findBestVideoElement() {
+    const candidates = Array.from(document.querySelectorAll('video'));
+    if (candidates.length === 0) return null;
+    return candidates.reduce((best, candidate) =>
+      getVideoElementScore(candidate) > getVideoElementScore(best) ? candidate : best
+    );
+  }
+
   // --- Video element detection ---
   function startVideoObserver() {
     if (observer) return;
@@ -836,12 +907,14 @@
       if (videoCheckTimer) return;
       videoCheckTimer = setTimeout(() => {
         videoCheckTimer = null;
-        const v = document.querySelector('video');
+        const v = findBestVideoElement();
         if (v && v !== video) {
+          if (WPSync.isAttached()) WPSync.detach();
           video = v;
           if (inRoom) {
             claimActiveTab(); // This tab now owns sync
             attachSync();
+            if (!isHost) schedulePeerVideoResync(v);
             if (shouldShareHostContent()) shareContentLink();
           }
           refreshOverlay();
@@ -854,8 +927,15 @@
       }, 200);
     });
     observer.observe(document.body, { childList: true, subtree: true });
-    const v = document.querySelector('video');
-    if (v) { video = v; if (inRoom) { claimActiveTab(); attachSync(); } }
+    const v = findBestVideoElement();
+    if (v) {
+      video = v;
+      if (inRoom) {
+        claimActiveTab();
+        attachSync();
+        if (!isHost) schedulePeerVideoResync(v);
+      }
+    }
   }
 
   // --- Sync wiring ---
@@ -988,7 +1068,7 @@
   }
 
   function getActiveVideoElement() {
-    return video || document.querySelector('video');
+    return video?.isConnected ? video : findBestVideoElement();
   }
 
   function resolveBookmarkTime(explicitTime) {
@@ -1066,7 +1146,7 @@
     'send-reaction': (m) => WPWS.send({ type: WPProtocol.C2S.ROOM_REACTION, payload: { emoji: m.emoji } }),
     'send-presence': (m) => WPWS.send({ type: WPProtocol.C2S.USER_PRESENCE, payload: { status: m.status } }),
     'send-playback-status': (m) => WPWS.send({ type: WPProtocol.C2S.USER_PLAYBACK_STATUS, payload: { status: m.status } }),
-    'request-sync': () => { if (isActiveVideoTab) WPWS.send({ type: WPProtocol.C2S.PLAYER_SYNC, payload: roomState?.player || WPProtocol.DEFAULT_PLAYER }); },
+    'request-sync': () => { requestLatestHostSync(); },
   };
 
   function handleAction(message) {
