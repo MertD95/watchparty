@@ -6,6 +6,9 @@ let currentActiveBackendUrl = null;
 let currentWsConnected = false;
 let currentRenderedRoom = null;
 let currentRenderedIsHost = false;
+let currentUserId = null;
+let currentSessionId = null;
+let currentLobbyMode = 'create';
 let roomKeyRenderSeq = 0;
 
 const ROOM_KEY_RE = /^[A-Za-z0-9_-]{16,200}$/;
@@ -120,6 +123,35 @@ function parseRoomJoinInput(rawValue) {
   }
 }
 
+function setLobbyMode(mode) {
+  currentLobbyMode = mode === 'join' ? 'join' : 'create';
+  const createTab = $('lobby-tab-create');
+  const joinTab = $('lobby-tab-join');
+  const createPanel = $('create-panel');
+  const joinPanel = $('join-panel');
+  if (!createTab || !joinTab || !createPanel || !joinPanel) return;
+
+  const isCreate = currentLobbyMode === 'create';
+  createTab.classList.toggle('active', isCreate);
+  joinTab.classList.toggle('active', !isCreate);
+  createTab.setAttribute('aria-selected', isCreate ? 'true' : 'false');
+  joinTab.setAttribute('aria-selected', isCreate ? 'false' : 'true');
+  createPanel.classList.toggle('hidden', !isCreate);
+  joinPanel.classList.toggle('hidden', isCreate);
+}
+
+function updateLobbyPrivacyState() {
+  const isPublic = !!$('public-check')?.checked;
+  const label = $('privacy-mode-label');
+  const help = $('privacy-mode-help');
+  if (label) label.textContent = isPublic ? 'Public room' : 'Private room';
+  if (help) {
+    help.textContent = isPublic
+      ? 'Anyone on WatchParty can join instantly.'
+      : 'Invite required to join.';
+  }
+}
+
 function renderBackendControls() {
   const selectedMode = WPConstants.BACKEND.normalizeMode(currentBackendMode);
   document.querySelectorAll('#backend-toggle .backend-btn').forEach((btn) => {
@@ -174,6 +206,17 @@ function setBackendMode(mode) {
   });
 }
 
+function loadIdentity(callback) {
+  chrome.storage.local.get([
+    WPConstants.STORAGE.USER_ID,
+    WPConstants.STORAGE.SESSION_ID,
+  ], (result) => {
+    currentUserId = result[WPConstants.STORAGE.USER_ID] || currentUserId || null;
+    currentSessionId = result[WPConstants.STORAGE.SESSION_ID] || currentSessionId || null;
+    callback(currentUserId, currentSessionId);
+  });
+}
+
 // --- Reactive room state watcher (replaces polling) ---
 function waitForRoomState(onRoom, onTimeout) {
   let resolved = false;
@@ -220,6 +263,7 @@ chrome.runtime.sendMessage(
 
     // Show room view if already in a room
     if (response.room) {
+      currentUserId = response.userId || null;
       showRoomView(response.room, response.userId);
     } else {
       showLobbyView();
@@ -228,22 +272,43 @@ chrome.runtime.sendMessage(
 );
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
-  if (areaName !== 'local') return;
+  if (areaName === 'local') {
+    if (changes[WPConstants.STORAGE.USER_ID]) {
+      currentUserId = changes[WPConstants.STORAGE.USER_ID].newValue || null;
+    }
+    if (changes[WPConstants.STORAGE.SESSION_ID]) {
+      currentSessionId = changes[WPConstants.STORAGE.SESSION_ID].newValue || null;
+    }
+    if (changes[WPConstants.STORAGE.ROOM_STATE]) {
+      const nextRoom = changes[WPConstants.STORAGE.ROOM_STATE].newValue || null;
+      if (nextRoom) {
+        showRoomView(nextRoom, currentUserId);
+      } else {
+        showLobbyView();
+      }
+    }
 
-  if (changes[WPConstants.STORAGE.WS_CONNECTED]) {
-    currentWsConnected = !!changes[WPConstants.STORAGE.WS_CONNECTED].newValue;
+    if (changes[WPConstants.STORAGE.WS_CONNECTED]) {
+      currentWsConnected = !!changes[WPConstants.STORAGE.WS_CONNECTED].newValue;
+    }
+    if (changes[WPConstants.STORAGE.BACKEND_MODE]) {
+      currentBackendMode = WPConstants.BACKEND.normalizeMode(changes[WPConstants.STORAGE.BACKEND_MODE].newValue);
+    }
+    if (changes[WPConstants.STORAGE.ACTIVE_BACKEND]) {
+      currentActiveBackend = getKnownBackendKey(changes[WPConstants.STORAGE.ACTIVE_BACKEND].newValue);
+    }
+    if (changes[WPConstants.STORAGE.ACTIVE_BACKEND_URL]) {
+      currentActiveBackendUrl = changes[WPConstants.STORAGE.ACTIVE_BACKEND_URL].newValue || null;
+    }
+    renderBackendControls();
+    setWsStatus(currentWsConnected);
   }
-  if (changes[WPConstants.STORAGE.BACKEND_MODE]) {
-    currentBackendMode = WPConstants.BACKEND.normalizeMode(changes[WPConstants.STORAGE.BACKEND_MODE].newValue);
+
+  if (!currentRenderedRoom?.id) return;
+  const roomKeyStorageKey = WPConstants.STORAGE.roomKey(currentRenderedRoom.id);
+  if (changes[roomKeyStorageKey]) {
+    renderRoomKeyDetails(currentRenderedRoom, currentRenderedIsHost);
   }
-  if (changes[WPConstants.STORAGE.ACTIVE_BACKEND]) {
-    currentActiveBackend = getKnownBackendKey(changes[WPConstants.STORAGE.ACTIVE_BACKEND].newValue);
-  }
-  if (changes[WPConstants.STORAGE.ACTIVE_BACKEND_URL]) {
-    currentActiveBackendUrl = changes[WPConstants.STORAGE.ACTIVE_BACKEND_URL].newValue || null;
-  }
-  renderBackendControls();
-  setWsStatus(currentWsConnected);
 });
 
 document.querySelectorAll('#backend-toggle .backend-btn').forEach((btn) => {
@@ -272,16 +337,16 @@ function showLobbyView() {
   // Clear any error messages
   $('join-error').classList.add('hidden');
   $('create-error').classList.add('hidden');
+  updateLobbyPrivacyState();
 }
 
 function showRoomView(room, myUserId) {
   $('view-lobby').classList.add('hidden');
   $('view-room').classList.remove('hidden');
 
-  // Load sessionId for multi-tab identity matching
-  chrome.storage.local.get(WPConstants.STORAGE.SESSION_ID, (result) => {
-    const mySessionId = result[WPConstants.STORAGE.SESSION_ID];
-    renderRoomDetails(room, myUserId, mySessionId);
+  if (myUserId) currentUserId = myUserId;
+  loadIdentity((resolvedUserId, resolvedSessionId) => {
+    renderRoomDetails(room, resolvedUserId, resolvedSessionId);
   });
 }
 
@@ -376,6 +441,10 @@ function renderRoomDetails(room, myUserId, mySessionId) {
     : 'WatchParty Session';
 
   const isHost = amIHost();
+  $('room-privacy-badge').textContent = room.public ? 'Public' : 'Invite required';
+  $('room-role-badge').textContent = isHost ? 'Host' : 'Synced';
+  $('room-count-badge').textContent = `${room.users?.length || 0} watching`;
+  $('participants-count').textContent = `${room.users?.length || 0} ${room.users?.length === 1 ? 'person' : 'people'}`;
   renderRoomKeyDetails(room, isHost);
   const detailUrl = getContentDetailUrl(room);
   const directStreamUrl = getDirectStreamUrl(room);
@@ -437,6 +506,7 @@ function renderRoomDetails(room, myUserId, mySessionId) {
 // --- Actions ---
 
 $('btn-create').addEventListener('click', () => {
+  setLobbyMode('create');
   const username = $('username-input').value.trim();
   if (!username) {
     $('username-input').focus();
@@ -481,6 +551,7 @@ $('btn-create').addEventListener('click', () => {
 });
 
 $('btn-join').addEventListener('click', () => {
+  setLobbyMode('join');
   const username = $('username-input').value.trim();
   const parsedJoin = parseRoomJoinInput($('room-id-input').value);
   const roomId = parsedJoin.roomId;
@@ -611,6 +682,12 @@ $('setting-compact').addEventListener('change', (e) => {
 chrome.storage.local.get(WPConstants.STORAGE.COMPACT_CHAT, (result) => {
   $('setting-compact').checked = !!result[WPConstants.STORAGE.COMPACT_CHAT];
 });
+
+$('lobby-tab-create').addEventListener('click', () => setLobbyMode('create'));
+$('lobby-tab-join').addEventListener('click', () => setLobbyMode('join'));
+$('public-check').addEventListener('change', updateLobbyPrivacyState);
+setLobbyMode(currentLobbyMode);
+updateLobbyPrivacyState();
 
 // Share invite link
 $('btn-share').addEventListener('click', () => {

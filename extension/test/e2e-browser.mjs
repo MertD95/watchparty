@@ -172,6 +172,15 @@ async function testCreateRoomFlow() {
       const roomId = await popup.evaluate(() => document.getElementById('room-id-display').textContent);
       assert(roomId && roomId.length > 10, `Room ID shown: ${roomId?.substring(0, 8)}...`);
 
+      const roomKeyVisible = await popup.waitForFunction(
+        () => {
+          const input = document.getElementById('room-key-input');
+          return !!input && !input.disabled && !!input.value && input.value.length >= 16;
+        },
+        { timeout: TIMEOUT }
+      ).then(() => true).catch(() => false);
+      assert(roomKeyVisible, 'Private room key appears in the popup without reloading');
+
       // Users list shows TestHost
       const usersHtml = await popup.evaluate(() => document.getElementById('users-list').innerHTML);
       assert(usersHtml.includes('TestHost'), 'Users list shows TestHost');
@@ -255,6 +264,7 @@ async function testJoinRoomFlow() {
     const extId2 = await getExtensionId(ctx2);
     const popup2 = await openPopup(ctx2, extId2);
     await popup2.fill('#username-input', 'Bob');
+    await popup2.click('#lobby-tab-join');
     await popup2.fill('#room-id-input', roomId);
     await popup2.click('#btn-join');
 
@@ -305,6 +315,7 @@ async function testChatFlow() {
     const extId2 = await getExtensionId(ctx2);
     const popup2 = await openPopup(ctx2, extId2);
     await popup2.fill('#username-input', 'Bob');
+    await popup2.click('#lobby-tab-join');
     await popup2.fill('#room-id-input', roomId);
     await popup2.click('#btn-join');
     await popup2.waitForFunction(() => !document.getElementById('view-room').classList.contains('hidden'), { timeout: TIMEOUT });
@@ -457,6 +468,7 @@ async function setupTwoUsers() {
   const extId2 = await getExtensionId(ctx2);
   const popup2 = await openPopup(ctx2, extId2);
   await popup2.fill('#username-input', 'Bob');
+  await popup2.click('#lobby-tab-join');
   await popup2.fill('#room-id-input', roomId);
   await popup2.click('#btn-join');
   await popup2.waitForFunction(() => !document.getElementById('view-room').classList.contains('hidden'), { timeout: TIMEOUT });

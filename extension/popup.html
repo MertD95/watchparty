@@ -3,396 +3,885 @@
 <head>
   <meta charset="utf-8">
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      width: 300px;
-      max-height: 600px;
-      overflow-y: auto;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      background: #0f0f1e;
-      color: #e0e0e0;
-      scrollbar-width: thin;
-      scrollbar-color: rgba(255,255,255,0.15) transparent;
-    }
-    .header {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 14px 16px;
-      border-bottom: 1px solid rgba(255,255,255,0.08);
-    }
-    .header h3 {
-      font-size: 14px;
-      font-weight: 600;
-      color: #fff;
-    }
-    .header .version {
-      font-size: 10px;
-      color: #555;
-      margin-left: auto;
+    :root {
+      --bg: #0b1020;
+      --bg-elevated: rgba(17, 24, 39, 0.88);
+      --bg-soft: rgba(148, 163, 184, 0.08);
+      --bg-soft-strong: rgba(148, 163, 184, 0.12);
+      --border: rgba(148, 163, 184, 0.16);
+      --border-strong: rgba(99, 102, 241, 0.34);
+      --text: #e5e7eb;
+      --text-muted: #98a2b3;
+      --text-soft: #6b7280;
+      --accent: #7c82ff;
+      --accent-strong: #6366f1;
+      --accent-soft: rgba(99, 102, 241, 0.18);
+      --success: #22c55e;
+      --danger: #f87171;
+      --danger-soft: rgba(248, 113, 113, 0.16);
+      --warning: #fbbf24;
+      --shadow: 0 18px 40px rgba(3, 7, 18, 0.42);
+      --radius-xl: 18px;
+      --radius-lg: 14px;
+      --radius-md: 10px;
+      --radius-sm: 8px;
     }
 
-    /* Status indicators */
-    .status-row {
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      width: 360px;
+      max-height: 720px;
+      overflow-y: auto;
+      font-family: Inter, "Segoe UI", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(99, 102, 241, 0.26), transparent 34%),
+        radial-gradient(circle at top right, rgba(34, 197, 94, 0.12), transparent 28%),
+        linear-gradient(180deg, #0b1020 0%, #0a0f1a 100%);
+      scrollbar-width: thin;
+      scrollbar-color: rgba(148, 163, 184, 0.28) transparent;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background:
+        linear-gradient(120deg, rgba(255, 255, 255, 0.04), transparent 38%),
+        radial-gradient(circle at 80% 10%, rgba(124, 130, 255, 0.14), transparent 20%);
+    }
+
+    .app-shell {
+      position: relative;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .app-header {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+    }
+
+    .brand-copy {
+      min-width: 0;
+    }
+
+    .brand-kicker {
+      font-size: 11px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: rgba(124, 130, 255, 0.84);
+      margin-bottom: 6px;
+    }
+
+    .app-header h3 {
+      font-size: 19px;
+      font-weight: 700;
+      color: #f8fafc;
+      line-height: 1.05;
+    }
+
+    .brand-subtitle {
+      margin-top: 5px;
+      font-size: 12px;
+      line-height: 1.4;
+      color: var(--text-muted);
+    }
+
+    .version {
+      margin-left: auto;
+      flex-shrink: 0;
+      padding: 6px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      background: rgba(15, 23, 42, 0.62);
+      font-size: 11px;
+      color: var(--text-soft);
+      max-width: 160px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .surface {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-xl);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(12px);
+      overflow: hidden;
+    }
+
+    .surface-inner {
+      padding: 14px;
+    }
+
+    .surface-title {
+      font-size: 11px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text-soft);
+      margin-bottom: 10px;
+    }
+
+    .status-card {
+      padding: 14px;
+      display: grid;
+      gap: 10px;
+    }
+
+    .status-grid {
+      display: grid;
+      gap: 8px;
+    }
+
+    .status-pill {
       display: flex;
       align-items: center;
-      gap: 8px;
-      padding: 8px 16px;
-      font-size: 12px;
+      gap: 10px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid rgba(148, 163, 184, 0.12);
+      background: rgba(15, 23, 42, 0.54);
+      font-size: 13px;
+      line-height: 1.35;
     }
+
     .dot {
-      width: 8px; height: 8px;
+      width: 9px;
+      height: 9px;
       border-radius: 50%;
       flex-shrink: 0;
-    }
-    .dot.on { background: #22c55e; }
-    .dot.off { background: #ef4444; }
-
-    /* Sections */
-    .section {
-      padding: 12px 16px;
-      border-top: 1px solid rgba(255,255,255,0.06);
-    }
-    .section-title {
-      font-size: 10px;
-      text-transform: uppercase;
-      color: #555;
-      letter-spacing: 0.5px;
-      margin-bottom: 8px;
+      box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.02);
     }
 
-    /* Inputs */
-    input[type="text"] {
-      width: 100%;
-      background: rgba(255,255,255,0.06);
-      border: 1px solid rgba(255,255,255,0.12);
-      border-radius: 6px;
-      padding: 8px 10px;
-      color: #fff;
-      font-size: 13px;
-      outline: none;
-      margin-bottom: 8px;
-    }
-    input[type="text"]:focus {
-      border-color: #6366f1;
-    }
-    input[type="text"]::placeholder {
-      color: #444;
+    .dot.on {
+      background: var(--success);
+      box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.14);
     }
 
-    /* Buttons */
-    .btn {
-      width: 100%;
-      padding: 9px;
-      border: none;
-      border-radius: 6px;
-      font-size: 13px;
-      font-weight: 500;
-      cursor: pointer;
-      transition: background 0.15s;
-      margin-bottom: 6px;
-    }
-    .btn-primary {
-      background: #6366f1;
-      color: white;
-    }
-    .btn-primary:hover {
-      background: #5558e6;
-    }
-    .btn-secondary {
-      background: rgba(255,255,255,0.08);
-      color: #ccc;
-    }
-    .btn-secondary:hover {
-      background: rgba(255,255,255,0.12);
-    }
-    .btn-danger {
-      background: rgba(239,68,68,0.15);
-      color: #ef4444;
-    }
-    .btn-danger:hover {
-      background: rgba(239,68,68,0.25);
-    }
-    .btn:disabled {
-      opacity: 0.4;
-      cursor: not-allowed;
+    .dot.off {
+      background: #ef4444;
+      box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.14);
     }
 
-    /* Room info */
-    .room-info {
-      background: rgba(99,102,241,0.1);
-      border: 1px solid rgba(99,102,241,0.2);
-      border-radius: 8px;
-      padding: 10px 12px;
-      margin-bottom: 8px;
-    }
-    .room-id {
-      font-family: 'Consolas', 'Monaco', monospace;
-      font-size: 13px;
-      color: #6366f1;
-      cursor: pointer;
-      user-select: all;
-    }
-    .room-id:hover {
-      color: #818cf8;
-    }
-    .room-meta {
-      font-size: 11px;
-      color: #888;
-      margin-top: 4px;
-    }
-    .room-key-row {
-      margin-top: 8px;
-    }
-    .room-key-label {
-      font-size: 10px;
-      text-transform: uppercase;
-      color: #70708d;
-      letter-spacing: 0.4px;
-      margin-bottom: 6px;
-    }
-    .room-key-row input[type="text"] {
-      margin-bottom: 0;
-      font-family: 'Consolas', 'Monaco', monospace;
+    .status-hint {
       font-size: 12px;
-      letter-spacing: 0.1px;
-      user-select: all;
+      line-height: 1.45;
+      color: var(--text-muted);
     }
-    .room-key-actions {
+
+    .fold-card {
+      margin-top: -2px;
+    }
+
+    .fold-card summary {
+      list-style: none;
+      cursor: pointer;
+      padding: 14px;
+      font-size: 13px;
+      font-weight: 600;
+      color: #f8fafc;
       display: flex;
-      gap: 6px;
-      margin-top: 6px;
-    }
-    .room-key-actions .btn {
-      width: auto;
-      margin-bottom: 0;
-      padding: 7px 10px;
-      font-size: 12px;
-    }
-    .room-key-help {
-      font-size: 11px;
-      color: #8a8aa6;
-      line-height: 1.35;
-      margin-top: 6px;
-    }
-    .users-list {
-      margin-top: 8px;
-    }
-    .user-item {
-      font-size: 12px;
-      padding: 3px 0;
-      color: #ccc;
-    }
-    .user-crown {
-      color: #f59e0b;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
     }
 
-    /* Content link */
-    .content-hint {
-      background: rgba(34,197,94,0.1);
-      border: 1px solid rgba(34,197,94,0.2);
-      border-radius: 6px;
-      padding: 8px 10px;
-      font-size: 11px;
-      color: #22c55e;
-      margin-bottom: 8px;
-      line-height: 1.4;
-    }
-    .content-hint a {
-      color: #4ade80;
-      text-decoration: underline;
+    .fold-card summary::-webkit-details-marker {
+      display: none;
     }
 
-    .info-text {
-      font-size: 11px;
-      color: #555;
-      line-height: 1.4;
-      padding: 8px 16px 12px;
+    .fold-card summary::after {
+      content: "+";
+      color: var(--text-muted);
+      font-size: 18px;
+      line-height: 1;
     }
-    .info-text a {
-      color: #6366f1;
+
+    .fold-card[open] summary::after {
+      content: "\2212";
     }
-    .error-text {
-      font-size: 11px;
-      color: #ef4444;
-      padding: 4px 0 0;
+
+    .fold-body {
+      padding: 0 14px 14px;
     }
 
     .backend-toggle {
       display: flex;
-      gap: 6px;
-    }
-    .backend-btn {
-      flex: 1;
-      padding: 7px 0;
-      border-radius: 999px;
-      border: 1px solid rgba(255,255,255,0.12);
-      background: rgba(255,255,255,0.05);
-      color: #b4b4c7;
-      font-size: 12px;
-      cursor: pointer;
-      transition: background 0.15s, border-color 0.15s, color 0.15s;
-    }
-    .backend-btn:hover {
-      border-color: rgba(99,102,241,0.5);
-      color: #fff;
-    }
-    .backend-btn.active {
-      background: rgba(99,102,241,0.2);
-      border-color: rgba(99,102,241,0.75);
-      color: #fff;
-    }
-    .backend-note {
-      margin-top: 8px;
-      font-size: 11px;
-      color: #7d7d98;
-      line-height: 1.4;
-      min-height: 30px;
+      gap: 8px;
+      margin-bottom: 10px;
     }
 
-    /* Settings rows */
+    .backend-btn {
+      flex: 1;
+      padding: 9px 0;
+      border-radius: 999px;
+      border: 1px solid rgba(148, 163, 184, 0.16);
+      background: rgba(148, 163, 184, 0.08);
+      color: var(--text-muted);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: 0.15s ease;
+    }
+
+    .backend-btn:hover {
+      border-color: rgba(124, 130, 255, 0.42);
+      color: #fff;
+    }
+
+    .backend-btn.active {
+      background: var(--accent-soft);
+      border-color: rgba(124, 130, 255, 0.6);
+      color: #fff;
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03);
+    }
+
+    .backend-note,
+    .helper-text,
+    .room-key-help,
+    .info-banner {
+      font-size: 12px;
+      line-height: 1.45;
+      color: var(--text-muted);
+    }
+
+    .card-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .mode-switch {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 8px;
+      margin-bottom: 14px;
+      padding: 4px;
+      border-radius: 14px;
+      background: rgba(15, 23, 42, 0.58);
+      border: 1px solid rgba(148, 163, 184, 0.1);
+    }
+
+    .mode-btn {
+      border: none;
+      border-radius: 10px;
+      background: transparent;
+      color: var(--text-muted);
+      font-size: 13px;
+      font-weight: 600;
+      padding: 10px 0;
+      cursor: pointer;
+      transition: 0.15s ease;
+    }
+
+    .mode-btn.active {
+      background: linear-gradient(180deg, rgba(124, 130, 255, 0.22), rgba(99, 102, 241, 0.18));
+      color: #fff;
+      box-shadow: inset 0 0 0 1px rgba(124, 130, 255, 0.32);
+    }
+
+    .panel-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .field-label {
+      display: block;
+      margin-bottom: 7px;
+      font-size: 11px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text-soft);
+    }
+
+    input[type="text"] {
+      width: 100%;
+      background: rgba(15, 23, 42, 0.68);
+      border: 1px solid rgba(148, 163, 184, 0.16);
+      border-radius: 12px;
+      padding: 11px 12px;
+      color: #fff;
+      font-size: 13px;
+      outline: none;
+      transition: border-color 0.15s ease, background 0.15s ease;
+    }
+
+    input[type="text"]:focus {
+      border-color: rgba(124, 130, 255, 0.7);
+      background: rgba(15, 23, 42, 0.86);
+    }
+
+    input[type="text"]::placeholder {
+      color: #556070;
+    }
+
+    .toggle-card {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px;
+      border-radius: 14px;
+      border: 1px solid rgba(148, 163, 184, 0.12);
+      background: rgba(15, 23, 42, 0.52);
+      cursor: pointer;
+    }
+
+    .toggle-copy {
+      min-width: 0;
+    }
+
+    .toggle-title {
+      display: block;
+      font-size: 13px;
+      font-weight: 600;
+      color: #f8fafc;
+    }
+
+    .toggle-description {
+      display: block;
+      margin-top: 3px;
+      font-size: 12px;
+      line-height: 1.4;
+      color: var(--text-muted);
+    }
+
+    .toggle-card input[type="checkbox"],
+    .setting-row input[type="checkbox"] {
+      width: 18px;
+      height: 18px;
+      flex-shrink: 0;
+      accent-color: var(--accent-strong);
+    }
+
+    .btn {
+      width: 100%;
+      padding: 11px 12px;
+      border: none;
+      border-radius: 12px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: 0.15s ease;
+      text-align: center;
+    }
+
+    .btn-primary {
+      background: linear-gradient(180deg, #7d83ff 0%, #6366f1 100%);
+      color: #fff;
+      box-shadow: 0 10px 24px rgba(99, 102, 241, 0.26);
+    }
+
+    .btn-primary:hover {
+      filter: brightness(1.05);
+    }
+
+    .btn-secondary {
+      background: rgba(148, 163, 184, 0.08);
+      color: #d9deea;
+      border: 1px solid rgba(148, 163, 184, 0.14);
+    }
+
+    .btn-secondary:hover {
+      background: rgba(148, 163, 184, 0.12);
+    }
+
+    .btn-danger {
+      background: var(--danger-soft);
+      color: #fecaca;
+      border: 1px solid rgba(248, 113, 113, 0.18);
+    }
+
+    .btn-danger:hover {
+      background: rgba(248, 113, 113, 0.22);
+    }
+
+    .btn:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+      box-shadow: none;
+    }
+
+    .error-text {
+      font-size: 12px;
+      line-height: 1.4;
+      color: var(--danger);
+    }
+
+    .info-banner {
+      padding: 14px;
+      border-radius: var(--radius-lg);
+      border: 1px solid rgba(124, 130, 255, 0.16);
+      background: rgba(99, 102, 241, 0.08);
+    }
+
+    .info-banner a {
+      color: #c7d2fe;
+    }
+
+    .room-hero {
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .room-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .room-heading-label {
+      font-size: 11px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text-soft);
+      margin-bottom: 6px;
+    }
+
+    .room-id {
+      font-family: "Consolas", "Monaco", monospace;
+      font-size: 13px;
+      color: #bfc6ff;
+      cursor: pointer;
+      user-select: all;
+      word-break: break-all;
+    }
+
+    .room-id:hover {
+      color: #e0e7ff;
+    }
+
+    .room-meta {
+      font-size: 13px;
+      line-height: 1.4;
+      color: var(--text-muted);
+      margin-top: 5px;
+    }
+
+    .room-badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .room-badge {
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: rgba(148, 163, 184, 0.1);
+      border: 1px solid rgba(148, 163, 184, 0.12);
+      color: #dbe3f0;
+      font-size: 11px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    .room-key-row {
+      border-top: 1px solid rgba(148, 163, 184, 0.1);
+      padding-top: 12px;
+    }
+
+    .room-key-label {
+      font-size: 11px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text-soft);
+      margin-bottom: 8px;
+    }
+
+    .room-key-row input[type="text"] {
+      margin-bottom: 0;
+      font-family: "Consolas", "Monaco", monospace;
+      font-size: 12px;
+      user-select: all;
+    }
+
+    .room-key-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .room-key-actions .btn {
+      width: auto;
+      padding-inline: 14px;
+    }
+
+    .content-hint {
+      padding: 14px;
+      border-radius: var(--radius-xl);
+      border: 1px solid rgba(34, 197, 94, 0.16);
+      background: rgba(34, 197, 94, 0.08);
+      font-size: 12px;
+      line-height: 1.5;
+      color: #c7f9d7;
+    }
+
+    .content-hint a {
+      color: #86efac;
+      text-decoration: underline;
+    }
+
+    .list-card {
+      padding: 14px;
+    }
+
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+
+    .section-header .surface-title {
+      margin-bottom: 0;
+    }
+
+    .section-count {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .users-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .user-item {
+      padding: 9px 10px;
+      border-radius: 12px;
+      background: rgba(15, 23, 42, 0.52);
+      border: 1px solid rgba(148, 163, 184, 0.08);
+      font-size: 13px;
+      line-height: 1.35;
+      color: #dbe3f0;
+    }
+
+    .user-crown {
+      color: var(--warning);
+    }
+
+    .settings-grid {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
     .setting-row {
       display: flex;
       align-items: center;
-      gap: 8px;
-      font-size: 12px;
-      color: #ccc;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px;
+      border-radius: 12px;
+      border: 1px solid rgba(148, 163, 184, 0.1);
+      background: rgba(15, 23, 42, 0.48);
+      font-size: 13px;
+      color: #dbe3f0;
       cursor: pointer;
-      padding: 4px 0;
     }
-    .setting-row input[type="checkbox"] { accent-color: #6366f1; }
+
+    .setting-copy {
+      min-width: 0;
+    }
+
+    .setting-name {
+      display: block;
+      font-weight: 600;
+      color: #f8fafc;
+    }
+
+    .setting-desc {
+      display: block;
+      margin-top: 3px;
+      font-size: 12px;
+      line-height: 1.4;
+      color: var(--text-muted);
+    }
+
+    .theme-grid {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .color-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
 
     .color-btn {
-      width: 28px; height: 28px; border-radius: 50%; border: 2px solid transparent;
-      cursor: pointer; transition: border-color 0.15s, transform 0.1s;
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      border: 2px solid transparent;
+      cursor: pointer;
+      transition: transform 0.1s ease, border-color 0.15s ease;
     }
-    .color-btn:hover { transform: scale(1.1); }
-    .color-btn.active { border-color: #fff; }
 
-    .hidden { display: none !important; }
+    .color-btn:hover {
+      transform: scale(1.08);
+    }
+
+    .color-btn.active {
+      border-color: #fff;
+      box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.04);
+    }
+
+    .action-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .action-grid .btn,
+    .action-grid a.btn {
+      margin: 0;
+      text-decoration: none;
+    }
+
+    .action-stack {
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .action-stack a.btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      text-decoration: none;
+    }
+
+    .hidden {
+      display: none !important;
+    }
   </style>
 </head>
 <body>
-  <div class="header">
-    <h3>WatchParty</h3>
-    <span class="version" id="version"></span>
-  </div>
+  <div class="app-shell">
+    <div class="app-header">
+      <div class="brand-copy">
+        <div class="brand-kicker">Watch Together</div>
+        <h3>WatchParty</h3>
+        <div class="brand-subtitle">Create a room, share an invite, and stay in sync with Stremio.</div>
+      </div>
+      <span class="version" id="version"></span>
+    </div>
 
-  <!-- Status -->
-  <div class="status-row">
-    <div class="dot" id="stremio-dot"></div>
-    <span id="stremio-status">Checking Stremio...</span>
-  </div>
-  <div class="status-row">
-    <div class="dot" id="ws-dot"></div>
-    <span id="ws-status">Connecting...</span>
-  </div>
-
-  <div class="section">
-    <div class="section-title">Backend</div>
-    <div class="backend-toggle" id="backend-toggle">
-      <button class="backend-btn" id="backend-auto" data-mode="auto" type="button">Auto</button>
-      <button class="backend-btn" id="backend-local" data-mode="local" type="button">Local</button>
-      <button class="backend-btn" id="backend-live" data-mode="live" type="button">Live</button>
-    </div>
-    <div class="backend-note" id="backend-note">Auto mode uses localhost when available, otherwise live.</div>
-  </div>
-
-  <!-- Not in room: create/join -->
-  <div id="view-lobby">
-    <div class="section">
-      <div class="section-title">Your Name</div>
-      <input type="text" id="username-input" placeholder="Enter your name" maxlength="25" aria-label="Username" />
-    </div>
-    <div class="section">
-      <div class="section-title">Create a Room</div>
-      <input type="text" id="room-name-input" placeholder="Room name (optional, e.g. movie-night)" maxlength="30" style="margin-bottom:6px" aria-label="Room name" />
-      <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:#999;margin-bottom:8px;cursor:pointer">
-        <input type="checkbox" id="public-check" style="accent-color:#6366f1" />
-        <span>Public room (anyone can join)</span>
-      </label>
-      <button class="btn btn-primary" id="btn-create">Create Room</button>
-      <div class="error-text hidden" id="create-error"></div>
-    </div>
-    <div class="section">
-      <div class="section-title">Join a Room</div>
-      <input type="text" id="room-id-input" placeholder="Paste room ID or invite link" aria-label="Room ID or invite link" />
-      <button class="btn btn-secondary" id="btn-join">Join Room</button>
-      <div class="error-text hidden" id="join-error"></div>
-    </div>
-    <div class="info-text">
-      Open <a href="https://web.stremio.com" target="_blank">web.stremio.com</a>, pick something to watch, then create a room. Your friend joins with the room ID.
-    </div>
-  </div>
-
-  <!-- In room -->
-  <div id="view-room" class="hidden">
-    <div class="section">
-      <div class="room-info">
-        <div>Room: <span class="room-id" id="room-id-display" title="Click to copy"></span></div>
-        <div class="room-meta" id="room-meta"></div>
-        <div class="room-key-row hidden" id="room-key-row">
-          <div class="room-key-label">Room Key</div>
-          <input type="text" id="room-key-input" aria-label="Room key" spellcheck="false" autocomplete="off" />
-          <div class="room-key-actions">
-            <button class="btn btn-secondary" id="btn-update-room-key" type="button">Update Key</button>
+    <div class="surface">
+      <div class="status-card">
+        <div class="surface-title">System Status</div>
+        <div class="status-grid">
+          <div class="status-pill">
+            <div class="dot" id="stremio-dot"></div>
+            <span id="stremio-status">Checking Stremio...</span>
           </div>
-          <div class="room-key-help" id="room-key-help"></div>
-          <div class="error-text hidden" id="room-key-error"></div>
+          <div class="status-pill">
+            <div class="dot" id="ws-dot"></div>
+            <span id="ws-status">Connecting...</span>
+          </div>
+        </div>
+        <div class="status-hint">Open Stremio Web first. WatchParty will attach to the active session automatically.</div>
+      </div>
+    </div>
+
+    <details class="surface fold-card" id="connection-card" open>
+      <summary>Connection</summary>
+      <div class="fold-body">
+        <div class="backend-toggle" id="backend-toggle">
+          <button class="backend-btn" id="backend-auto" data-mode="auto" type="button">Auto</button>
+          <button class="backend-btn" id="backend-local" data-mode="local" type="button">Local</button>
+          <button class="backend-btn" id="backend-live" data-mode="live" type="button">Live</button>
+        </div>
+        <div class="backend-note" id="backend-note">Auto mode uses localhost when available, otherwise live.</div>
+      </div>
+    </details>
+
+    <div id="view-lobby" class="card-stack">
+      <div class="surface">
+        <div class="surface-inner">
+          <div class="surface-title">Identity</div>
+          <label class="field-label" for="username-input">Display Name</label>
+          <input type="text" id="username-input" placeholder="Enter your name" maxlength="25" aria-label="Username" />
+        </div>
+      </div>
+
+      <div class="surface">
+        <div class="surface-inner">
+          <div class="mode-switch" role="tablist" aria-label="Room action">
+            <button class="mode-btn active" id="lobby-tab-create" type="button" role="tab" aria-selected="true">Create</button>
+            <button class="mode-btn" id="lobby-tab-join" type="button" role="tab" aria-selected="false">Join</button>
+          </div>
+
+          <div id="create-panel" class="panel-stack">
+            <div>
+              <label class="field-label" for="room-name-input">Room Name</label>
+              <input type="text" id="room-name-input" placeholder="Optional slug, for example movie-night" maxlength="30" aria-label="Room name" />
+            </div>
+
+            <label class="toggle-card" for="public-check">
+              <span class="toggle-copy">
+                <span class="toggle-title" id="privacy-mode-label">Private room</span>
+                <span class="toggle-description" id="privacy-mode-help">Invite required to join.</span>
+              </span>
+              <input type="checkbox" id="public-check" aria-label="Public room (anyone can join)" />
+            </label>
+
+            <button class="btn btn-primary" id="btn-create">Create Room</button>
+            <div class="error-text hidden" id="create-error"></div>
+          </div>
+
+          <div id="join-panel" class="panel-stack hidden">
+            <div>
+              <label class="field-label" for="room-id-input">Invite Link or Room ID</label>
+              <input type="text" id="room-id-input" placeholder="Paste a room ID or full invite link" aria-label="Room ID or invite link" />
+            </div>
+            <button class="btn btn-secondary" id="btn-join">Join Room</button>
+            <div class="error-text hidden" id="join-error"></div>
+            <div class="helper-text">Invite links work best for private rooms because they already include the room key.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="info-banner">
+        Open <a href="https://web.stremio.com" target="_blank">web.stremio.com</a>, choose what to watch, then create or join a room without leaving Stremio.
+      </div>
+    </div>
+
+    <div id="view-room" class="card-stack hidden">
+      <div class="surface">
+        <div class="room-hero">
+          <div class="room-head">
+            <div>
+              <div class="room-heading-label">Room</div>
+              <div class="room-id" id="room-id-display" title="Click to copy"></div>
+              <div class="room-meta" id="room-meta"></div>
+            </div>
+            <div class="room-badges">
+              <span class="room-badge" id="room-privacy-badge">Private</span>
+              <span class="room-badge" id="room-role-badge">Host</span>
+              <span class="room-badge" id="room-count-badge">1 watching</span>
+            </div>
+          </div>
+
+          <div class="room-key-row hidden" id="room-key-row">
+            <div class="room-key-label">Invite Key</div>
+            <input type="text" id="room-key-input" aria-label="Room key" spellcheck="false" autocomplete="off" />
+            <div class="room-key-actions">
+              <button class="btn btn-secondary" id="btn-update-room-key" type="button">Update Key</button>
+            </div>
+            <div class="room-key-help" id="room-key-help"></div>
+            <div class="error-text hidden" id="room-key-error"></div>
+          </div>
         </div>
       </div>
 
       <div id="content-link-hint" class="content-hint hidden">
-        The host is watching: <strong id="content-name"></strong><br/>
-        <a id="content-link" href="#" target="_blank">Open title page in Stremio Web</a><br/>
+        The host is watching: <strong id="content-name"></strong><br />
+        <a id="content-link" href="#" target="_blank">Open title page in Stremio Web</a><br />
         <a id="content-stream-link" href="#" target="_blank" class="hidden">Open host stream directly</a>
       </div>
 
-      <div class="section-title">Participants</div>
-      <div class="users-list" id="users-list"></div>
-    </div>
-
-    <!-- Room settings (host-only settings gated in JS) -->
-    <div class="section" id="room-settings">
-      <div class="section-title">Room Settings</div>
-      <label class="setting-row" id="setting-public-row">
-        <input type="checkbox" id="setting-public" />
-        <span>Public room (anyone can join)</span>
-      </label>
-      <label class="setting-row" id="setting-autopause-row">
-        <input type="checkbox" id="setting-autopause" />
-        <span>Auto-pause when someone disconnects</span>
-      </label>
-      <label class="setting-row">
-        <input type="checkbox" id="setting-reaction-sound" checked />
-        <span>Reaction sounds</span>
-      </label>
-      <label class="setting-row">
-        <input type="checkbox" id="setting-floating-reactions" checked />
-        <span>Floating reactions</span>
-      </label>
-    </div>
-
-    <div class="section" id="theme-settings">
-      <div class="section-title">Appearance</div>
-      <div style="display:flex;gap:6px;margin-bottom:8px">
-        <button class="color-btn" data-color="#6366f1" style="background:#6366f1" title="Indigo"></button>
-        <button class="color-btn" data-color="#ec4899" style="background:#ec4899" title="Pink"></button>
-        <button class="color-btn" data-color="#22c55e" style="background:#22c55e" title="Green"></button>
-        <button class="color-btn" data-color="#f59e0b" style="background:#f59e0b" title="Amber"></button>
-        <button class="color-btn" data-color="#06b6d4" style="background:#06b6d4" title="Cyan"></button>
-        <button class="color-btn" data-color="#ef4444" style="background:#ef4444" title="Red"></button>
+      <div class="surface">
+        <div class="list-card">
+          <div class="section-header">
+            <div class="surface-title">Participants</div>
+            <div class="section-count" id="participants-count">0 people</div>
+          </div>
+          <div class="users-list" id="users-list"></div>
+        </div>
       </div>
-      <label class="setting-row">
-        <input type="checkbox" id="setting-compact" />
-        <span>Compact chat</span>
-      </label>
-    </div>
 
-    <div class="section">
-      <button class="btn btn-secondary" id="btn-share">📋 Copy Invite Link</button>
-      <a href="https://watchparty.mertd.me" target="_blank" class="btn btn-secondary" id="browse-rooms-link" style="display:block;text-align:center;text-decoration:none;margin-bottom:6px">🌐 Browse Rooms</a>
-      <button class="btn btn-danger" id="btn-leave">Leave Room</button>
+      <details class="surface fold-card" id="room-settings">
+        <summary>Room Settings</summary>
+        <div class="fold-body">
+          <div class="settings-grid">
+            <label class="setting-row" id="setting-public-row">
+              <span class="setting-copy">
+                <span class="setting-name">Public room</span>
+                <span class="setting-desc">Anyone on the WatchParty site can join without an invite.</span>
+              </span>
+              <input type="checkbox" id="setting-public" />
+            </label>
+            <label class="setting-row" id="setting-autopause-row">
+              <span class="setting-copy">
+                <span class="setting-name">Auto-pause on disconnect</span>
+                <span class="setting-desc">Pause playback if someone drops from the room unexpectedly.</span>
+              </span>
+              <input type="checkbox" id="setting-autopause" />
+            </label>
+            <label class="setting-row">
+              <span class="setting-copy">
+                <span class="setting-name">Reaction sounds</span>
+                <span class="setting-desc">Play small audio cues for reactions in chat.</span>
+              </span>
+              <input type="checkbox" id="setting-reaction-sound" checked />
+            </label>
+            <label class="setting-row">
+              <span class="setting-copy">
+                <span class="setting-name">Floating reactions</span>
+                <span class="setting-desc">Show on-screen emoji bursts while people react.</span>
+              </span>
+              <input type="checkbox" id="setting-floating-reactions" checked />
+            </label>
+          </div>
+        </div>
+      </details>
+
+      <details class="surface fold-card" id="theme-settings">
+        <summary>Appearance</summary>
+        <div class="fold-body">
+          <div class="theme-grid">
+            <div>
+              <div class="field-label">Accent Color</div>
+              <div class="color-row">
+                <button class="color-btn" data-color="#6366f1" style="background:#6366f1" title="Indigo"></button>
+                <button class="color-btn" data-color="#ec4899" style="background:#ec4899" title="Pink"></button>
+                <button class="color-btn" data-color="#22c55e" style="background:#22c55e" title="Green"></button>
+                <button class="color-btn" data-color="#f59e0b" style="background:#f59e0b" title="Amber"></button>
+                <button class="color-btn" data-color="#06b6d4" style="background:#06b6d4" title="Cyan"></button>
+                <button class="color-btn" data-color="#ef4444" style="background:#ef4444" title="Red"></button>
+              </div>
+            </div>
+            <label class="setting-row">
+              <span class="setting-copy">
+                <span class="setting-name">Compact chat</span>
+                <span class="setting-desc">Use denser message spacing inside the Stremio sidebar.</span>
+              </span>
+              <input type="checkbox" id="setting-compact" />
+            </label>
+          </div>
+        </div>
+      </details>
+
+      <div class="surface">
+        <div class="action-stack">
+          <div class="action-grid">
+            <button class="btn btn-primary" id="btn-share">Copy Invite</button>
+            <a href="https://watchparty.mertd.me" target="_blank" class="btn btn-secondary" id="browse-rooms-link">Browse Rooms</a>
+          </div>
+          <button class="btn btn-danger" id="btn-leave">Leave Room</button>
+        </div>
+      </div>
     </div>
   </div>
 

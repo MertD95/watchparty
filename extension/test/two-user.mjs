@@ -136,6 +136,7 @@ async function main() {
     const extB = await getExtensionId(ctxB);
     const popB = await popup(ctxB, extB);
     await popB.fill('#username-input', 'Bob');
+    await popB.click('#lobby-tab-join');
     await popB.fill('#room-id-input', roomId);
     await popB.click('#btn-join');
     await popB.waitForFunction(() => !document.getElementById('view-room')?.classList.contains('hidden'), { timeout: TIMEOUT });

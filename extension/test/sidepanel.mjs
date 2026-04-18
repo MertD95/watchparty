@@ -101,6 +101,7 @@ async function setupTwoUsers() {
   const extId2 = await getExtensionId(ctx2);
   const popup2 = await openPopup(ctx2, extId2);
   await popup2.fill('#username-input', 'Bob');
+  await popup2.click('#lobby-tab-join');
   await popup2.fill('#room-id-input', roomId);
   await popup2.click('#btn-join');
   await popup2.waitForFunction(() => !document.getElementById('view-room').classList.contains('hidden'), { timeout: TIMEOUT });
