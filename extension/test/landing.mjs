@@ -414,6 +414,18 @@ async function main() {
     ok(reconnectingRoomState.usersText === 'Reconnecting...', 'landing labels reconnecting rooms explicitly');
     ok(reconnectingRoomState.reconnectingClass === true, 'landing styles reconnecting rooms differently');
     ok(/keeping this room visible/i.test(reconnectingRoomState.usersTitle), 'landing explains the reconnect grace window');
+    const reconnectingLayoutOk = await page.evaluate(() => {
+      const card = document.querySelector('.room-card');
+      const poster = card?.querySelector('.room-poster-slot');
+      const users = card?.querySelector('.room-users');
+      const actions = card?.querySelector('.room-actions');
+      if (!poster || !users || !actions) return false;
+      const posterRect = poster.getBoundingClientRect();
+      const usersRect = users.getBoundingClientRect();
+      const actionsRect = actions.getBoundingClientRect();
+      return usersRect.left > posterRect.right + 8 && actionsRect.left >= usersRect.right - 1;
+    });
+    ok(reconnectingLayoutOk, 'landing keeps reconnecting status aligned with the room content instead of under the poster');
 
     servers.setRooms([
       {
