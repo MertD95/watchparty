@@ -693,6 +693,82 @@ async function testCreateRoomFromPlayerPagePublishesSafeDirectJoinMetadata() {
   }
 }
 
+async function testRoomCreatedFromDetailPageUpgradesDirectJoinAfterOpeningPlayer() {
+  console.log('\nâ”€â”€ Test: Host room upgrades from detail page to player route â”€â”€');
+  const context = await launchWithExtension();
+  try {
+    const detailUrl = `${STREMIO_URL}/#/detail/movie/tt0468569/tt0468569`;
+    const directPlayerUrl = `${STREMIO_URL}/#/player/eAEBOADH%2F3sieXRJZCI6Ik5LWWVhNjN0UW1JIiwiZGVzY3JpcHRpb24iOiJQcm9qZWN0IEhhaWwgTWFyeSJ9BqUSsQ%3D%3D`;
+    const roomApis = ['http://localhost:8181/rooms', 'https://ws.mertd.me/rooms'];
+    const stremio = await openStremioAt(context, detailUrl);
+
+    const extId = await getExtensionId(context);
+    const popup = await openPopup(context, extId);
+    await popup.fill('#username-input', 'DetailHost');
+    await popup.fill('#room-name-input', `detail-${Date.now().toString().slice(-6)}`);
+    await popup.check('#public-check');
+    await popup.click('#btn-create');
+    await popup.waitForFunction(
+      () => !document.getElementById('view-room').classList.contains('hidden'),
+      { timeout: TIMEOUT }
+    );
+
+    const roomId = await popup.evaluate(() => document.getElementById('room-id-display').textContent);
+    let roomSnapshot = null;
+    for (let i = 0; i < 10; i++) {
+      for (const api of roomApis) {
+        try {
+          const res = await fetch(api);
+          const data = await res.json();
+          roomSnapshot = data.rooms?.find((room) => room.id === roomId) || null;
+          if (roomSnapshot) break;
+        } catch {
+          // Ignore backend fetch failures in favor of the other backend.
+        }
+      }
+      if (roomSnapshot) break;
+      await stremio.waitForTimeout(300);
+    }
+
+    assert(
+      roomSnapshot?.hasDirectJoin === false && roomSnapshot?.directJoinType === null,
+      `Detail-page room starts without direct-join metadata (${JSON.stringify(roomSnapshot)})`
+    );
+
+    await stremio.evaluate((nextHash) => {
+      window.location.hash = nextHash.replace(/^.*#/, '#');
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    }, directPlayerUrl);
+    await injectMockVideo(stremio, 42);
+
+    roomSnapshot = null;
+    for (let i = 0; i < 20; i++) {
+      for (const api of roomApis) {
+        try {
+          const res = await fetch(api);
+          const data = await res.json();
+          roomSnapshot = data.rooms?.find((room) => room.id === roomId) || null;
+          if (roomSnapshot?.hasDirectJoin === true && roomSnapshot?.directJoinType === 'direct-url') break;
+        } catch {
+          // Ignore backend fetch failures in favor of the other backend.
+        }
+      }
+      if (roomSnapshot?.hasDirectJoin === true && roomSnapshot?.directJoinType === 'direct-url') break;
+      await stremio.waitForTimeout(400);
+    }
+
+    assert(
+      roomSnapshot?.hasDirectJoin === true && roomSnapshot?.directJoinType === 'direct-url',
+      `Opening a player route upgrades the room metadata (${JSON.stringify(roomSnapshot)})`
+    );
+
+    await popup.close();
+    await stremio.close();
+  } finally {
+    await context.close();
+  }
+}
+
 async function testPreferDirectJoinOpensPrivatePlayerLocally() {
   console.log('\n── Test: Prefer Direct Join opens the host player after room sync ──');
   const ctx1 = await launchWithExtension();
@@ -939,6 +1015,7 @@ async function main() {
     testPeerContentLink,
     testPeerDirectStreamLink,
     testCreateRoomFromPlayerPagePublishesSafeDirectJoinMetadata,
+    testRoomCreatedFromDetailPageUpgradesDirectJoinAfterOpeningPlayer,
     testPreferDirectJoinOpensPrivatePlayerLocally,
     testBidirectionalChat,
     testTypingIndicatorFlow,

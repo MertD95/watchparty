@@ -117,6 +117,10 @@ function storeAndForward(storageData, message, sendResponse) {
   if (sendResponse) sendResponse({ ok: true });
 }
 
+function removeStorageKeys(keys, callback) {
+  chrome.storage.local.remove(keys, () => callback?.());
+}
+
 const messageHandlers = {
   'get-status': (_m, _s, sendResponse) => {
     chrome.storage.local.get([
@@ -161,7 +165,10 @@ const messageHandlers = {
   'chat-message': (m) => relayToPanel('chat-message', m.payload),
   'bookmark': (m) => relayToPanel('bookmark', m.payload),
   'create-room': (m, _s, sr) => {
-    chrome.storage.local.remove(WPConstants.STORAGE.PENDING_ROOM_JOIN_OPTIONS, () => {
+    removeStorageKeys([
+      WPConstants.STORAGE.PENDING_ROOM_JOIN_OPTIONS,
+      WPConstants.STORAGE.PENDING_LEAVE_ROOM,
+    ], () => {
       storeAndForward({
         [WPConstants.STORAGE.PENDING_ROOM_CREATE]: {
           username: m.username, meta: m.meta, stream: m.stream, public: m.public, roomName: m.roomName,
@@ -180,14 +187,30 @@ const messageHandlers = {
         preferDirectJoin: true,
         requestedAt: Date.now(),
       };
-      storeAndForward(updates, m, sr);
+      removeStorageKeys([WPConstants.STORAGE.PENDING_LEAVE_ROOM], () => {
+        storeAndForward(updates, m, sr);
+      });
       return;
     }
-    chrome.storage.local.remove(WPConstants.STORAGE.PENDING_ROOM_JOIN_OPTIONS, () => {
+    removeStorageKeys([
+      WPConstants.STORAGE.PENDING_ROOM_JOIN_OPTIONS,
+      WPConstants.STORAGE.PENDING_LEAVE_ROOM,
+    ], () => {
       storeAndForward(updates, m, sr);
     });
   },
-  'leave-room': (m, _s, sr) => storeAndForward({ [WPConstants.STORAGE.PENDING_LEAVE_ROOM]: true }, m, sr),
+  'leave-room': (m, _s, sr) => {
+    removeStorageKeys([
+      WPConstants.STORAGE.CURRENT_ROOM,
+      WPConstants.STORAGE.ROOM_STATE,
+      WPConstants.STORAGE.PENDING_ROOM_JOIN,
+      WPConstants.STORAGE.PENDING_ROOM_JOIN_OPTIONS,
+    ], () => {
+      storeAndForward({
+        [WPConstants.STORAGE.PENDING_LEAVE_ROOM]: { requestedAt: Date.now() },
+      }, m, sr);
+    });
+  },
   'toggle-public': (m, _s, sr) => storeAndForward({ [WPConstants.STORAGE.PENDING_ACTION]: { action: m.action, ...m } }, m, sr),
   'update-room-settings': (m, _s, sr) => storeAndForward({ [WPConstants.STORAGE.PENDING_ACTION]: { action: m.action, ...m } }, m, sr),
   'transfer-ownership': (m, _s, sr) => storeAndForward({ [WPConstants.STORAGE.PENDING_ACTION]: { action: m.action, ...m } }, m, sr),

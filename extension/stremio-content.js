@@ -90,6 +90,47 @@
     if (extOk()) chrome.storage.local.remove(WPConstants.STORAGE.PENDING_ROOM_JOIN_OPTIONS).catch(() => { });
   }
 
+  function hasPendingLeaveIntent(value) {
+    return value === true || (!!value && typeof value === 'object');
+  }
+
+  function clearPendingLeaveIntent() {
+    if (!extOk()) return;
+    chrome.storage.local.remove(WPConstants.STORAGE.PENDING_LEAVE_ROOM).catch(() => { });
+  }
+
+  function applyLocalLeaveState(leavingRoomId) {
+    clearPendingJoinOptions();
+    inRoom = false;
+    roomState = null;
+    isHost = false;
+    releaseActiveTab();
+    WPSync.detach();
+    WPCrypto.clear();
+    document.getElementById('wp-catchup-btn')?.remove();
+    refreshOverlay();
+    persistState();
+    if (!extOk()) return;
+    chrome.storage.local.remove([
+      WPConstants.STORAGE.CURRENT_ROOM,
+      WPConstants.STORAGE.ROOM_STATE,
+      WPConstants.STORAGE.PENDING_ROOM_JOIN,
+      WPConstants.STORAGE.PENDING_ROOM_JOIN_OPTIONS,
+    ]).catch(() => { });
+    if (leavingRoomId) {
+      chrome.storage.session.remove(WPConstants.STORAGE.roomKey(leavingRoomId)).catch(() => { });
+    }
+  }
+
+  function finalizeLeaveIntent(options = {}) {
+    const leavingRoomId = options.roomId || roomState?.id;
+    clearPendingLeaveIntent();
+    if (options.sendLeave && inRoom && WPWS.isReady()) {
+      WPWS.send({ type: WPProtocol.C2S.ROOM_LEAVE, payload: {} });
+    }
+    applyLocalLeaveState(leavingRoomId);
+  }
+
   function buildSharedStreamKey(stream) {
     const behaviorHints = stream?.behaviorHints || {};
     const proxyHeaderKeys = behaviorHints.proxyHeaders
@@ -111,6 +152,19 @@
       proxyHeaderKeys,
       Array.isArray(stream?.sources) ? stream.sources.join('|') : '',
     ].join('::');
+  }
+
+  function shouldShareHostContent() {
+    return inRoom && isActiveVideoTab && amIHost();
+  }
+
+  function maybeRepairSharedPlayerRoute() {
+    if (!shouldShareHostContent()) return;
+    const hash = window.location.hash || '';
+    if (!hash.startsWith('#/player/')) return;
+    const currentLaunchUrl = getCurrentLaunchUrl(hash);
+    if (!currentLaunchUrl || roomState?.stream?.url === currentLaunchUrl) return;
+    shareContentLink();
   }
 
   async function fetchCinemetaTitle(type, id) {
@@ -244,19 +298,25 @@
     WPSync.resetCorrection();
     // If we were in a room, rejoin (with replay if we have a sequence number)
     if (roomState?.id) {
-      // Load E2E crypto key before rejoining (prevents garbled messages on new tabs)
-      loadCryptoKeyForRoom(roomState.id).then(() => {
-        // Send username + sessionId so server knows who we are
-        chrome.storage.local.get(WPConstants.STORAGE.USERNAME, (result) => {
-          if (result[WPConstants.STORAGE.USERNAME]) {
-            WPWS.send({ type: WPProtocol.C2S.USER_UPDATE, payload: { username: result[WPConstants.STORAGE.USERNAME], sessionId } });
-          }
-          const seq = WPWS.getLastSeq();
-          if (seq > 0) {
-            WPWS.send({ type: WPProtocol.C2S.ROOM_REJOIN, payload: { id: roomState.id, lastSeq: seq } });
-          } else {
-            WPWS.send({ type: WPProtocol.C2S.ROOM_JOIN, payload: { id: roomState.id } });
-          }
+      chrome.storage.local.get(WPConstants.STORAGE.PENDING_LEAVE_ROOM, (leaveState) => {
+        if (hasPendingLeaveIntent(leaveState[WPConstants.STORAGE.PENDING_LEAVE_ROOM])) {
+          finalizeLeaveIntent({ sendLeave: false, roomId: roomState?.id });
+          return;
+        }
+        // Load E2E crypto key before rejoining (prevents garbled messages on new tabs)
+        loadCryptoKeyForRoom(roomState.id).then(() => {
+          // Send username + sessionId so server knows who we are
+          chrome.storage.local.get(WPConstants.STORAGE.USERNAME, (result) => {
+            if (result[WPConstants.STORAGE.USERNAME]) {
+              WPWS.send({ type: WPProtocol.C2S.USER_UPDATE, payload: { username: result[WPConstants.STORAGE.USERNAME], sessionId } });
+            }
+            const seq = WPWS.getLastSeq();
+            if (seq > 0) {
+              WPWS.send({ type: WPProtocol.C2S.ROOM_REJOIN, payload: { id: roomState.id, lastSeq: seq } });
+            } else {
+              WPWS.send({ type: WPProtocol.C2S.ROOM_JOIN, payload: { id: roomState.id } });
+            }
+          });
         });
       });
     }
@@ -422,10 +482,13 @@
       WPConstants.STORAGE.PENDING_ROOM_CREATE,
       WPConstants.STORAGE.PENDING_ROOM_JOIN,
       WPConstants.STORAGE.PENDING_ROOM_JOIN_OPTIONS,
+      WPConstants.STORAGE.PENDING_LEAVE_ROOM,
       WPConstants.STORAGE.CURRENT_ROOM,
       WPConstants.STORAGE.USERNAME,
     ], async (stored) => {
-      if (stored[WPConstants.STORAGE.PENDING_ROOM_CREATE]) {
+      if (hasPendingLeaveIntent(stored[WPConstants.STORAGE.PENDING_LEAVE_ROOM])) {
+        finalizeLeaveIntent({ sendLeave: inRoom, roomId: stored[WPConstants.STORAGE.CURRENT_ROOM] || roomState?.id });
+      } else if (stored[WPConstants.STORAGE.PENDING_ROOM_CREATE]) {
         clearPendingJoinOptions();
         chrome.storage.local.remove(WPConstants.STORAGE.PENDING_ROOM_CREATE);
         // Leave current room first if still connected (prevents rejoining old room)
@@ -531,9 +594,9 @@
     // Auto-generating keys breaks multi-tab (other tabs can't reliably read the key from session storage).
     WPOverlay.bindRoomCodeCopy(roomState);
     WPOverlay.playNotifSound();
-    if (isHost) {
+    if (shouldShareHostContent()) {
       // Only the active video tab shares content link
-      if (isActiveVideoTab) shareContentLink();
+      shareContentLink();
     } else if (directJoinResult?.handled && !directJoinResult.failed) {
       WPOverlay.openSidebar();
       return;
@@ -561,6 +624,10 @@
     inRoom = true;
     if (roomState?.id && extOk()) chrome.storage.local.set({ [WPConstants.STORAGE.CURRENT_ROOM]: roomState.id });
     WPSync.setHost(isHost);
+    if (video && shouldShareHostContent()) {
+      attachSync();
+      maybeRepairSharedPlayerRoute();
+    }
     refreshOverlay();
     const directJoinResult = !isHost ? maybeHandlePendingDirectJoin(roomState) : null;
     if (directJoinResult?.navigated) return;
@@ -635,9 +702,9 @@
       if (!context.meta && !context.launchUrl) return;
 
       const stream = context.launchUrl
-        ? await WPDirectPlay.normalizeSharedStream({ url: context.launchUrl })
+        ? { url: context.launchUrl }
         : { url: PLACEHOLDER_STREAM_URL };
-      if (!inRoom || !isHost || !isActiveVideoTab) return;
+      if (!shouldShareHostContent()) return;
 
       if (!context.meta) {
         const streamOnlyKey = `stream:::${buildSharedStreamKey(stream)}`;
@@ -671,7 +738,7 @@
           if (inRoom) {
             claimActiveTab(); // This tab now owns sync
             attachSync();
-            if (isHost && isActiveVideoTab) shareContentLink();
+            if (shouldShareHostContent()) shareContentLink();
           }
           refreshOverlay();
         } else if (!v && video) {
@@ -693,7 +760,8 @@
     WPSync.attach(video, {
       isHost,
       onSync(state) {
-        if (roomState && amIHost() && isActiveVideoTab) {
+        if (roomState && shouldShareHostContent()) {
+          maybeRepairSharedPlayerRoute();
           WPWS.send({ type: WPProtocol.C2S.PLAYER_SYNC, payload: { paused: state.paused, buffering: state.buffering, time: state.time, speed: state.speed } });
         }
       },
@@ -847,19 +915,7 @@
     'join-room': () => { if (WPWS.isReady()) processPendingActions(); else WPWS.connect(); },
     'leave-room': () => {
       clearTimeout(presenceTimeout);
-      WPWS.send({ type: WPProtocol.C2S.ROOM_LEAVE, payload: {} });
-      const leavingRoomId = roomState?.id;
-      inRoom = false; roomState = null; isHost = false;
-      releaseActiveTab();
-      if (extOk()) {
-        chrome.storage.local.remove(WPConstants.STORAGE.CURRENT_ROOM);
-        if (leavingRoomId) chrome.storage.session.remove(WPConstants.STORAGE.roomKey(leavingRoomId)).catch(() => { });
-      }
-      WPSync.detach();
-      WPCrypto.clear();
-      document.getElementById('wp-catchup-btn')?.remove();
-      refreshOverlay();
-      persistState();
+      finalizeLeaveIntent({ sendLeave: true });
     },
     'toggle-public': (m) => WPWS.send({ type: WPProtocol.C2S.ROOM_UPDATE_PUBLIC, payload: { public: m.public } }),
     'update-room-settings': (m) => WPWS.send({ type: WPProtocol.C2S.ROOM_UPDATE_SETTINGS, payload: m.settings }),
@@ -915,7 +971,7 @@
 
   const hostShareInterval = setInterval(() => {
     updateKnownContentMeta();
-    if (inRoom && isHost && isActiveVideoTab) {
+    if (shouldShareHostContent()) {
       shareContentLink();
     }
   }, 4000);
@@ -924,7 +980,7 @@
   window.addEventListener('hashchange', () => {
     updateKnownContentMeta();
     // Only the active video tab should update stream meta.
-    if (inRoom && isHost && isActiveVideoTab) {
+    if (shouldShareHostContent()) {
       shareContentLink();
     }
   });
@@ -937,8 +993,7 @@
         else { WPWS.connect(); }
       }
       if (changes[WPConstants.STORAGE.PENDING_LEAVE_ROOM]?.newValue) {
-        chrome.storage.local.remove(WPConstants.STORAGE.PENDING_LEAVE_ROOM);
-        if (inRoom) handleAction({ action: 'leave-room' });
+        finalizeLeaveIntent({ sendLeave: inRoom });
       }
       if (changes[WPConstants.STORAGE.PENDING_ACTION]?.newValue) {
         chrome.storage.local.remove(WPConstants.STORAGE.PENDING_ACTION);
