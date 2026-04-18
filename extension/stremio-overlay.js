@@ -12,6 +12,11 @@ const WPOverlay = (() => {
   let overlay = null;
   let cachedUsername = 'You';
   let cachedUserId = null;
+  let launcherHost = null;
+  let launcherButton = null;
+  let launcherLabel = null;
+  let launcherInRoom = false;
+  let activePanel = 'room';
 
   // --- Emoji picker (emoji-picker-element library) ---
   function loadEmojiPicker() {
@@ -220,69 +225,243 @@ const WPOverlay = (() => {
     document.body.style.overflow = sidebarOpen ? 'hidden' : '';
   }
 
+  function getDefaultPanel() {
+    return launcherInRoom ? 'chat' : 'room';
+  }
+
+  function closeFloatingPanels() {
+    document.getElementById('wp-emoji-picker')?.classList.add('wp-hidden-el');
+    document.getElementById('wp-gif-picker')?.classList.add('wp-hidden-el');
+    closeReactionPopup();
+  }
+
+  function updateLauncherState(options = {}) {
+    if (!launcherHost || !launcherButton || !launcherLabel) return;
+    const open = options.open ?? isSidebarOpen();
+    const inRoom = options.inRoom ?? launcherInRoom;
+    const positionLauncher = launcherHost._wpPosition;
+    if (typeof positionLauncher === 'function') positionLauncher(open);
+    launcherButton.classList.toggle('is-open', open);
+    launcherButton.classList.toggle('is-room', inRoom);
+    launcherLabel.textContent = !inRoom ? 'WatchParty' : (open ? 'Hide' : 'Chat');
+    launcherButton.title = open
+      ? 'Hide WatchParty'
+      : (inRoom ? 'Open WatchParty chat' : 'Open WatchParty');
+    launcherButton.setAttribute('aria-label', launcherButton.title);
+  }
+
+  function updateChatTabBadge() {
+    const badge = document.getElementById('wp-tab-chat-badge');
+    if (!badge) return;
+    if (unreadCount > 0) {
+      badge.textContent = unreadCount > 99 ? '99+' : String(unreadCount);
+      badge.classList.remove('wp-hidden-el');
+    } else {
+      badge.classList.add('wp-hidden-el');
+    }
+  }
+
+  function updateChatEmptyState(roomStateForHint = null) {
+    const empty = document.getElementById('wp-chat-empty');
+    const detail = document.getElementById('wp-chat-empty-text');
+    const messages = document.getElementById('wp-chat-messages');
+    if (!empty || !detail || !messages) return;
+    if (!launcherInRoom || messages.childElementCount > 0) {
+      empty.classList.add('wp-hidden-el');
+      return;
+    }
+    detail.textContent = roomStateForHint?.public === false
+      ? 'Private-room messages stay encrypted. Say hi, share a GIF, or switch to Room for playback controls.'
+      : 'Say hi, share a GIF, or switch to Room for playback controls.';
+    empty.classList.remove('wp-hidden-el');
+  }
+
+  function setActivePanel(panel, options = {}) {
+    const allowedPanel = (!launcherInRoom && panel !== 'room') ? 'room' : (panel || getDefaultPanel());
+    activePanel = allowedPanel;
+
+    const chatPanel = document.getElementById('wp-panel-chat');
+    const peoplePanel = document.getElementById('wp-panel-people');
+    const roomPanel = document.getElementById('wp-panel-room');
+    const chatTab = document.querySelector('[data-panel="chat"]');
+    const peopleTab = document.querySelector('[data-panel="people"]');
+    const roomTab = document.querySelector('[data-panel="room"]');
+    const nextInRoom = options.inRoom ?? launcherInRoom;
+
+    if (chatPanel) chatPanel.classList.toggle('wp-hidden-el', activePanel !== 'chat');
+    if (peoplePanel) peoplePanel.classList.toggle('wp-hidden-el', activePanel !== 'people');
+    if (roomPanel) roomPanel.classList.toggle('wp-hidden-el', activePanel !== 'room');
+
+    for (const [btn, panelName] of [[chatTab, 'chat'], [peopleTab, 'people'], [roomTab, 'room']]) {
+      if (!btn) continue;
+      const enabled = nextInRoom || panelName === 'room';
+      btn.disabled = !enabled;
+      btn.classList.toggle('wp-tab-active', panelName === activePanel);
+      btn.classList.toggle('wp-tab-disabled', !enabled);
+      btn.setAttribute('aria-selected', panelName === activePanel ? 'true' : 'false');
+      btn.setAttribute('tabindex', panelName === activePanel ? '0' : '-1');
+    }
+
+    if (activePanel !== 'chat') closeFloatingPanels();
+    if (activePanel === 'chat' && options.clearUnread !== false) clearUnread();
+    updateLauncherState({ open: isSidebarOpen(), inRoom: nextInRoom });
+  }
+
+  function closeSidebar() {
+    const sidebar = document.getElementById('wp-sidebar');
+    if (!sidebar) return;
+    sidebar.classList.add('wp-sidebar-hidden');
+    updateContentMargin(false);
+    closeFloatingPanels();
+    updateLauncherState({ open: false });
+  }
+
+  function openSidebar(panel = activePanel || getDefaultPanel()) {
+    const sidebar = document.getElementById('wp-sidebar');
+    if (!sidebar) return;
+    sidebar.classList.remove('wp-sidebar-hidden');
+    updateContentMargin(true);
+    setActivePanel(panel, { clearUnread: panel === 'chat' });
+    updateLauncherState({ open: true });
+  }
+
 
   // --- Toggle button (Shadow DOM, fixed position, independent of Stremio's DOM) ---
   function initToggleButton() {
     const toggleHost = document.createElement('div');
     toggleHost.id = 'wp-toggle-host';
-    toggleHost.style.cssText = 'position:fixed;top:18px;right:128px;z-index:2147483647;width:42px;height:42px;visibility:hidden;';
-    let positioned = false;
-    function positionToggle() {
+    toggleHost.style.cssText = 'position:fixed;top:18px;right:128px;z-index:2147483647;visibility:hidden;';
+    let placementFrame = null;
+
+    function getLauncherRow() {
       const container = document.querySelector('[class*="buttons-container"]');
-      if (container) {
-        const r = container.getBoundingClientRect();
-        if (r.width > 0) {
-          toggleHost.style.top = Math.round(r.top + (r.height - 42) / 2) + 'px';
-          toggleHost.style.right = Math.round(window.innerWidth - r.left + 8) + 'px';
-          if (!positioned) { toggleHost.style.visibility = 'visible'; positioned = true; }
-          return true;
-        }
-      }
-      return false;
+      if (!container || !(container instanceof HTMLElement) || !container.isConnected) return null;
+      const rect = container.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return null;
+      if (window.innerWidth <= 640) return null;
+      return container;
     }
-    let posAttempts = 0;
-    const posInterval = setInterval(() => {
-      if (positionToggle() || ++posAttempts >= 30) {
-        clearInterval(posInterval);
-        if (!positioned) toggleHost.style.visibility = 'visible';
+
+    function placeLauncher(forceOpen = isSidebarOpen()) {
+      const row = getLauncherRow();
+      if (row) {
+        if (toggleHost.parentElement !== row) row.prepend(toggleHost);
+        toggleHost.dataset.wpPlacement = 'inline';
+        toggleHost.style.position = 'relative';
+        toggleHost.style.top = 'auto';
+        toggleHost.style.right = 'auto';
+        toggleHost.style.left = 'auto';
+        toggleHost.style.bottom = 'auto';
+        toggleHost.style.display = 'block';
+        toggleHost.style.flex = '0 0 auto';
+        toggleHost.style.marginRight = '8px';
+        toggleHost.style.marginLeft = '0';
+        toggleHost.style.alignSelf = 'center';
+        toggleHost.style.zIndex = '1';
+        toggleHost.style.visibility = 'visible';
+        return true;
       }
-    }, 100);
-    window.addEventListener('resize', () => positionToggle());
+
+      if (toggleHost.parentElement !== document.body) document.body.appendChild(toggleHost);
+      toggleHost.dataset.wpPlacement = 'floating';
+      toggleHost.style.position = 'fixed';
+      toggleHost.style.top = forceOpen ? '64px' : '18px';
+      toggleHost.style.right = `${forceOpen
+        ? (window.innerWidth <= 640 ? 16 : SIDEBAR_WIDTH + 16)
+        : 128}px`;
+      toggleHost.style.left = 'auto';
+      toggleHost.style.bottom = 'auto';
+      toggleHost.style.display = '';
+      toggleHost.style.flex = '';
+      toggleHost.style.marginRight = '0';
+      toggleHost.style.marginLeft = '0';
+      toggleHost.style.alignSelf = '';
+      toggleHost.style.zIndex = '2147483647';
+      toggleHost.style.visibility = 'visible';
+      return true;
+    }
+
+    function schedulePlacement(forceOpen = isSidebarOpen()) {
+      if (placementFrame) cancelAnimationFrame(placementFrame);
+      placementFrame = requestAnimationFrame(() => {
+        placementFrame = null;
+        placeLauncher(forceOpen);
+      });
+    }
+
+    let placementAttempts = 0;
+    const placementInterval = setInterval(() => {
+      schedulePlacement();
+      if (++placementAttempts >= 30 || getLauncherRow()) clearInterval(placementInterval);
+    }, 150);
+    window.addEventListener('resize', () => schedulePlacement());
     const shadow = toggleHost.attachShadow({ mode: 'closed' });
     shadow.innerHTML = `
       <style>
         :host { display:block; }
         button {
-          width:42px; height:42px; border-radius:50%; border:none;
+          min-width:126px; height:42px; padding:0 14px 0 12px; border-radius:999px; border:none;
           background:rgba(99,102,241,0.85); color:#fff;
-          display:flex; align-items:center; justify-content:center;
-          cursor:pointer; transition:background .15s, transform .15s;
-          box-shadow:0 2px 8px rgba(0,0,0,0.3);
+          display:flex; align-items:center; justify-content:flex-start; gap:10px;
+          cursor:pointer; transition:background .15s, transform .15s, box-shadow .15s;
+          box-shadow:0 10px 28px rgba(0,0,0,0.35);
+          font:600 13px/1 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
         }
-        button:hover { background:rgba(99,102,241,1); transform:scale(1.05); }
-        svg { width:22px; height:22px; }
+        button:hover { background:rgba(99,102,241,1); transform:translateY(-1px); }
+        button.is-open {
+          background:rgba(15,23,42,0.94);
+          box-shadow:0 12px 30px rgba(0,0,0,0.4);
+        }
+        button.is-open:hover { background:rgba(30,41,59,0.98); }
+        button.is-room .label { letter-spacing:0.01em; }
+        .icon {
+          width:20px; height:20px; flex-shrink:0;
+          display:flex; align-items:center; justify-content:center;
+        }
+        .label {
+          white-space:nowrap;
+          overflow:hidden;
+          text-overflow:ellipsis;
+        }
+        svg { width:20px; height:20px; }
       </style>
-      <button title="WatchParty" aria-label="Toggle WatchParty sidebar">
-        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
+      <button title="Open WatchParty" aria-label="Open WatchParty">
+        <span class="icon">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
+        </span>
+        <span class="label">WatchParty</span>
       </button>
     `;
-    toggleHost._wpShadowBtn = shadow.querySelector('button');
+    launcherHost = toggleHost;
+    launcherButton = shadow.querySelector('button');
+    launcherLabel = shadow.querySelector('.label');
+    toggleHost._wpShadowBtn = launcherButton;
+    toggleHost._wpPosition = schedulePlacement;
     const unreadBadge = document.createElement('span');
     unreadBadge.id = 'wp-unread-badge';
     unreadBadge.className = 'wp-hidden-el';
     toggleHost.appendChild(unreadBadge);
 
     function toggleSidebar() {
-      const sidebar = document.getElementById('wp-sidebar');
-      sidebar.classList.toggle('wp-sidebar-hidden');
-      const nowOpen = !sidebar.classList.contains('wp-sidebar-hidden');
-      updateContentMargin(nowOpen);
-      toggleHost.style.display = nowOpen ? 'none' : '';
-      if (nowOpen) clearUnread();
+      if (isSidebarOpen()) closeSidebar();
+      else openSidebar();
     }
     shadow.querySelector('button').addEventListener('click', (e) => { e.stopPropagation(); toggleSidebar(); });
     toggleHost.addEventListener('click', toggleSidebar);
     document.body.appendChild(toggleHost);
+
+    let observerQueued = false;
+    const placementObserver = new MutationObserver(() => {
+      if (observerQueued) return;
+      observerQueued = true;
+      requestAnimationFrame(() => {
+        observerQueued = false;
+        schedulePlacement();
+      });
+    });
+    placementObserver.observe(document.body, { childList: true, subtree: true });
+
+    updateLauncherState({ open: false, inRoom: false });
   }
 
   // --- Emoji picker setup ---
@@ -346,35 +525,56 @@ const WPOverlay = (() => {
     overlay.innerHTML = `
       <div id="wp-sidebar" class="wp-sidebar-hidden">
         <div id="wp-header">
-          <span id="wp-title">WatchParty</span>
-          <span id="wp-room-code" title="Click to copy"></span>
-          <button id="wp-minimize-btn" title="Minimize" aria-label="Minimize sidebar">&#x2015;</button>
+          <div id="wp-header-main">
+            <span id="wp-title">WatchParty</span>
+            <span id="wp-room-code" title="Click to copy"></span>
+          </div>
           <button id="wp-close-sidebar" title="Close" aria-label="Close sidebar">&times;</button>
         </div>
-        <div id="wp-minimized-bar" class="wp-hidden-el">
-          <span id="wp-min-info"></span>
-          <button id="wp-expand-btn">Expand</button>
+        <div id="wp-tabbar" role="tablist" aria-label="WatchParty panels">
+          <button class="wp-tab-btn wp-tab-active" data-panel="chat" role="tab" aria-selected="true">
+            <span>Chat</span>
+            <span id="wp-tab-chat-badge" class="wp-tab-badge wp-hidden-el"></span>
+          </button>
+          <button class="wp-tab-btn" data-panel="people" role="tab" aria-selected="false">
+            <span>People</span>
+          </button>
+          <button class="wp-tab-btn" data-panel="room" role="tab" aria-selected="false">
+            <span>Room</span>
+          </button>
         </div>
         <div id="wp-body">
-          <div id="wp-status"></div>
-          <div id="wp-sync-indicator" class="wp-hidden-el"></div>
-          <div id="wp-content-link" class="wp-hidden-el"></div>
-          <div id="wp-users"></div>
-          <div id="wp-typing-indicator" class="wp-hidden-el"></div>
-          <div id="wp-chat-container" class="wp-hidden-el">
-            <div id="wp-chat-messages"></div>
-            <div id="wp-chat-input-row">
-              <button id="wp-emoji-btn" title="Insert emoji" aria-label="Insert emoji">&#x1F600;</button>
-              <button id="wp-gif-btn" title="Send GIF" aria-label="Send GIF">GIF</button>
-              <input id="wp-chat-input" type="text" placeholder="Type a message..." maxlength="300" autocomplete="off" aria-label="Chat message" />
-              <button id="wp-chat-send">Send</button>
+          <section id="wp-panel-chat" class="wp-panel" role="tabpanel">
+            <div id="wp-typing-indicator" class="wp-hidden-el"></div>
+            <div id="wp-chat-container" class="wp-hidden-el">
+              <div id="wp-chat-empty">
+                <div class="wp-chat-empty-card">
+                  <div class="wp-chat-empty-title">Chat is live</div>
+                  <div id="wp-chat-empty-text" class="wp-chat-empty-text"></div>
+                </div>
+              </div>
+              <div id="wp-chat-messages"></div>
+              <div id="wp-chat-input-row">
+                <button id="wp-emoji-btn" title="Insert emoji" aria-label="Insert emoji">&#x1F600;</button>
+                <button id="wp-gif-btn" title="Send GIF" aria-label="Send GIF">GIF</button>
+                <input id="wp-chat-input" type="text" placeholder="Type a message..." maxlength="300" autocomplete="off" aria-label="Chat message" />
+                <button id="wp-chat-send">Send</button>
+              </div>
+              <div id="wp-gif-picker" class="wp-hidden-el">
+                <input id="wp-gif-search" type="text" placeholder="Search GIFs..." autocomplete="off" />
+                <div id="wp-gif-results"></div>
+              </div>
+              <div id="wp-emoji-picker" class="wp-hidden-el"></div>
             </div>
-            <div id="wp-gif-picker" class="wp-hidden-el">
-              <input id="wp-gif-search" type="text" placeholder="Search GIFs..." autocomplete="off" />
-              <div id="wp-gif-results"></div>
-            </div>
-            <div id="wp-emoji-picker" class="wp-hidden-el"></div>
-          </div>
+          </section>
+          <section id="wp-panel-people" class="wp-panel wp-hidden-el" role="tabpanel">
+            <div id="wp-users"></div>
+          </section>
+          <section id="wp-panel-room" class="wp-panel wp-panel-room wp-hidden-el" role="tabpanel">
+            <div id="wp-status"></div>
+            <div id="wp-sync-indicator" class="wp-hidden-el"></div>
+            <div id="wp-content-link" class="wp-hidden-el"></div>
+          </section>
         </div>
       </div>
       <div id="wp-reaction-container"></div>
@@ -452,27 +652,10 @@ const WPOverlay = (() => {
   function bindEvents() {
     const $ = (id) => document.getElementById(id);
 
-    $('wp-close-sidebar').addEventListener('click', () => {
-      $('wp-sidebar').classList.add('wp-sidebar-hidden');
-      updateContentMargin(false);
-      // Re-show toggle button
-      $('wp-toggle-host').style.display = '';
-      // Close any open pickers
-      $('wp-emoji-picker')?.classList.add('wp-hidden-el');
-      $('wp-gif-picker')?.classList.add('wp-hidden-el');
+    $('wp-close-sidebar').addEventListener('click', closeSidebar);
+    document.querySelectorAll('.wp-tab-btn').forEach((btn) => {
+      btn.addEventListener('click', () => setActivePanel(btn.dataset.panel));
     });
-    $('wp-minimize-btn').addEventListener('click', () => {
-      $('wp-body').classList.add('wp-hidden-el');
-      $('wp-minimized-bar').classList.remove('wp-hidden-el');
-      $('wp-minimize-btn').classList.add('wp-hidden-el');
-    });
-    function expandSidebar() {
-      $('wp-body').classList.remove('wp-hidden-el');
-      $('wp-minimized-bar').classList.add('wp-hidden-el');
-      $('wp-minimize-btn').classList.remove('wp-hidden-el');
-    }
-    $('wp-expand-btn').addEventListener('click', expandSidebar);
-    $('wp-minimized-bar').addEventListener('click', expandSidebar);
     $('wp-chat-send').addEventListener('click', () => sendChat());
     $('wp-chat-input').addEventListener('keydown', (e) => {
       e.stopPropagation();
@@ -603,14 +786,12 @@ const WPOverlay = (() => {
       const me = roomState.users.find(u => u.id === userId || (cachedSessionId && u.sessionId === cachedSessionId));
       if (me) cachedUsername = me.name;
     }
+    launcherInRoom = !!(inRoom && roomState);
     if (!overlay) return;
 
     // Re-apply content margin if sidebar is open (Stremio SPA navigation can reset body width)
     if (isSidebarOpen()) {
       updateContentMargin(true);
-      // Ensure toggle button is hidden when sidebar is open (defensive — covers all code paths)
-      const toggle = document.getElementById('wp-toggle-host');
-      if (toggle) toggle.style.display = 'none';
     }
 
     const status = document.getElementById('wp-status');
@@ -618,18 +799,21 @@ const WPOverlay = (() => {
     const usersDiv = document.getElementById('wp-users');
     const contentLink = document.getElementById('wp-content-link');
     const syncInd = document.getElementById('wp-sync-indicator');
-    const minInfo = document.getElementById('wp-min-info');
 
     const chatContainer = document.getElementById('wp-chat-container');
     if (!inRoom || !roomState) {
       resetRenderCache();
+      launcherInRoom = false;
       if (status) status.innerHTML = '<div class="wp-empty-state">Not in a room.<br/>Use the extension popup to create or join one.</div>';
       if (roomCode) roomCode.textContent = '';
       if (usersDiv) usersDiv.innerHTML = '';
       if (contentLink) contentLink.classList.add('wp-hidden-el');
       if (syncInd) syncInd.classList.add('wp-hidden-el');
       if (chatContainer) chatContainer.classList.add('wp-hidden-el');
+      document.getElementById('wp-chat-empty')?.classList.add('wp-hidden-el');
       removeCatchUpButton();
+      setActivePanel('room', { inRoom: false, clearUnread: false });
+      updateLauncherState({ inRoom: false });
       return;
     }
 
@@ -642,16 +826,13 @@ const WPOverlay = (() => {
       renderCache.lastRoomCode = nextRoomCode;
     }
 
-    const nextMinInfo = `${roomState.users?.length || 0} watching`;
-    if (minInfo && renderCache.lastMinInfo !== nextMinInfo) {
-      minInfo.textContent = nextMinInfo;
-      renderCache.lastMinInfo = nextMinInfo;
-    }
-
     if (status) renderStatusButtons(status, isHost, hasVideo, wsConnected);
     if (contentLink) renderContentLink(contentLink, isHost, roomState);
     if (usersDiv && roomState.users) renderUsersList(usersDiv, roomState, userId, isHost);
     if (isHost || !hasVideo) removeCatchUpButton();
+    updateChatEmptyState(roomState);
+    if (!launcherInRoom || activePanel === 'room') setActivePanel(getDefaultPanel(), { inRoom: true, clearUnread: activePanel === 'chat' });
+    updateLauncherState({ inRoom: true });
   }
 
   function renderStatusButtons(status, isHost, hasVideo, wsConnected) {
@@ -828,6 +1009,7 @@ const WPOverlay = (() => {
     // Prune old DOM nodes to prevent memory buildup
     pruneChildren(container);
     container.scrollTop = container.scrollHeight;
+    updateChatEmptyState(roomState);
     // Notification sound if sidebar is hidden
     if (!isSidebarOpen() && !isMsgFromMe) {
       playNotifSound();
@@ -891,14 +1073,6 @@ const WPOverlay = (() => {
     }
   }
 
-  function openSidebar() {
-    document.getElementById('wp-sidebar')?.classList.remove('wp-sidebar-hidden');
-    const toggle = document.getElementById('wp-toggle-host');
-    if (toggle) toggle.style.display = 'none';
-    updateContentMargin(true);
-    clearUnread();
-  }
-
   // --- Toast, Ready Check, Countdown: delegated to WPModals module ---
   function showToast(message, durationMs) { WPModals.showToast(message, durationMs); }
   function showReadyCheck(action, confirmed, total, myUserId) { WPModals.showReadyCheck(action, confirmed, total, myUserId); }
@@ -932,6 +1106,7 @@ const WPOverlay = (() => {
     container.appendChild(div);
     pruneChildren(container);
     container.scrollTop = container.scrollHeight;
+    updateChatEmptyState(roomState);
   }
 
   function bindRoomCodeCopy(roomState) {
@@ -985,7 +1160,7 @@ const WPOverlay = (() => {
   let unreadCount = 0;
 
   function incrementUnread() {
-    if (isSidebarOpen()) return; // sidebar open, don't count
+    if (isSidebarOpen() && activePanel === 'chat') return;
     unreadCount++;
     updateUnreadBadge();
   }
@@ -1004,6 +1179,8 @@ const WPOverlay = (() => {
     } else {
       badge.classList.add('wp-hidden-el');
     }
+    updateChatTabBadge();
+    updateLauncherState();
   }
 
   // --- Keyboard shortcuts ---
@@ -1016,10 +1193,7 @@ const WPOverlay = (() => {
       }
       // Escape: close sidebar
       if (e.key === 'Escape') {
-        if (isSidebarOpen()) {
-          document.getElementById('wp-sidebar')?.classList.add('wp-sidebar-hidden');
-          updateContentMargin(false);
-        }
+        if (isSidebarOpen()) closeSidebar();
       }
     });
   }

@@ -226,12 +226,12 @@ async function main() {
     ok(await page.evaluate(() => !document.getElementById('wp-sidebar')?.classList.contains('wp-sidebar-hidden')), 'Toggle opens');
     ok(await page.evaluate(() => Math.round(document.body.getBoundingClientRect().width)) < 1280, 'Body pushed');
 
-    await page.evaluate(() => document.getElementById('wp-minimize-btn')?.click());
+    await page.evaluate(() => document.querySelector('[data-panel="people"]')?.click());
     await page.waitForTimeout(300);
-    ok(await page.evaluate(() => !document.getElementById('wp-minimized-bar')?.classList.contains('wp-hidden-el')), 'Minimize');
-    await page.evaluate(() => document.getElementById('wp-minimized-bar')?.click());
+    ok(await page.evaluate(() => document.querySelector('[data-panel="people"]')?.getAttribute('aria-selected') === 'true'), 'People tab activates');
+    await page.evaluate(() => document.querySelector('[data-panel="room"]')?.click());
     await page.waitForTimeout(300);
-    ok(await page.evaluate(() => !document.getElementById('wp-body')?.classList.contains('wp-hidden-el')), 'Bar expands');
+    ok(await page.evaluate(() => document.querySelector('[data-panel="room"]')?.getAttribute('aria-selected') === 'true'), 'Room tab activates');
 
     await page.keyboard.press('Alt+w');
     await page.waitForTimeout(300);

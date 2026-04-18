@@ -191,7 +191,19 @@ async function testCreateRoomFlow() {
       await stremio.waitForTimeout(1000);
       const sidebarText = await stremio.evaluate(() => document.getElementById('wp-sidebar')?.innerText?.substring(0, 300));
       assert(sidebarText && !sidebarText.includes('Not in a room'), 'Stremio sidebar shows room (not lobby)');
-      assert(sidebarText && sidebarText.includes('TestHost'), 'Sidebar shows TestHost');
+
+      const panelsReady = await stremio.evaluate(() =>
+        !!document.querySelector('[data-panel="chat"]')
+        && !!document.querySelector('[data-panel="people"]')
+        && !!document.querySelector('[data-panel="room"]')
+      );
+      assert(panelsReady, 'Sidebar exposes Chat, People, and Room tabs');
+
+      await stremio.evaluate(() => document.querySelector('[data-panel="people"]')?.click());
+      await stremio.waitForTimeout(300);
+      const peopleText = await stremio.evaluate(() => document.getElementById('wp-users')?.innerText || '');
+      assert(peopleText.includes('TestHost'), 'People tab shows TestHost');
+      await stremio.evaluate(() => document.querySelector('[data-panel="chat"]')?.click());
 
       // Test leave room
       await popup.bringToFront();
@@ -283,8 +295,11 @@ async function testJoinRoomFlow() {
       // Alice's sidebar should show Bob joined
       await stremio1.bringToFront();
       await stremio1.waitForTimeout(1500);
-      const aliceSidebar = await stremio1.evaluate(() => document.getElementById('wp-sidebar')?.innerText);
-      assert(aliceSidebar?.includes('Bob'), 'Alice sidebar shows Bob joined');
+      await stremio1.evaluate(() => document.querySelector('[data-panel="people"]')?.click());
+      await stremio1.waitForTimeout(300);
+      const alicePeople = await stremio1.evaluate(() => document.getElementById('wp-users')?.innerText || '');
+      assert(alicePeople.includes('Bob'), 'Alice people tab shows Bob joined');
+      await stremio1.evaluate(() => document.querySelector('[data-panel="chat"]')?.click());
     }
 
     await popup1.close();
@@ -377,8 +392,33 @@ async function testChatFlow() {
     const aliceChat = await stremio1.evaluate(() => document.getElementById('wp-chat-messages')?.innerText || '');
     assert(aliceChat.includes('Hello from Bob!'), `Alice sees Bob's message in chat`);
 
-    // === Unread badge test ===
-    // Close Alice's sidebar, have Bob send a message, check badge
+    // === Unread badge test while Chat tab is not active ===
+    await stremio1.evaluate(() => document.querySelector('[data-panel="people"]')?.click());
+    await stremio1.waitForTimeout(300);
+    await stremio2.bringToFront();
+    await stremio2.waitForTimeout(3500); // cooldown
+    await stremio2.focus('#wp-chat-input');
+    await stremio2.keyboard.type('People tab badge');
+    await stremio2.keyboard.press('Enter');
+    await stremio2.waitForTimeout(1500);
+
+    await stremio1.bringToFront();
+    await stremio1.waitForTimeout(600);
+    const chatTabBadge = await stremio1.evaluate(() => {
+      const el = document.getElementById('wp-tab-chat-badge');
+      return el ? { text: el.textContent, hidden: el.classList.contains('wp-hidden-el') } : null;
+    });
+    assert(chatTabBadge && !chatTabBadge.hidden && parseInt(chatTabBadge.text) > 0, `Chat tab badge shows: "${chatTabBadge?.text}"`);
+
+    await stremio1.evaluate(() => document.querySelector('[data-panel="chat"]')?.click());
+    await stremio1.waitForTimeout(400);
+    const chatTabBadgeCleared = await stremio1.evaluate(() => {
+      const el = document.getElementById('wp-tab-chat-badge');
+      return el?.classList.contains('wp-hidden-el');
+    });
+    assert(chatTabBadgeCleared, 'Chat tab badge clears after returning to chat');
+
+    // === Unread badge test while the whole sidebar is closed ===
     await stremio1.bringToFront();
     await stremio1.evaluate(() => document.getElementById('wp-close-sidebar')?.click());
     await stremio1.waitForTimeout(500);
@@ -914,6 +954,9 @@ async function testBookmarkFlow() {
     await injectMockVideo(env.stremio1, 2);
     await injectMockVideo(env.stremio2, 0.1);
 
+    await env.stremio1.evaluate(() => document.querySelector('[data-panel="room"]')?.click());
+    await env.stremio1.waitForTimeout(300);
+
     const hostHasBookmarkButton = await env.stremio1.waitForFunction(
       () => !!document.getElementById('wp-bookmark-btn'),
       { timeout: TIMEOUT }
@@ -930,6 +973,8 @@ async function testBookmarkFlow() {
       assert(peerSawBookmark, 'Peer receives the bookmark entry');
 
       if (peerSawBookmark) {
+        await env.stremio2.evaluate(() => document.querySelector('[data-panel="chat"]')?.click());
+        await env.stremio2.waitForTimeout(300);
         await env.stremio2.click('.wp-bookmark-time');
         await env.stremio2.waitForTimeout(300);
         const peerVideoTime = await env.stremio2.evaluate(() => document.querySelector('video')?.currentTime || 0);
