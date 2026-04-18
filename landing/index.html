@@ -264,32 +264,34 @@
       margin-top: 2px;
     }
 
-    .hero-stat-grid {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 10px;
-    }
-
-    .hero-stat {
-      border-radius: 16px;
-      padding: 14px 12px;
+    .hero-summary {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      border-radius: 18px;
+      padding: 16px 18px;
       background: rgba(148, 163, 184, 0.08);
       border: 1px solid rgba(148, 163, 184, 0.12);
     }
 
-    .hero-stat-value {
-      font-size: 24px;
-      font-weight: 800;
-      color: #fff;
-      line-height: 1;
-      margin-bottom: 5px;
-    }
-
-    .hero-stat-label {
+    .hero-summary-kicker {
       font-size: 11px;
       letter-spacing: 0.08em;
       text-transform: uppercase;
       color: var(--soft);
+      font-weight: 700;
+    }
+
+    .hero-summary-text {
+      font-size: 18px;
+      line-height: 1.35;
+      color: #f8fafc;
+      font-weight: 700;
+    }
+
+    .hero-summary-note {
+      font-size: 12px;
+      color: var(--muted);
     }
 
     .section-shell {
@@ -723,10 +725,6 @@
         width: 100%;
       }
 
-      .hero-stat-grid {
-        grid-template-columns: 1fr;
-      }
-
       .room-card {
         grid-template-columns: 56px minmax(0, 1fr);
         grid-template-areas:
@@ -796,19 +794,10 @@
             <li>Private rooms stay visible on the site, but still require the invite key to join.</li>
             <li>Direct Join can open the host stream when the shared Stremio route is portable.</li>
           </ul>
-          <div class="hero-stat-grid">
-            <div class="hero-stat">
-              <div class="hero-stat-value" id="hero-active-count">0</div>
-              <div class="hero-stat-label">Active Rooms</div>
-            </div>
-            <div class="hero-stat">
-              <div class="hero-stat-value" id="hero-direct-count">0</div>
-              <div class="hero-stat-label">Direct Ready</div>
-            </div>
-            <div class="hero-stat">
-              <div class="hero-stat-value" id="hero-private-count">0</div>
-              <div class="hero-stat-label">Invite Rooms</div>
-            </div>
+          <div class="hero-summary">
+            <div class="hero-summary-kicker">Live right now</div>
+            <div class="hero-summary-text" id="hero-live-summary">0 people in 0 rooms watching 0 titles.</div>
+            <div class="hero-summary-note">Updates live from the room list below.</div>
           </div>
         </div>
       </div>
@@ -932,16 +921,23 @@
       return 'Direct stream unavailable until the host opens a Stremio player.';
     }
 
+    function pluralize(value, singular, plural = `${singular}s`) {
+      return `${value} ${value === 1 ? singular : plural}`;
+    }
+
     function updateLandingStats(rooms) {
-      const activeCount = Array.isArray(rooms) ? rooms.length : 0;
-      const directCount = Array.isArray(rooms) ? rooms.filter((room) => room?.hasDirectJoin === true).length : 0;
-      const privateCount = Array.isArray(rooms) ? rooms.filter((room) => room?.public === false).length : 0;
-      const activeEl = document.getElementById('hero-active-count');
-      const directEl = document.getElementById('hero-direct-count');
-      const privateEl = document.getElementById('hero-private-count');
-      if (activeEl) activeEl.textContent = String(activeCount);
-      if (directEl) directEl.textContent = String(directCount);
-      if (privateEl) privateEl.textContent = String(privateCount);
+      const roomList = Array.isArray(rooms) ? rooms : [];
+      const roomCount = roomList.length;
+      const userCount = roomList.reduce((sum, room) => sum + (Number(room?.users) || 0), 0);
+      const titleKeys = new Set(
+        roomList
+          .map((room) => room?.meta?.id || room?.meta?.name || '')
+          .filter(Boolean)
+      );
+      const titleCount = titleKeys.size;
+      const summaryEl = document.getElementById('hero-live-summary');
+      if (!summaryEl) return;
+      summaryEl.textContent = `${pluralize(userCount, 'person', 'people')} in ${pluralize(roomCount, 'room')} watching ${pluralize(titleCount, 'title')}.`;
     }
 
     function showDirectJoinNotice(message) {
