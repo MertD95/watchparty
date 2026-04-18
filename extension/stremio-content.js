@@ -29,6 +29,7 @@
   let lastKnownContentMeta = null;
   let lastSharedContentKey = null;
   let pendingJoinOptions = null;
+  let shareContentLinkInFlight = false;
 
   const PLACEHOLDER_ROOM_NAME = 'WatchParty Session';
   const PLACEHOLDER_STREAM_URL = 'https://watchparty.mertd.me/sync';
@@ -571,41 +572,47 @@
 
   // --- Content link sharing ---
   async function shareContentLink() {
-    const context = getCurrentContentContext();
-    if (!context.meta && !context.launchUrl) return;
+    if (shareContentLinkInFlight) return;
+    shareContentLinkInFlight = true;
+    try {
+      const context = getCurrentContentContext();
+      if (!context.meta && !context.launchUrl) return;
 
-    const stream = context.launchUrl
-      ? await WPDirectPlay.normalizeSharedStream({ url: context.launchUrl })
-      : { url: PLACEHOLDER_STREAM_URL };
-    if (!inRoom || !isHost || !isActiveVideoTab) return;
+      const stream = context.launchUrl
+        ? await WPDirectPlay.normalizeSharedStream({ url: context.launchUrl })
+        : { url: PLACEHOLDER_STREAM_URL };
+      if (!inRoom || !isHost || !isActiveVideoTab) return;
 
-    if (!context.meta) {
-      const streamOnlyKey = `stream:::${buildSharedStreamKey(stream)}`;
-      if (lastSharedContentKey === streamOnlyKey) return;
-      lastSharedContentKey = streamOnlyKey;
-      WPWS.send({ type: WPProtocol.C2S.ROOM_UPDATE_STREAM, payload: { stream } });
-      return;
-    }
+      if (!context.meta) {
+        const streamOnlyKey = `stream:::${buildSharedStreamKey(stream)}`;
+        if (lastSharedContentKey === streamOnlyKey) return;
+        lastSharedContentKey = streamOnlyKey;
+        WPWS.send({ type: WPProtocol.C2S.ROOM_UPDATE_STREAM, payload: { stream } });
+        return;
+      }
 
-    const meta = { ...context.meta };
-    const shareKey = `${meta.type}:${meta.id}:${meta.name || ''}:${buildSharedStreamKey(stream)}`;
-    if (lastSharedContentKey === shareKey) return;
+      const meta = { ...context.meta };
+      const shareKey = `${meta.type}:${meta.id}:${meta.name || ''}:${buildSharedStreamKey(stream)}`;
+      if (lastSharedContentKey === shareKey) return;
 
-    if ((!meta.name || meta.name === meta.id) && meta.id?.startsWith('tt')) {
-      lastSharedContentKey = shareKey;
-      fetch(`https://v3-cinemeta.strem.io/meta/${meta.type}/${meta.id}.json`, { signal: AbortSignal.timeout(3000) })
-        .then(r => r.ok ? r.json() : null)
-        .then(data => {
-          if (data?.meta?.name) meta.name = data.meta.name;
-          lastSharedContentKey = `${meta.type}:${meta.id}:${meta.name || ''}:${buildSharedStreamKey(stream)}`;
-          WPWS.send({ type: WPProtocol.C2S.ROOM_UPDATE_STREAM, payload: { stream, meta } });
-        })
-        .catch(() => {
-          WPWS.send({ type: WPProtocol.C2S.ROOM_UPDATE_STREAM, payload: { stream, meta } });
-        });
-    } else {
-      lastSharedContentKey = shareKey;
-      WPWS.send({ type: WPProtocol.C2S.ROOM_UPDATE_STREAM, payload: { stream, meta } });
+      if ((!meta.name || meta.name === meta.id) && meta.id?.startsWith('tt')) {
+        lastSharedContentKey = shareKey;
+        fetch(`https://v3-cinemeta.strem.io/meta/${meta.type}/${meta.id}.json`, { signal: AbortSignal.timeout(3000) })
+          .then(r => r.ok ? r.json() : null)
+          .then(data => {
+            if (data?.meta?.name) meta.name = data.meta.name;
+            lastSharedContentKey = `${meta.type}:${meta.id}:${meta.name || ''}:${buildSharedStreamKey(stream)}`;
+            WPWS.send({ type: WPProtocol.C2S.ROOM_UPDATE_STREAM, payload: { stream, meta } });
+          })
+          .catch(() => {
+            WPWS.send({ type: WPProtocol.C2S.ROOM_UPDATE_STREAM, payload: { stream, meta } });
+          });
+      } else {
+        lastSharedContentKey = shareKey;
+        WPWS.send({ type: WPProtocol.C2S.ROOM_UPDATE_STREAM, payload: { stream, meta } });
+      }
+    } finally {
+      shareContentLinkInFlight = false;
     }
   }
 
@@ -863,6 +870,13 @@
     }
   }, 3000);
 
+  const hostShareInterval = setInterval(() => {
+    updateKnownContentMeta();
+    if (inRoom && isHost && isActiveVideoTab) {
+      shareContentLink();
+    }
+  }, 4000);
+
   // --- Host stream update on SPA navigation (only from tab with video) ---
   window.addEventListener('hashchange', () => {
     updateKnownContentMeta();
@@ -906,6 +920,7 @@
   // --- Cleanup ---
   window.addEventListener('beforeunload', () => {
     clearInterval(playbackInterval);
+    clearInterval(hostShareInterval);
     releaseActiveTab();
     WPProfile.stop();
   });

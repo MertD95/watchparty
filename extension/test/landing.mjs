@@ -60,8 +60,14 @@ function createServers() {
   landingHtml = replaceOnce(landingHtml, 'setInterval(loadPublicRooms, 10000);', 'setInterval(loadPublicRooms, 100);');
   landingHtml = replaceOnce(
     landingHtml,
-    "setInterval(() => { if (!sseActive) loadPublicRooms(); }, 15000);",
-    "setInterval(() => { if (!sseActive) loadPublicRooms(); }, 150);"
+    `setInterval(() => {
+      const stale = !lastRoomsUpdateAt || (Date.now() - lastRoomsUpdateAt) > 20000;
+      if (!sseActive || stale) loadPublicRooms();
+    }, 15000);`,
+    `setInterval(() => {
+      const stale = !lastRoomsUpdateAt || (Date.now() - lastRoomsUpdateAt) > 200;
+      if (!sseActive || stale) loadPublicRooms();
+    }, 150);`
   );
   landingHtml = replaceOnce(landingHtml, '}, 2000);', '}, 100);');
   landingHtml = replaceOnce(landingHtml, '}, 500);', '}, 50);');
