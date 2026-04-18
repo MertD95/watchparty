@@ -56,6 +56,24 @@ const WPDirectPlay = (() => {
     return sources.length > 0 ? sources : undefined;
   }
 
+  function normalizeTitle(value) {
+    return typeof value === 'string'
+      ? value.replace(/\s+/g, ' ').trim()
+      : '';
+  }
+
+  function isLikelyTitle(value) {
+    const title = normalizeTitle(value);
+    if (!title || title.length < 2 || title.length > 160) return false;
+    if (/^https?:\/\//i.test(title)) return false;
+    if (!/[A-Za-z]/.test(title)) return false;
+    const lower = title.toLowerCase();
+    const hasTitleCase = /[A-Z][a-z]/.test(title);
+    const looksMostlyCodec = /\b(2160p|1080p|720p|480p|hdr|webrip|web-dl|bluray|brrip|x264|x265|hevc|h264|aac|dts)\b/.test(lower)
+      && !hasTitleCase;
+    return !looksMostlyCodec;
+  }
+
   function pickBehaviorHints(value) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
     const hints = {};
@@ -68,6 +86,21 @@ const WPDirectPlay = (() => {
       hints.proxyHeaders = value.proxyHeaders;
     }
     return Object.keys(hints).length > 0 ? hints : undefined;
+  }
+
+  function pickTitleHint(decoded, behaviorHints) {
+    const candidates = [
+      decoded?.name,
+      decoded?.title,
+      decoded?.description,
+      decoded?.filename,
+      behaviorHints?.filename,
+    ];
+    for (const candidate of candidates) {
+      const title = normalizeTitle(candidate);
+      if (isLikelyTitle(title)) return title;
+    }
+    return undefined;
   }
 
   function parsePlayerUrl(rawUrl) {
@@ -183,6 +216,15 @@ const WPDirectPlay = (() => {
     return normalized;
   }
 
+  async function getPlayerTitleHint(rawUrl) {
+    const playerUrl = parsePlayerUrl(rawUrl);
+    if (!playerUrl) return null;
+    const decoded = await decodePlayerStream(playerUrl.encodedStream);
+    if (!decoded) return null;
+    const behaviorHints = pickBehaviorHints(decoded.behaviorHints);
+    return pickTitleHint(decoded, behaviorHints) || null;
+  }
+
   function classifyStream(stream) {
     const playerUrl = parsePlayerUrl(stream?.url);
     if (!playerUrl) {
@@ -264,6 +306,7 @@ const WPDirectPlay = (() => {
   return {
     classifyStream,
     getDirectJoinUrl,
+    getPlayerTitleHint,
     normalizeSharedStream,
     parsePlayerUrl,
   };

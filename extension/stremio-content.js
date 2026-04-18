@@ -30,6 +30,7 @@
   let lastSharedContentKey = null;
   let pendingJoinOptions = null;
   let shareContentLinkInFlight = false;
+  const cinemetaTitleCache = new Map();
 
   const PLACEHOLDER_ROOM_NAME = 'WatchParty Session';
   const PLACEHOLDER_STREAM_URL = 'https://watchparty.mertd.me/sync';
@@ -110,6 +111,60 @@
       proxyHeaderKeys,
       Array.isArray(stream?.sources) ? stream.sources.join('|') : '',
     ].join('::');
+  }
+
+  async function fetchCinemetaTitle(type, id) {
+    if (!type || !id || !id.startsWith('tt')) return null;
+    const cacheKey = `${type}:${id}`;
+    if (cinemetaTitleCache.has(cacheKey)) return cinemetaTitleCache.get(cacheKey);
+    try {
+      const response = await fetch(`https://v3-cinemeta.strem.io/meta/${encodeURIComponent(type)}/${encodeURIComponent(id)}.json`, {
+        signal: AbortSignal.timeout(3000),
+      });
+      const data = response.ok ? await response.json() : null;
+      const title = typeof data?.meta?.name === 'string' && data.meta.name.trim()
+        ? data.meta.name.trim()
+        : null;
+      cinemetaTitleCache.set(cacheKey, title);
+      return title;
+    } catch {
+      cinemetaTitleCache.set(cacheKey, null);
+      return null;
+    }
+  }
+
+  async function withTimeout(task, timeoutMs) {
+    let timer = null;
+    try {
+      return await Promise.race([
+        Promise.resolve().then(task),
+        new Promise((resolve) => {
+          timer = setTimeout(() => resolve(null), timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  async function enrichContentMeta(meta, launchUrl) {
+    if (!meta) return null;
+    const nextMeta = { ...meta };
+    const nameNeedsHelp = !nextMeta.name || nextMeta.name === nextMeta.id || nextMeta.name === PLACEHOLDER_ROOM_NAME;
+    if (nameNeedsHelp && launchUrl) {
+      try {
+        const titleHint = await withTimeout(
+          () => WPDirectPlay.getPlayerTitleHint?.(launchUrl),
+          1500,
+        );
+        if (titleHint) nextMeta.name = titleHint;
+      } catch {}
+    }
+    if ((!nextMeta.name || nextMeta.name === nextMeta.id || nextMeta.name === PLACEHOLDER_ROOM_NAME) && nextMeta.id?.startsWith('tt')) {
+      const cinemetaTitle = await fetchCinemetaTitle(nextMeta.type, nextMeta.id);
+      if (cinemetaTitle) nextMeta.name = cinemetaTitle;
+    }
+    return nextMeta;
   }
 
   function maybeHandlePendingDirectJoin(room) {
@@ -369,7 +424,7 @@
       WPConstants.STORAGE.PENDING_ROOM_JOIN_OPTIONS,
       WPConstants.STORAGE.CURRENT_ROOM,
       WPConstants.STORAGE.USERNAME,
-    ], (stored) => {
+    ], async (stored) => {
       if (stored[WPConstants.STORAGE.PENDING_ROOM_CREATE]) {
         clearPendingJoinOptions();
         chrome.storage.local.remove(WPConstants.STORAGE.PENDING_ROOM_CREATE);
@@ -382,7 +437,8 @@
         const rc = stored[WPConstants.STORAGE.PENDING_ROOM_CREATE];
         if (rc.username) WPWS.send({ type: WPProtocol.C2S.USER_UPDATE, payload: { username: rc.username, sessionId } });
         const context = getCurrentContentContext();
-        const meta = (isPlaceholderMeta(rc.meta) && context.meta) ? context.meta : rc.meta;
+        const seedMeta = (isPlaceholderMeta(rc.meta) && context.meta) ? context.meta : rc.meta;
+        const meta = await enrichContentMeta(seedMeta, context.launchUrl);
         const stream = (isPlaceholderStream(rc.stream) && context.launchUrl) ? { url: context.launchUrl } : rc.stream;
         const payload = { meta, stream, public: rc.public || false };
         if (rc.roomName) payload.name = rc.roomName;
@@ -591,26 +647,11 @@
         return;
       }
 
-      const meta = { ...context.meta };
+      const meta = await enrichContentMeta(context.meta, context.launchUrl);
       const shareKey = `${meta.type}:${meta.id}:${meta.name || ''}:${buildSharedStreamKey(stream)}`;
       if (lastSharedContentKey === shareKey) return;
-
-      if ((!meta.name || meta.name === meta.id) && meta.id?.startsWith('tt')) {
-        lastSharedContentKey = shareKey;
-        fetch(`https://v3-cinemeta.strem.io/meta/${meta.type}/${meta.id}.json`, { signal: AbortSignal.timeout(3000) })
-          .then(r => r.ok ? r.json() : null)
-          .then(data => {
-            if (data?.meta?.name) meta.name = data.meta.name;
-            lastSharedContentKey = `${meta.type}:${meta.id}:${meta.name || ''}:${buildSharedStreamKey(stream)}`;
-            WPWS.send({ type: WPProtocol.C2S.ROOM_UPDATE_STREAM, payload: { stream, meta } });
-          })
-          .catch(() => {
-            WPWS.send({ type: WPProtocol.C2S.ROOM_UPDATE_STREAM, payload: { stream, meta } });
-          });
-      } else {
-        lastSharedContentKey = shareKey;
-        WPWS.send({ type: WPProtocol.C2S.ROOM_UPDATE_STREAM, payload: { stream, meta } });
-      }
+      lastSharedContentKey = shareKey;
+      WPWS.send({ type: WPProtocol.C2S.ROOM_UPDATE_STREAM, payload: { stream, meta } });
     } finally {
       shareContentLinkInFlight = false;
     }
@@ -757,9 +798,11 @@
   }
 
   function getContentTitle() {
-    const navHeading = document.querySelector('nav h2');
+    const navHeading = document.querySelector('nav h2, main h1, h1[data-testid="title"]');
     if (navHeading?.textContent?.trim()) return navHeading.textContent.trim();
-    const logoImg = document.querySelector('[class*="logo-container"] img');
+    const logoTitleEl = document.querySelector('[class*="logo"][title], [class*="logo-container"] img[title], img[class*="logo"][title]');
+    if (logoTitleEl?.getAttribute?.('title')?.trim()) return logoTitleEl.getAttribute('title').trim();
+    const logoImg = document.querySelector('[class*="logo-container"] img, img[class*="logo"]');
     if (logoImg?.alt?.trim()) return logoImg.alt.trim();
     return null;
   }
