@@ -617,6 +617,9 @@
       list.replaceChildren(empty, ...cards);
     }
 
+    let roomsEventSource = null;
+    let streamReconnectTimer = null;
+
     async function loadPublicRooms() {
       try {
         const res = await fetch(ROOMS_API, { signal: AbortSignal.timeout(5000) });
@@ -626,6 +629,69 @@
       } catch {
         // Server unavailable — show empty state
       }
+    }
+
+    function stopRoomsStream() {
+      sseActive = false;
+      if (streamReconnectTimer) {
+        clearTimeout(streamReconnectTimer);
+        streamReconnectTimer = null;
+      }
+      if (roomsEventSource) {
+        try { roomsEventSource.close(); } catch {}
+        roomsEventSource = null;
+      }
+    }
+
+    function scheduleRoomsStreamReconnect(delay = 1500) {
+      if (streamReconnectTimer) return;
+      streamReconnectTimer = setTimeout(() => {
+        streamReconnectTimer = null;
+        ensureRoomsStream({ force: true });
+      }, delay);
+    }
+
+    function ensureRoomsStream(options = {}) {
+      const force = options.force === true;
+      if (force) stopRoomsStream();
+      if (roomsEventSource) return;
+      try {
+        const source = new EventSource(ROOMS_STREAM);
+        roomsEventSource = source;
+        source.onopen = () => {
+          if (roomsEventSource !== source) return;
+          sseActive = true;
+        };
+        source.onmessage = (event) => {
+          if (roomsEventSource !== source) return;
+          try {
+            const data = JSON.parse(event.data);
+            renderRooms(data);
+            sseActive = true;
+          } catch {}
+        };
+        source.onerror = () => {
+          if (roomsEventSource !== source) return;
+          roomsEventSource = null;
+          sseActive = false;
+          try { source.close(); } catch {}
+          // If the stream drops after it has worked once, keep the room list fresh via polling.
+          void loadPublicRooms();
+          startPollingFallback();
+          scheduleRoomsStreamReconnect();
+        };
+      } catch {
+        // EventSource not available — fall back to polling
+        startPollingFallback();
+        scheduleRoomsStreamReconnect(3000);
+      }
+    }
+
+    function refreshRoomsNow(options = {}) {
+      if (options.restartStream === true || !roomsEventSource) {
+        ensureRoomsStream({ force: options.restartStream === true });
+      }
+      void loadPublicRooms();
     }
 
     // Live updates via SSE (Server-Sent Events) with polling fallback
@@ -638,33 +704,28 @@
       pollingStarted = true;
       setInterval(loadPublicRooms, 10000);
     }
-    try {
-      const sse = new EventSource(ROOMS_STREAM);
-      sse.onopen = () => {
-        sseActive = true;
-      };
-      sse.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          renderRooms(data);
-          sseActive = true;
-        } catch {}
-      };
-      sse.onerror = () => {
-        // If the stream drops after it has worked once, keep the room list fresh via polling.
-        sseActive = false;
-        void loadPublicRooms();
-        startPollingFallback();
-      };
-    } catch {
-      // EventSource not available — fall back to polling
-      startPollingFallback();
-    }
+    ensureRoomsStream();
     // Also poll as fallback for SSE reconnect gaps or silently stale connections.
     setInterval(() => {
       const stale = !lastRoomsUpdateAt || (Date.now() - lastRoomsUpdateAt) > 20000;
       if (!sseActive || stale) loadPublicRooms();
     }, 15000);
+
+    window.addEventListener('pageshow', (event) => {
+      refreshRoomsNow({ restartStream: !!event.persisted });
+    });
+    window.addEventListener('focus', () => {
+      refreshRoomsNow();
+    });
+    window.addEventListener('online', () => {
+      refreshRoomsNow({ restartStream: true });
+    });
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) refreshRoomsNow();
+    });
+    window.addEventListener('pagehide', () => {
+      stopRoomsStream();
+    });
 
     // Show a subtle "Live" badge next to the section title
     const roomsTitle = document.querySelector('.rooms-section h2');
