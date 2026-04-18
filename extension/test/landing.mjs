@@ -154,8 +154,10 @@ async function main() {
   await page.addInitScript(() => {
     window.__joinMessages = [];
     window.__navTargets = [];
+    window.__alerts = [];
     window.__sseEvents = [];
     window.__watchpartyCaptureNavigation = (url) => window.__navTargets.push(url);
+    window.__watchpartyCaptureAlert = (message) => window.__alerts.push(message);
     const NativeEventSource = window.EventSource;
     window.EventSource = function (...args) {
       const source = new NativeEventSource(...args);
@@ -216,6 +218,7 @@ async function main() {
     await page.evaluate(() => {
       window.__joinMessages = [];
       window.__navTargets = [];
+      window.__alerts = [];
     });
     await page.click('.room-card .room-join-btn');
     await page.waitForFunction(() => window.__joinMessages.length > 0 && window.__navTargets.length > 0, { timeout: 3000 });
@@ -230,6 +233,7 @@ async function main() {
     await page.evaluate(() => {
       window.__joinMessages = [];
       window.__navTargets = [];
+      window.__alerts = [];
     });
     await page.click('.room-card .room-direct-btn');
     await page.waitForFunction(() => window.__joinMessages.length > 0 && window.__navTargets.length > 0, { timeout: 3000 });
@@ -240,6 +244,54 @@ async function main() {
     ok(directJoinAction.joinMessage?.roomId === 'room-1', 'Direct Join also posts the room ID to the extension bridge');
     ok(directJoinAction.joinMessage?.preferDirectJoin === true, 'Direct Join sets the prefer-direct intent for the extension');
     ok(directJoinAction.navTarget === 'https://web.stremio.com/#/detail/movie/tt1375666', 'Direct Join still navigates to the Stremio title page while the extension resolves the private player URL');
+    ok((await page.evaluate(() => window.__alerts.length)) === 0, 'portable Direct Join does not show a warning');
+
+    servers.setRooms([
+      {
+        id: 'room-debrid',
+        name: null,
+        meta: { id: 'tt0468569', type: 'movie', name: 'The Dark Knight' },
+        hasDirectJoin: false,
+        directJoinType: 'debrid-url',
+        users: 2,
+        owner: 'DebridHost',
+        paused: false,
+        time: 55,
+        bookmarks: 0,
+        public: true,
+      },
+    ]);
+    servers.broadcastRooms();
+
+    const debridReady = await page.waitForFunction(
+      () => document.body.innerText.includes('DebridHost') && document.querySelector('.room-card .room-direct-btn')?.disabled === false,
+      { timeout: 5000 }
+    ).then(() => true).catch(() => false);
+    ok(debridReady, 'landing keeps the debrid fallback button clickable');
+
+    const debridButtonState = await page.evaluate(() => ({
+      directDisabled: document.querySelector('.room-card .room-direct-btn')?.disabled ?? true,
+      directTitle: document.querySelector('.room-card .room-direct-btn')?.title || '',
+    }));
+    ok(debridButtonState.directDisabled === false, 'debrid fallback keeps the Direct Join button enabled');
+    ok(debridButtonState.directTitle.includes('choose your own stream'), 'debrid fallback explains that the peer must choose their own stream');
+
+    await page.evaluate(() => {
+      window.__joinMessages = [];
+      window.__navTargets = [];
+      window.__alerts = [];
+    });
+    await page.click('.room-card .room-direct-btn');
+    await page.waitForFunction(() => window.__joinMessages.length > 0 && window.__navTargets.length > 0 && window.__alerts.length > 0, { timeout: 3000 });
+    const debridJoinAction = await page.evaluate(() => ({
+      joinMessage: window.__joinMessages[0] || null,
+      navTarget: window.__navTargets[0] || null,
+      alertMessage: window.__alerts[0] || null,
+    }));
+    ok(debridJoinAction.joinMessage?.roomId === 'room-debrid', 'debrid fallback still joins the selected room');
+    ok(debridJoinAction.joinMessage?.preferDirectJoin === false, 'debrid fallback does not request direct-play intent');
+    ok(debridJoinAction.navTarget === 'https://web.stremio.com/#/detail/movie/tt0468569', 'debrid fallback navigates to the Stremio title page');
+    ok((debridJoinAction.alertMessage || '').includes('choose your own stream'), 'debrid fallback shows a warning before navigating');
 
     const sseReady = await page.waitForFunction(
       () => window.__sseEvents.some((event) => event.type === 'message'),

@@ -119,7 +119,8 @@
     clearPendingJoinOptions(room.id);
     const directJoin = WPDirectPlay.classifyStream(room.stream);
     if (!directJoin.hasDirectJoin || !directJoin.url) {
-      WPOverlay.showToast(`DirectPlay failed: ${directJoin.failureReason || 'Host stream is not portable yet.'}`, 3500);
+      const prefix = directJoin.directJoinType === 'debrid-url' ? 'Warning' : 'DirectPlay failed';
+      WPOverlay.showToast(`${prefix}: ${directJoin.failureReason || 'Host stream is not portable yet.'}`, 4200);
       return { handled: true, navigated: false, failed: true, alreadyOpen: false };
     }
 
@@ -387,7 +388,7 @@
         WPWS.send({ type: WPProtocol.C2S.ROOM_NEW, payload });
       } else {
         const roomToJoin = stored[WPConstants.STORAGE.PENDING_ROOM_JOIN] || stored[WPConstants.STORAGE.CURRENT_ROOM];
-        syncPendingJoinOptions(stored[WPConstants.STORAGE.PENDING_ROOM_JOIN_OPTIONS], roomToJoin);
+        const joinOptions = syncPendingJoinOptions(stored[WPConstants.STORAGE.PENDING_ROOM_JOIN_OPTIONS], roomToJoin);
         if (stored[WPConstants.STORAGE.PENDING_ROOM_JOIN]) chrome.storage.local.remove(WPConstants.STORAGE.PENDING_ROOM_JOIN);
         if (roomToJoin) {
           // Import E2E encryption key BEFORE joining (prevents race where first encrypted message arrives before key is ready)
@@ -402,7 +403,7 @@
             }
             await importKeyAndJoin(keyResult[keyStorageKey], roomToJoin, stored);
           });
-        } else {
+        } else if (!joinOptions) {
           clearPendingJoinOptions();
         }
       }

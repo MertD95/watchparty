@@ -224,15 +224,18 @@ const WPDirectPlay = (() => {
     }
 
     if (stream?.resolvedUrl) {
+      const isDebridUrl = looksLikeDebridUrl(
+        stream.resolvedUrl,
+        stream.addonTransportUrl,
+        stream.streamTransportUrl,
+      );
       return {
-        hasDirectJoin: true,
-        directJoinType: looksLikeDebridUrl(
-          stream.resolvedUrl,
-          stream.addonTransportUrl,
-          stream.streamTransportUrl,
-        ) ? 'debrid-url' : 'direct-url',
-        failureReason: null,
-        url: playerUrl.url.toString(),
+        hasDirectJoin: !isDebridUrl,
+        directJoinType: isDebridUrl ? 'debrid-url' : 'direct-url',
+        failureReason: isDebridUrl
+          ? 'Host is using a debrid stream. Choose your own stream for this title.'
+          : null,
+        url: isDebridUrl ? null : playerUrl.url.toString(),
       };
     }
 

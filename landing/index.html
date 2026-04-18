@@ -445,8 +445,11 @@
 
     function getDirectJoinTitle(room) {
       const directJoinType = getDirectJoinType(room);
-      if (room?.hasDirectJoin && directJoinType === 'debrid-url') {
-        return 'Direct Join will try the host stream, but playback may depend on your account access.';
+      if (room?.hasDirectJoin && directJoinType !== 'debrid-url') {
+        return '';
+      }
+      if (directJoinType === 'debrid-url') {
+        return 'Warning: the host is using a debrid stream. WatchParty will open the title page so you can choose your own stream.';
       }
       if (directJoinType === 'not-web-ready') {
         return 'Direct Join unavailable: the host stream needs extra headers or local preparation.';
@@ -455,6 +458,14 @@
         return 'Direct Join unavailable: the host stream opens outside Stremio Web.';
       }
       return 'Direct stream unavailable until the host opens a Stremio player.';
+    }
+
+    function showDirectJoinNotice(message) {
+      if (typeof window.__watchpartyCaptureAlert === 'function') {
+        window.__watchpartyCaptureAlert(message);
+        return;
+      }
+      window.alert(message);
     }
 
     function navigateToUrl(url) {
@@ -538,7 +549,13 @@
       directBtn.textContent = 'Direct Join';
       if (isPublic && hasDirectJoin) {
         directBtn.addEventListener('click', () => joinRoom(room.id, metaId, metaType, { preferDirectJoin: true }));
-        if (directJoinType === 'debrid-url') directBtn.title = getDirectJoinTitle(room);
+        directBtn.title = getDirectJoinTitle(room);
+      } else if (isPublic && directJoinType === 'debrid-url') {
+        directBtn.title = getDirectJoinTitle(room);
+        directBtn.addEventListener('click', () => {
+          showDirectJoinNotice(getDirectJoinTitle(room));
+          joinRoom(room.id, metaId, metaType);
+        });
       } else {
         directBtn.disabled = true;
         directBtn.title = getDirectJoinTitle(room);
