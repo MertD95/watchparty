@@ -7,6 +7,7 @@
     "test:10user": "node extension/test/ten-user.mjs",
     "test:routing": "node extension/test/routing.mjs",
     "test:browser": "node extension/test/e2e-browser.mjs",
+    "test:live:landing": "node extension/test/live-landing-smoke.mjs",
     "test:2user": "node extension/test/two-user.mjs",
     "test:sidepanel": "node extension/test/sidepanel.mjs",
     "test:visual": "node extension/test/visual.mjs",

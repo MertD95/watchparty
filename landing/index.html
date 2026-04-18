@@ -573,19 +573,16 @@
       const joinBtn = document.createElement('button');
       joinBtn.className = 'room-join-btn';
       joinBtn.textContent = 'Join Room';
-      joinBtn.addEventListener('click', () => {
-        if (isPublic) joinRoom(room.id, metaId, metaType);
-        else showUuidModal();
-      });
+      joinBtn.addEventListener('click', () => joinRoom(room.id, metaId, metaType));
       actions.appendChild(joinBtn);
 
       const directBtn = document.createElement('button');
       directBtn.className = 'room-direct-btn';
       directBtn.textContent = 'Direct Join';
-      if (isPublic && hasDirectJoin) {
+      if (hasDirectJoin) {
         directBtn.addEventListener('click', () => joinRoom(room.id, metaId, metaType, { preferDirectJoin: true }));
         directBtn.title = getDirectJoinTitle(room);
-      } else if (isPublic && directJoinType === 'debrid-url') {
+      } else if (directJoinType === 'debrid-url') {
         directBtn.title = getDirectJoinTitle(room);
         directBtn.addEventListener('click', () => {
           showDirectJoinNotice(getDirectJoinTitle(room));

@@ -330,6 +330,63 @@ async function main() {
     ok(debridJoinAction.navTarget === 'https://web.stremio.com/#/detail/movie/tt0468569', 'debrid fallback navigates to the Stremio title page');
     ok((debridJoinAction.alertMessage || '').includes('choose your own stream'), 'debrid fallback shows a warning before navigating');
 
+    servers.setRooms([
+      {
+        id: 'room-private',
+        name: null,
+        meta: { id: 'tt0133093', type: 'movie', name: 'The Matrix' },
+        hasDirectJoin: true,
+        directJoinType: 'direct-url',
+        users: 2,
+        owner: 'Neo',
+        paused: true,
+        time: 30,
+        bookmarks: 0,
+        public: false,
+      },
+    ]);
+    servers.broadcastRooms();
+
+    const privateReady = await page.waitForFunction(
+      () => {
+        const text = (document.querySelector('.room-card')?.innerText || '').toLowerCase();
+        return text.includes('neo') && text.includes('private');
+      },
+      { timeout: 5000 }
+    ).then(() => true).catch(() => false);
+    ok(privateReady, 'landing renders private rooms in the active room list');
+
+    await page.evaluate(() => {
+      window.__joinMessages = [];
+      window.__navTargets = [];
+      window.__alerts = [];
+      window.__watchpartyExtStatus = { hasStremioTab: true };
+    });
+    await page.click('.room-card .room-join-btn');
+    await page.waitForFunction(() => window.__joinMessages.length > 0 && window.__navTargets.length > 0, { timeout: 3000 });
+    const privateJoinAction = await page.evaluate(() => ({
+      joinMessage: window.__joinMessages[0] || null,
+      navTarget: window.__navTargets[0] || null,
+    }));
+    ok(privateJoinAction.joinMessage?.roomId === 'room-private', 'private room Join Room posts the listed room ID directly');
+    ok(privateJoinAction.navTarget === 'https://web.stremio.com/#/detail/movie/tt0133093', 'private room Join Room navigates to the Stremio title page');
+
+    await page.evaluate(() => {
+      window.__joinMessages = [];
+      window.__navTargets = [];
+      window.__alerts = [];
+      window.__watchpartyExtStatus = { hasStremioTab: true };
+    });
+    await page.click('.room-card .room-direct-btn');
+    await page.waitForFunction(() => window.__joinMessages.length > 0, { timeout: 3000 });
+    const privateDirectJoinAction = await page.evaluate(() => ({
+      joinMessage: window.__joinMessages[0] || null,
+      navTarget: window.__navTargets[0] || null,
+    }));
+    ok(privateDirectJoinAction.joinMessage?.roomId === 'room-private', 'private room Direct Join posts the listed room ID directly');
+    ok(privateDirectJoinAction.joinMessage?.preferDirectJoin === true, 'private room Direct Join keeps the direct-play preference');
+    ok(privateDirectJoinAction.navTarget == null, 'private room Direct Join stays on the landing page when the extension has a Stremio tab');
+
     const sseReady = await page.waitForFunction(
       () => window.__sseEvents.some((event) => event.type === 'message'),
       { timeout: 5000 }
