@@ -141,6 +141,40 @@
       color: #888;
       margin-top: 4px;
     }
+    .room-key-row {
+      margin-top: 8px;
+    }
+    .room-key-label {
+      font-size: 10px;
+      text-transform: uppercase;
+      color: #70708d;
+      letter-spacing: 0.4px;
+      margin-bottom: 6px;
+    }
+    .room-key-row input[type="text"] {
+      margin-bottom: 0;
+      font-family: 'Consolas', 'Monaco', monospace;
+      font-size: 12px;
+      letter-spacing: 0.1px;
+      user-select: all;
+    }
+    .room-key-actions {
+      display: flex;
+      gap: 6px;
+      margin-top: 6px;
+    }
+    .room-key-actions .btn {
+      width: auto;
+      margin-bottom: 0;
+      padding: 7px 10px;
+      font-size: 12px;
+    }
+    .room-key-help {
+      font-size: 11px;
+      color: #8a8aa6;
+      line-height: 1.35;
+      margin-top: 6px;
+    }
     .users-list {
       margin-top: 8px;
     }
@@ -297,6 +331,15 @@
       <div class="room-info">
         <div>Room: <span class="room-id" id="room-id-display" title="Click to copy"></span></div>
         <div class="room-meta" id="room-meta"></div>
+        <div class="room-key-row hidden" id="room-key-row">
+          <div class="room-key-label">Room Key</div>
+          <input type="text" id="room-key-input" aria-label="Room key" spellcheck="false" autocomplete="off" />
+          <div class="room-key-actions">
+            <button class="btn btn-secondary" id="btn-update-room-key" type="button">Update Key</button>
+          </div>
+          <div class="room-key-help" id="room-key-help"></div>
+          <div class="error-text hidden" id="room-key-error"></div>
+        </div>
       </div>
 
       <div id="content-link-hint" class="content-hint hidden">

@@ -4,6 +4,11 @@ let currentBackendMode = WPConstants.BACKEND.MODES.AUTO;
 let currentActiveBackend = null;
 let currentActiveBackendUrl = null;
 let currentWsConnected = false;
+let currentRenderedRoom = null;
+let currentRenderedIsHost = false;
+let roomKeyRenderSeq = 0;
+
+const ROOM_KEY_RE = /^[A-Za-z0-9_-]{16,200}$/;
 
 function getContentDetailUrl(room) {
   if (!room?.meta?.id || !room?.meta?.type) return null;
@@ -68,6 +73,27 @@ async function buildInviteUrlWithKey(roomId) {
   const inviteUrl = buildInviteUrl(roomId);
   const roomKey = await getStoredRoomKey(roomId);
   return roomKey ? `${inviteUrl}#key=${roomKey}` : inviteUrl;
+}
+
+function storeRoomKey(roomId, roomKey) {
+  if (!roomId || !roomKey) return Promise.resolve();
+  const storageKey = WPConstants.STORAGE.roomKey(roomId);
+  return chrome.storage.session.set({ [storageKey]: roomKey }).catch(() =>
+    chrome.storage.local.set({ [storageKey]: roomKey })
+  );
+}
+
+function isValidRoomKey(value) {
+  return ROOM_KEY_RE.test((value || '').trim());
+}
+
+function setRoomKeyError(message) {
+  $('room-key-error').textContent = message || '';
+  $('room-key-error').classList.toggle('hidden', !message);
+}
+
+function setRoomKeyHelp(message) {
+  $('room-key-help').textContent = message || '';
 }
 
 function parseRoomJoinInput(rawValue) {
@@ -231,6 +257,13 @@ setWsStatus(false);
 function showLobbyView() {
   $('view-lobby').classList.remove('hidden');
   $('view-room').classList.add('hidden');
+  currentRenderedRoom = null;
+  currentRenderedIsHost = false;
+  roomKeyRenderSeq++;
+  $('room-key-row').classList.add('hidden');
+  $('room-key-input').value = '';
+  setRoomKeyError('');
+  setRoomKeyHelp('');
   // Reset button states in case we came from a room
   $('btn-create').disabled = false;
   $('btn-create').textContent = 'Create Room';
@@ -249,6 +282,72 @@ function showRoomView(room, myUserId) {
   chrome.storage.local.get(WPConstants.STORAGE.SESSION_ID, (result) => {
     const mySessionId = result[WPConstants.STORAGE.SESSION_ID];
     renderRoomDetails(room, myUserId, mySessionId);
+  });
+}
+
+function renderRoomKeyDetails(room, isHost) {
+  const row = $('room-key-row');
+  const input = $('room-key-input');
+  const updateButton = $('btn-update-room-key');
+  const isPrivateRoom = room?.public === false;
+  const renderSeq = ++roomKeyRenderSeq;
+
+  currentRenderedRoom = room || null;
+  currentRenderedIsHost = !!isHost;
+
+  setRoomKeyError('');
+
+  if (!isPrivateRoom) {
+    row.classList.add('hidden');
+    input.value = '';
+    input.readOnly = true;
+    input.disabled = true;
+    updateButton.classList.add('hidden');
+    setRoomKeyHelp('');
+    return;
+  }
+
+  row.classList.remove('hidden');
+  input.disabled = true;
+  input.readOnly = true;
+  updateButton.classList.toggle('hidden', !isHost);
+  updateButton.disabled = !isHost;
+  setRoomKeyHelp(isHost
+    ? 'Loading room key...'
+    : 'This private-room key is part of the invite link.');
+
+  loadStoredRoomKey(room.id).then((roomKey) => {
+    if (renderSeq !== roomKeyRenderSeq) return;
+
+    input.disabled = false;
+    input.readOnly = !isHost;
+    input.value = roomKey || '';
+    input.placeholder = isHost
+      ? 'Room key will appear here'
+      : 'Room key unavailable on this device';
+    updateButton.classList.toggle('hidden', !isHost);
+    updateButton.disabled = !isHost;
+
+    if (isHost) {
+      const othersInRoom = Math.max(0, (room.users?.length || 0) - 1);
+      setRoomKeyHelp(
+        othersInRoom > 0
+          ? 'Change the key when you are alone in the room to avoid breaking private-room peers.'
+          : 'Changing the key updates future invite links for this private room.'
+      );
+    } else {
+      setRoomKeyHelp('This key is visible because private rooms now join via the invite key.');
+    }
+  }).catch(() => {
+    if (renderSeq !== roomKeyRenderSeq) return;
+    input.disabled = !isHost;
+    input.readOnly = !isHost;
+    input.value = '';
+    updateButton.classList.toggle('hidden', !isHost);
+    updateButton.disabled = !isHost;
+    setRoomKeyHelp(isHost
+      ? 'Failed to load the room key. You can still paste a new one and update it.'
+      : 'Room key unavailable on this device.');
   });
 }
 
@@ -277,6 +376,7 @@ function renderRoomDetails(room, myUserId, mySessionId) {
     : 'WatchParty Session';
 
   const isHost = amIHost();
+  renderRoomKeyDetails(room, isHost);
   const detailUrl = getContentDetailUrl(room);
   const directStreamUrl = getDirectStreamUrl(room);
 
@@ -424,6 +524,57 @@ $('btn-leave').addEventListener('click', () => {
 function sendPendingAction(action) {
   chrome.storage.local.set({ [WPConstants.STORAGE.PENDING_ACTION]: action });
 }
+
+$('btn-update-room-key').addEventListener('click', async () => {
+  const room = currentRenderedRoom;
+  if (!room || room.public !== false) return;
+  if (!currentRenderedIsHost) {
+    setRoomKeyError('Only the host can change the room key.');
+    return;
+  }
+
+  const nextKey = $('room-key-input').value.trim();
+  if (!isValidRoomKey(nextKey)) {
+    setRoomKeyError('Use 16-200 letters, numbers, underscores, or hyphens.');
+    $('room-key-input').focus();
+    return;
+  }
+
+  const othersInRoom = Math.max(0, (room.users?.length || 0) - 1);
+  if (othersInRoom > 0) {
+    setRoomKeyError('Change the key when you are alone in the room to avoid breaking private-room peers.');
+    return;
+  }
+
+  const existingKey = await getStoredRoomKey(room.id);
+  if (existingKey === nextKey) {
+    setRoomKeyError('');
+    setRoomKeyHelp('That key is already active for this private room.');
+    return;
+  }
+
+  $('btn-update-room-key').disabled = true;
+  $('btn-update-room-key').textContent = 'Updating...';
+  setRoomKeyError('');
+
+  try {
+    await storeRoomKey(room.id, nextKey);
+    sendPendingAction({ action: 'toggle-public', public: false, roomKey: nextKey });
+    setRoomKeyHelp('Room key updated. New invite links will use this key.');
+  } catch {
+    setRoomKeyError('Failed to update the room key on this device.');
+  } finally {
+    $('btn-update-room-key').disabled = false;
+    $('btn-update-room-key').textContent = 'Update Key';
+  }
+});
+
+$('room-key-input').addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' && !$('btn-update-room-key').classList.contains('hidden')) {
+    event.preventDefault();
+    $('btn-update-room-key').click();
+  }
+});
 
 $('setting-public').addEventListener('change', (e) => {
   sendPendingAction({ action: 'toggle-public', public: e.target.checked });

@@ -148,6 +148,11 @@
     return WPCrypto.exportKey();
   }
 
+  function normalizeRoomKeyInput(value) {
+    const trimmed = typeof value === 'string' ? value.trim() : '';
+    return /^[A-Za-z0-9_-]{16,200}$/.test(trimmed) ? trimmed : null;
+  }
+
   function hasPendingLeaveIntent(value) {
     return value === true || (!!value && typeof value === 'object');
   }
@@ -1019,13 +1024,26 @@
     'toggle-public': async (m) => {
       if (m.public === false) {
         const roomId = roomState?.id;
-        let roomKey = await loadStoredRoomKey(roomId);
+        const requestedRoomKey = normalizeRoomKeyInput(m.roomKey);
+        const existingRoomKey = await loadStoredRoomKey(roomId);
+        const usersInRoom = Array.isArray(roomState?.users) ? roomState.users.length : 0;
+        if (requestedRoomKey && existingRoomKey && requestedRoomKey !== existingRoomKey && usersInRoom > 1) {
+          WPOverlay.showToast('Change the room key when you are alone in the room to avoid breaking private-room peers.', 3500);
+          return;
+        }
+        let roomKey = requestedRoomKey || existingRoomKey;
         if (!roomKey) roomKey = await generatePrivateRoomKey();
         if (!roomKey) {
           WPOverlay.showToast('Failed to generate a private room key.', 2500);
           return;
         }
         await cacheRoomKeyForRoom(roomId, roomKey);
+        if (typeof WPCrypto !== 'undefined') {
+          try {
+            WPCrypto.clear();
+            await WPCrypto.importKey(roomKey);
+          } catch { }
+        }
         WPWS.send({ type: WPProtocol.C2S.ROOM_UPDATE_PUBLIC, payload: { public: false, roomKey } });
         return;
       }
