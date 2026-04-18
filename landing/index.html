@@ -476,6 +476,41 @@
       window.location.href = url;
     }
 
+    let extStatusRequestSeq = 0;
+    function requestExtensionStatus(timeoutMs = 350) {
+      if (!document.documentElement.hasAttribute('data-watchparty-ext')) {
+        return Promise.resolve(null);
+      }
+      return new Promise((resolve) => {
+        const requestId = `watchparty-ext-status-${Date.now()}-${++extStatusRequestSeq}`;
+        let settled = false;
+        const cleanup = () => {
+          window.removeEventListener('message', onMessage);
+          clearTimeout(timer);
+        };
+        const finish = (value) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          resolve(value);
+        };
+        const onMessage = (event) => {
+          if (event.source !== window) return;
+          if (event.origin !== location.origin) return;
+          if (event.data?.type !== 'watchparty-ext-response') return;
+          if (event.data.requestId !== requestId) return;
+          finish(event.data.data || null);
+        };
+        const timer = setTimeout(() => finish(null), timeoutMs);
+        window.addEventListener('message', onMessage);
+        window.postMessage({
+          type: 'watchparty-ext-request',
+          action: 'get-status',
+          requestId,
+        }, location.origin);
+      });
+    }
+
     function buildRoomCard(room) {
       const mins = Math.floor((room.time || 0) / 60);
       const secs = Math.floor((room.time || 0) % 60).toString().padStart(2, '0');
@@ -644,7 +679,7 @@
       roomsTitle.appendChild(badge);
     }
 
-    function joinRoom(roomId, metaId, metaType, options = {}) {
+    async function joinRoom(roomId, metaId, metaType, options = {}) {
       // Extract E2E encryption key from URL fragment if present
       const hash = window.location.hash;
       const keyMatch = hash.match(/[#&]key=([A-Za-z0-9_-]+)/);
@@ -656,6 +691,12 @@
         cryptoKey,
         preferDirectJoin: options.preferDirectJoin === true,
       }, location.origin);
+      if (options.preferDirectJoin === true) {
+        const status = await requestExtensionStatus();
+        if (status?.hasStremioTab) return;
+        navigateToUrl('https://web.stremio.com');
+        return;
+      }
       const fallbackUrl = (metaId && metaId !== 'pending' && metaId !== 'unknown' && metaType)
         ? `https://web.stremio.com/#/detail/${encodeURIComponent(metaType)}/${encodeURIComponent(metaId)}`
         : 'https://web.stremio.com';

@@ -162,8 +162,15 @@ async function main() {
     window.__navTargets = [];
     window.__alerts = [];
     window.__sseEvents = [];
+    window.__watchpartyExtStatus = { hasStremioTab: true };
     window.__watchpartyCaptureNavigation = (url) => window.__navTargets.push(url);
     window.__watchpartyCaptureAlert = (message) => window.__alerts.push(message);
+    const markExtensionPresent = () => document.documentElement?.setAttribute('data-watchparty-ext', '1');
+    if (document.documentElement) {
+      markExtensionPresent();
+    } else {
+      document.addEventListener('DOMContentLoaded', markExtensionPresent, { once: true });
+    }
     const NativeEventSource = window.EventSource;
     window.EventSource = function (...args) {
       const source = new NativeEventSource(...args);
@@ -176,6 +183,13 @@ async function main() {
     window.addEventListener('message', (event) => {
       if (event.data?.type === 'watchparty-join-room') {
         window.__joinMessages.push(event.data);
+      }
+      if (event.data?.type === 'watchparty-ext-request' && event.data.action === 'get-status') {
+        window.postMessage({
+          type: 'watchparty-ext-response',
+          requestId: event.data.requestId,
+          data: window.__watchpartyExtStatus,
+        }, event.origin || location.origin);
       }
     });
   });
@@ -240,17 +254,34 @@ async function main() {
       window.__joinMessages = [];
       window.__navTargets = [];
       window.__alerts = [];
+      window.__watchpartyExtStatus = { hasStremioTab: true };
     });
     await page.click('.room-card .room-direct-btn');
-    await page.waitForFunction(() => window.__joinMessages.length > 0 && window.__navTargets.length > 0, { timeout: 3000 });
+    await page.waitForFunction(() => window.__joinMessages.length > 0, { timeout: 3000 });
     const directJoinAction = await page.evaluate(() => ({
       joinMessage: window.__joinMessages[0] || null,
       navTarget: window.__navTargets[0] || null,
     }));
     ok(directJoinAction.joinMessage?.roomId === 'room-1', 'Direct Join also posts the room ID to the extension bridge');
     ok(directJoinAction.joinMessage?.preferDirectJoin === true, 'Direct Join sets the prefer-direct intent for the extension');
-    ok(directJoinAction.navTarget === 'https://web.stremio.com/#/detail/movie/tt1375666', 'Direct Join still navigates to the Stremio title page while the extension resolves the private player URL');
+    ok(directJoinAction.navTarget == null, 'Direct Join keeps the landing page in place when the extension already has a Stremio tab to retarget');
     ok((await page.evaluate(() => window.__alerts.length)) === 0, 'portable Direct Join does not show a warning');
+
+    await page.evaluate(() => {
+      window.__joinMessages = [];
+      window.__navTargets = [];
+      window.__alerts = [];
+      window.__watchpartyExtStatus = { hasStremioTab: false };
+    });
+    await page.click('.room-card .room-direct-btn');
+    await page.waitForFunction(() => window.__joinMessages.length > 0 && window.__navTargets.length > 0, { timeout: 3000 });
+    const directJoinNoTabAction = await page.evaluate(() => ({
+      joinMessage: window.__joinMessages[0] || null,
+      navTarget: window.__navTargets[0] || null,
+    }));
+    ok(directJoinNoTabAction.joinMessage?.roomId === 'room-1', 'Direct Join still posts the room ID when no Stremio tab is open');
+    ok(directJoinNoTabAction.joinMessage?.preferDirectJoin === true, 'Direct Join keeps the prefer-direct intent when it needs to bootstrap Stremio');
+    ok(directJoinNoTabAction.navTarget === 'https://web.stremio.com', 'Direct Join falls back to opening Stremio Web when no Stremio tab is available');
 
     servers.setRooms([
       {

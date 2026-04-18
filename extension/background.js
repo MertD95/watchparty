@@ -127,7 +127,12 @@ const messageHandlers = {
       WPConstants.STORAGE.BACKEND_MODE,
       WPConstants.STORAGE.ACTIVE_BACKEND,
       WPConstants.STORAGE.ACTIVE_BACKEND_URL,
-    ], (result) => {
+    ], async (result) => {
+      let hasStremioTab = false;
+      try {
+        const tabs = await chrome.tabs.query({ url: STREMIO_WEB_URLS });
+        hasStremioTab = tabs.length > 0;
+      } catch {}
       sendResponse({
         stremioRunning, stremioSettings,
         profile: result[WPConstants.STORAGE.STREMIO_PROFILE] ?? null,
@@ -138,6 +143,7 @@ const messageHandlers = {
         activeBackendUrl: result[WPConstants.STORAGE.ACTIVE_BACKEND_URL] ?? null,
         userId: result[WPConstants.STORAGE.USER_ID] ?? null,
         room: result[WPConstants.STORAGE.ROOM_STATE] ?? null,
+        hasStremioTab,
         bgVersion: BG_VERSION,
       });
     });
