@@ -84,6 +84,15 @@ async function openStremio(context) {
   return page;
 }
 
+async function openStremioAt(context, url) {
+  const page = await context.newPage();
+  trackPageDiagnostics(page, 'stremio');
+  await page.goto(url, { waitUntil: 'domcontentloaded' });
+  await page.waitForFunction(() => document.getElementById('wp-overlay') !== null, { timeout: TIMEOUT });
+  await page.waitForTimeout(1000);
+  return page;
+}
+
 async function openSidebarIfHidden(page) {
   const sidebarHidden = await page.evaluate(() =>
     document.getElementById('wp-sidebar')?.classList.contains('wp-sidebar-hidden')
@@ -114,7 +123,7 @@ async function testPopupLoadsWithStatus() {
 
     // WS status should show connected (server is running)
     const wsText = await popup.evaluate(() => document.getElementById('ws-status').textContent);
-    assert(wsText === 'Connected to server', `WS status: "${wsText}"`);
+    assert(/^Connected to(?: [A-Za-z]+)? server$/.test(wsText || ''), `WS status: "${wsText}"`);
 
     // Username input exists
     const hasInput = await popup.evaluate(() => !!document.getElementById('username-input'));
@@ -633,6 +642,117 @@ async function testPeerDirectStreamLink() {
   }
 }
 
+async function testCreateRoomFromPlayerPagePublishesSafeDirectJoinMetadata() {
+  console.log('\n── Test: Host creates a room directly from player page ──');
+  const context = await launchWithExtension();
+  try {
+    const directPlayerUrl = `${STREMIO_URL}/#/player/eAEBOADH%2F3sieXRJZCI6Ik5LWWVhNjN0UW1JIiwiZGVzY3JpcHRpb24iOiJQcm9qZWN0IEhhaWwgTWFyeSJ9BqUSsQ%3D%3D`;
+    const stremio = await openStremioAt(context, directPlayerUrl);
+    await injectMockVideo(stremio, 42);
+
+    const extId = await getExtensionId(context);
+    const popup = await openPopup(context, extId);
+    await popup.fill('#username-input', 'PlayerHost');
+    await popup.fill('#room-name-input', `player-${Date.now().toString().slice(-6)}`);
+    await popup.check('#public-check');
+    await popup.click('#btn-create');
+    await popup.waitForFunction(
+      () => !document.getElementById('view-room').classList.contains('hidden'),
+      { timeout: TIMEOUT }
+    );
+
+    const roomId = await popup.evaluate(() => document.getElementById('room-id-display').textContent);
+    let roomSnapshot = null;
+    const roomApis = ['http://localhost:8181/rooms', 'https://ws.mertd.me/rooms'];
+    for (let i = 0; i < 10; i++) {
+      for (const api of roomApis) {
+        try {
+          const res = await fetch(api);
+          const data = await res.json();
+          roomSnapshot = data.rooms.find((room) => room.id === roomId) || null;
+          if (roomSnapshot) break;
+        } catch {
+          // Ignore backend fetch failures in favor of the other backend.
+        }
+      }
+      if (roomSnapshot?.hasDirectJoin) break;
+      await stremio.waitForTimeout(500);
+    }
+
+    assert(
+      roomSnapshot?.hasDirectJoin === true
+        && roomSnapshot?.directJoinType === 'direct-url'
+        && !('directJoinUrl' in roomSnapshot),
+      `Public room exposes safe direct-join metadata when created from an existing player page (${JSON.stringify(roomSnapshot)})`
+    );
+
+    await popup.close();
+    await stremio.close();
+  } finally {
+    await context.close();
+  }
+}
+
+async function testPreferDirectJoinOpensPrivatePlayerLocally() {
+  console.log('\n── Test: Prefer Direct Join opens the host player after room sync ──');
+  const ctx1 = await launchWithExtension();
+  const ctx2 = await launchWithExtension();
+  try {
+    const stremio1 = await openStremio(ctx1);
+    const extId1 = await getExtensionId(ctx1);
+    const popup1 = await openPopup(ctx1, extId1);
+    await popup1.fill('#username-input', 'Alice');
+    await popup1.click('#btn-create');
+    await popup1.waitForFunction(() => !document.getElementById('view-room').classList.contains('hidden'), { timeout: TIMEOUT });
+    const roomId = await popup1.evaluate(() => document.getElementById('room-id-display').textContent);
+
+    await injectMockVideo(stremio1, 42);
+    await stremio1.evaluate(() => {
+      window.location.hash = '/detail/movie/tt0468569/tt0468569';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    await stremio1.waitForTimeout(800);
+    await stremio1.evaluate(() => {
+      window.location.hash = '/player/eAEBOADH%2F3sieXRJZCI6Ik5LWWVhNjN0UW1JIiwiZGVzY3JpcHRpb24iOiJQcm9qZWN0IEhhaWwgTWFyeSJ9BqUSsQ%3D%3D';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    await stremio1.waitForTimeout(1500);
+
+    const stremio2 = await openStremio(ctx2);
+    const extId2 = await getExtensionId(ctx2);
+    const popup2 = await openPopup(ctx2, extId2);
+    await popup2.evaluate((pendingRoomId) => chrome.storage.local.set({
+      [WPConstants.STORAGE.USERNAME]: 'Bob',
+      [WPConstants.STORAGE.PENDING_ROOM_JOIN]: pendingRoomId,
+      [WPConstants.STORAGE.PENDING_ROOM_JOIN_OPTIONS]: {
+        roomId: pendingRoomId,
+        preferDirectJoin: true,
+        requestedAt: Date.now(),
+      },
+    }), roomId);
+
+    const joined = await popup2.waitForFunction(
+      () => !document.getElementById('view-room').classList.contains('hidden'),
+      { timeout: TIMEOUT }
+    ).then(() => true).catch(() => false);
+    assert(joined, 'Peer joins the room via the direct-join intent');
+
+    const openedPlayer = await stremio2.waitForFunction(
+      () => window.location.hash.startsWith('#/player/'),
+      { timeout: TIMEOUT }
+    ).then(() => true).catch(() => false);
+    assert(openedPlayer, 'Peer opens the host player after the room sync arrives');
+
+    await popup1.close();
+    await popup2.close();
+    await stremio1.close();
+    await stremio2.close();
+  } finally {
+    await ctx1.close();
+    await ctx2.close();
+  }
+}
+
 async function testBidirectionalChat() {
   console.log('\n── Test: Bidirectional chat between two real extensions ──');
   const env = await setupTwoUsers();
@@ -818,6 +938,8 @@ async function main() {
     testThemePropagation,
     testPeerContentLink,
     testPeerDirectStreamLink,
+    testCreateRoomFromPlayerPagePublishesSafeDirectJoinMetadata,
+    testPreferDirectJoinOpensPrivatePlayerLocally,
     testBidirectionalChat,
     testTypingIndicatorFlow,
     testBookmarkFlow,

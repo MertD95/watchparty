@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "WatchParty for Stremio",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "minimum_chrome_version": "116",
   "description": "Synchronized watching with friends on Stremio Web. Create a room, share the code, watch together.",
   "permissions": [
@@ -34,7 +34,7 @@
         "https://web.strem.io/*",
         "https://app.strem.io/*"
       ],
-      "js": ["constants.js", "wp-protocol.js", "utils.js", "stremio-sync.js", "stremio-ws.js", "stremio-crypto.js", "stremio-overlay-theme.js", "stremio-overlay-modals.js", "stremio-overlay.js", "stremio-profile.js", "stremio-content.js"],
+      "js": ["constants.js", "direct-play.js", "wp-protocol.js", "utils.js", "stremio-sync.js", "stremio-ws.js", "stremio-crypto.js", "stremio-overlay-theme.js", "stremio-overlay-modals.js", "stremio-overlay.js", "stremio-profile.js", "stremio-content.js"],
       "css": ["stremio-overlay.css"],
       "run_at": "document_end"
     },

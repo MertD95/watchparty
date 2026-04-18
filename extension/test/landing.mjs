@@ -178,7 +178,8 @@ async function main() {
         id: 'room-1',
         name: null,
         meta: { id: 'tt1375666', type: 'movie', name: 'Inception' },
-        directJoinUrl: 'https://web.stremio.com/#/player/direct-room-1',
+        hasDirectJoin: true,
+        directJoinType: 'direct-url',
         users: 2,
         owner: 'Alice',
         paused: false,
@@ -223,6 +224,7 @@ async function main() {
       navTarget: window.__navTargets[0] || null,
     }));
     ok(roomJoinAction.joinMessage?.roomId === 'room-1', 'Join Room posts the room ID to the extension bridge');
+    ok(roomJoinAction.joinMessage?.preferDirectJoin === false, 'Join Room keeps direct-join preference off');
     ok(roomJoinAction.navTarget === 'https://web.stremio.com/#/detail/movie/tt1375666', 'Join Room navigates to the Stremio title page');
 
     await page.evaluate(() => {
@@ -236,7 +238,8 @@ async function main() {
       navTarget: window.__navTargets[0] || null,
     }));
     ok(directJoinAction.joinMessage?.roomId === 'room-1', 'Direct Join also posts the room ID to the extension bridge');
-    ok(directJoinAction.navTarget === 'https://web.stremio.com/#/player/direct-room-1', 'Direct Join targets the shared Stremio player URL');
+    ok(directJoinAction.joinMessage?.preferDirectJoin === true, 'Direct Join sets the prefer-direct intent for the extension');
+    ok(directJoinAction.navTarget === 'https://web.stremio.com/#/detail/movie/tt1375666', 'Direct Join still navigates to the Stremio title page while the extension resolves the private player URL');
 
     const sseReady = await page.waitForFunction(
       () => window.__sseEvents.some((event) => event.type === 'message'),
@@ -249,7 +252,8 @@ async function main() {
         id: 'room-1',
         name: null,
         meta: { id: 'tt1375666', type: 'movie', name: 'Inception' },
-        directJoinUrl: 'https://web.stremio.com/#/player/direct-room-1',
+        hasDirectJoin: true,
+        directJoinType: 'direct-url',
         users: 2,
         owner: 'Alice',
         paused: false,
@@ -261,7 +265,8 @@ async function main() {
         id: 'room-2',
         name: null,
         meta: { id: 'tt0816692', type: 'movie', name: 'Interstellar' },
-        directJoinUrl: null,
+        hasDirectJoin: false,
+        directJoinType: null,
         users: 3,
         owner: 'Bob',
         paused: true,
@@ -283,7 +288,8 @@ async function main() {
         id: 'room-3',
         name: null,
         meta: { id: 'tt0110912', type: 'movie', name: 'Pulp Fiction' },
-        directJoinUrl: null,
+        hasDirectJoin: false,
+        directJoinType: null,
         users: 4,
         owner: 'Carol',
         paused: false,

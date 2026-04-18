@@ -154,14 +154,33 @@ const messageHandlers = {
   },
   'chat-message': (m) => relayToPanel('chat-message', m.payload),
   'bookmark': (m) => relayToPanel('bookmark', m.payload),
-  'create-room': (m, _s, sr) => storeAndForward({
-    [WPConstants.STORAGE.PENDING_ROOM_CREATE]: {
-      username: m.username, meta: m.meta, stream: m.stream, public: m.public, roomName: m.roomName,
-    },
-  }, m, sr),
-  'join-room': (m, _s, sr) => storeAndForward(
-    { [WPConstants.STORAGE.PENDING_ROOM_JOIN]: m.roomId, [WPConstants.STORAGE.USERNAME]: m.username }, m, sr
-  ),
+  'create-room': (m, _s, sr) => {
+    chrome.storage.local.remove(WPConstants.STORAGE.PENDING_ROOM_JOIN_OPTIONS, () => {
+      storeAndForward({
+        [WPConstants.STORAGE.PENDING_ROOM_CREATE]: {
+          username: m.username, meta: m.meta, stream: m.stream, public: m.public, roomName: m.roomName,
+        },
+      }, m, sr);
+    });
+  },
+  'join-room': (m, _s, sr) => {
+    const updates = {
+      [WPConstants.STORAGE.PENDING_ROOM_JOIN]: m.roomId,
+      [WPConstants.STORAGE.USERNAME]: m.username,
+    };
+    if (m.preferDirectJoin) {
+      updates[WPConstants.STORAGE.PENDING_ROOM_JOIN_OPTIONS] = {
+        roomId: m.roomId,
+        preferDirectJoin: true,
+        requestedAt: Date.now(),
+      };
+      storeAndForward(updates, m, sr);
+      return;
+    }
+    chrome.storage.local.remove(WPConstants.STORAGE.PENDING_ROOM_JOIN_OPTIONS, () => {
+      storeAndForward(updates, m, sr);
+    });
+  },
   'leave-room': (m, _s, sr) => storeAndForward({ [WPConstants.STORAGE.PENDING_LEAVE_ROOM]: true }, m, sr),
   'toggle-public': (m, _s, sr) => storeAndForward({ [WPConstants.STORAGE.PENDING_ACTION]: { action: m.action, ...m } }, m, sr),
   'update-room-settings': (m, _s, sr) => storeAndForward({ [WPConstants.STORAGE.PENDING_ACTION]: { action: m.action, ...m } }, m, sr),

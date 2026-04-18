@@ -90,6 +90,17 @@ window.addEventListener('message', (event) => {
   if (!ALLOWED_ORIGINS.has(event.origin)) return;
   if (event.data?.type === 'watchparty-join-room' && event.data.roomId) {
     chrome.storage.local.set({ [WPConstants.STORAGE.PENDING_ROOM_JOIN]: event.data.roomId });
+    if (event.data.preferDirectJoin) {
+      chrome.storage.local.set({
+        [WPConstants.STORAGE.PENDING_ROOM_JOIN_OPTIONS]: {
+          roomId: event.data.roomId,
+          preferDirectJoin: true,
+          requestedAt: Date.now(),
+        },
+      });
+    } else {
+      chrome.storage.local.remove(WPConstants.STORAGE.PENDING_ROOM_JOIN_OPTIONS);
+    }
     // Store E2E encryption key in session storage (in-memory only, cleared on browser restart — more secure)
     if (event.data.cryptoKey) {
       chrome.storage.session.set({ [WPConstants.STORAGE.roomKey(event.data.roomId)]: event.data.cryptoKey }).catch(() => {

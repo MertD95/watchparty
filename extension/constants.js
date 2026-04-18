@@ -73,6 +73,7 @@ const WPConstants = (() => {
     SAVED_AUTH_KEY: 'savedAuthKey',
     PENDING_ROOM_CREATE: 'pendingRoomCreate',
     PENDING_ROOM_JOIN: 'pendingRoomJoin',
+    PENDING_ROOM_JOIN_OPTIONS: 'pendingRoomJoinOptions',
     PENDING_LEAVE_ROOM: 'pendingLeaveRoom',
     PENDING_ACTION: 'pendingAction',
     ACTIVE_VIDEO_TAB: 'wpActiveVideoTab', // userId of the tab that owns sync/playback

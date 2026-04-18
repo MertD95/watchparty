@@ -439,19 +439,22 @@
       loadPublicRooms();
     }
 
-    function getDirectJoinUrl(room) {
-      const rawUrl = room?.directJoinUrl;
-      if (!rawUrl) return null;
-      try {
-        const url = new URL(rawUrl);
-        const isTrustedOrigin = url.origin === 'https://web.stremio.com'
-          || url.origin === 'https://web.strem.io'
-          || url.origin === 'https://app.strem.io';
-        if (!isTrustedOrigin || !url.hash.startsWith('#/player/')) return null;
-        return url.toString();
-      } catch {
-        return null;
+    function getDirectJoinType(room) {
+      return typeof room?.directJoinType === 'string' ? room.directJoinType : null;
+    }
+
+    function getDirectJoinTitle(room) {
+      const directJoinType = getDirectJoinType(room);
+      if (room?.hasDirectJoin && directJoinType === 'debrid-url') {
+        return 'Direct Join will try the host stream, but playback may depend on your account access.';
       }
+      if (directJoinType === 'not-web-ready') {
+        return 'Direct Join unavailable: the host stream needs extra headers or local preparation.';
+      }
+      if (directJoinType === 'external') {
+        return 'Direct Join unavailable: the host stream opens outside Stremio Web.';
+      }
+      return 'Direct stream unavailable until the host opens a Stremio player.';
     }
 
     function navigateToUrl(url) {
@@ -470,7 +473,8 @@
       const isPublic = room.public;
       const metaId = room.meta?.id || '';
       const metaType = room.meta?.type || '';
-      const directJoinUrl = getDirectJoinUrl(room);
+      const directJoinType = getDirectJoinType(room);
+      const hasDirectJoin = room?.hasDirectJoin === true;
 
       const card = document.createElement('div');
       card.className = 'room-card';
@@ -532,11 +536,12 @@
       const directBtn = document.createElement('button');
       directBtn.className = 'room-direct-btn';
       directBtn.textContent = 'Direct Join';
-      if (isPublic && directJoinUrl) {
-        directBtn.addEventListener('click', () => joinRoom(room.id, metaId, metaType, directJoinUrl));
+      if (isPublic && hasDirectJoin) {
+        directBtn.addEventListener('click', () => joinRoom(room.id, metaId, metaType, { preferDirectJoin: true }));
+        if (directJoinType === 'debrid-url') directBtn.title = getDirectJoinTitle(room);
       } else {
         directBtn.disabled = true;
-        directBtn.title = 'Direct stream unavailable until the host opens a Stremio player.';
+        directBtn.title = getDirectJoinTitle(room);
       }
       actions.appendChild(directBtn);
 
@@ -617,17 +622,22 @@
       roomsTitle.appendChild(badge);
     }
 
-    function joinRoom(roomId, metaId, metaType, directJoinUrl) {
+    function joinRoom(roomId, metaId, metaType, options = {}) {
       // Extract E2E encryption key from URL fragment if present
       const hash = window.location.hash;
       const keyMatch = hash.match(/[#&]key=([A-Za-z0-9_-]+)/);
       const cryptoKey = keyMatch ? keyMatch[1] : undefined;
       // Tell the content script to store the room ID (and crypto key) in chrome.storage
-      window.postMessage({ type: 'watchparty-join-room', roomId, cryptoKey }, location.origin);
+      window.postMessage({
+        type: 'watchparty-join-room',
+        roomId,
+        cryptoKey,
+        preferDirectJoin: options.preferDirectJoin === true,
+      }, location.origin);
       const fallbackUrl = (metaId && metaId !== 'pending' && metaId !== 'unknown' && metaType)
         ? `https://web.stremio.com/#/detail/${encodeURIComponent(metaType)}/${encodeURIComponent(metaId)}`
         : 'https://web.stremio.com';
-      navigateToUrl(directJoinUrl || fallbackUrl);
+      navigateToUrl(fallbackUrl);
     }
 
     // --- Private room UUID modal ---

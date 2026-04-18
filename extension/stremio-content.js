@@ -28,6 +28,7 @@
   let isActiveVideoTab = false;
   let lastKnownContentMeta = null;
   let lastSharedContentKey = null;
+  let pendingJoinOptions = null;
 
   const PLACEHOLDER_ROOM_NAME = 'WatchParty Session';
   const PLACEHOLDER_STREAM_URL = 'https://watchparty.mertd.me/sync';
@@ -58,6 +59,92 @@
 
   function isPlaceholderStream(stream) {
     return !stream?.url || stream.url === PLACEHOLDER_STREAM_URL;
+  }
+
+  function normalizePendingJoinOptions(value) {
+    if (!value || typeof value !== 'object') return null;
+    if (typeof value.roomId !== 'string' || !value.roomId || value.preferDirectJoin !== true) return null;
+    return { roomId: value.roomId, preferDirectJoin: true };
+  }
+
+  function syncPendingJoinOptions(value, roomId) {
+    const next = normalizePendingJoinOptions(value);
+    if (!next) {
+      pendingJoinOptions = null;
+      return null;
+    }
+    if (roomId && next.roomId !== roomId) {
+      pendingJoinOptions = null;
+      if (extOk()) chrome.storage.local.remove(WPConstants.STORAGE.PENDING_ROOM_JOIN_OPTIONS).catch(() => { });
+      return null;
+    }
+    pendingJoinOptions = next;
+    return next;
+  }
+
+  function clearPendingJoinOptions(roomId) {
+    if (roomId && pendingJoinOptions?.roomId && pendingJoinOptions.roomId !== roomId) return;
+    pendingJoinOptions = null;
+    if (extOk()) chrome.storage.local.remove(WPConstants.STORAGE.PENDING_ROOM_JOIN_OPTIONS).catch(() => { });
+  }
+
+  function buildSharedStreamKey(stream) {
+    const behaviorHints = stream?.behaviorHints || {};
+    const proxyHeaderKeys = behaviorHints.proxyHeaders
+      ? Object.keys(behaviorHints.proxyHeaders).sort().join('|')
+      : '';
+    return [
+      stream?.url || '',
+      stream?.resolvedUrl || '',
+      stream?.infoHash || '',
+      Number.isInteger(stream?.fileIdx) ? String(stream.fileIdx) : '',
+      stream?.ytId || '',
+      stream?.externalUrl || '',
+      stream?.filename || '',
+      stream?.bingeGroup || behaviorHints.bingeGroup || '',
+      stream?.streamTransportUrl || '',
+      stream?.metaTransportUrl || '',
+      stream?.addonTransportUrl || '',
+      behaviorHints.notWebReady ? 'not-web-ready' : '',
+      proxyHeaderKeys,
+      Array.isArray(stream?.sources) ? stream.sources.join('|') : '',
+    ].join('::');
+  }
+
+  function maybeHandlePendingDirectJoin(room) {
+    if (!room?.id || isHost || pendingJoinOptions?.roomId !== room.id || pendingJoinOptions?.preferDirectJoin !== true) {
+      return { handled: false, navigated: false, failed: false, alreadyOpen: false };
+    }
+
+    clearPendingJoinOptions(room.id);
+    const directJoin = WPDirectPlay.classifyStream(room.stream);
+    if (!directJoin.hasDirectJoin || !directJoin.url) {
+      WPOverlay.showToast(`DirectPlay failed: ${directJoin.failureReason || 'Host stream is not portable yet.'}`, 3500);
+      return { handled: true, navigated: false, failed: true, alreadyOpen: false };
+    }
+
+    try {
+      const targetUrl = new URL(directJoin.url);
+      const sameOrigin = targetUrl.origin === window.location.origin;
+      const sameHash = sameOrigin && targetUrl.hash === window.location.hash;
+      if (sameHash) {
+        return { handled: true, navigated: false, failed: false, alreadyOpen: true };
+      }
+
+      const message = directJoin.directJoinType === 'debrid-url'
+        ? 'Opening host stream directly. Playback may depend on your account access.'
+        : 'Opening host stream directly...';
+      WPOverlay.showToast(message, 2200);
+      if (sameOrigin) {
+        window.location.hash = targetUrl.hash.slice(1);
+      } else {
+        window.location.href = targetUrl.toString();
+      }
+      return { handled: true, navigated: true, failed: false, alreadyOpen: false };
+    } catch {
+      WPOverlay.showToast('DirectPlay failed: invalid host stream URL.', 3000);
+      return { handled: true, navigated: false, failed: true, alreadyOpen: false };
+    }
   }
 
   // --- Persist state to storage for popup queries ---
@@ -183,6 +270,7 @@
       case WPProtocol.S2C.ERROR:
         if (p?.code === WPProtocol.ERROR_CODE.ROOM_NOT_FOUND) {
           const wasInRoom = inRoom;
+          clearPendingJoinOptions();
           inRoom = false; roomState = null;
           WPSync.detach();
           if (extOk()) chrome.storage.local.remove([WPConstants.STORAGE.CURRENT_ROOM, WPConstants.STORAGE.PENDING_ROOM_JOIN]);
@@ -273,8 +361,15 @@
     if (!WPWS.isReady() || !extOk()) return;
     // sessionId MUST be loaded before sending any room messages — otherwise server can't dedup
     if (!sessionId) return;
-    chrome.storage.local.get([WPConstants.STORAGE.PENDING_ROOM_CREATE, WPConstants.STORAGE.PENDING_ROOM_JOIN, WPConstants.STORAGE.CURRENT_ROOM, WPConstants.STORAGE.USERNAME], (stored) => {
+    chrome.storage.local.get([
+      WPConstants.STORAGE.PENDING_ROOM_CREATE,
+      WPConstants.STORAGE.PENDING_ROOM_JOIN,
+      WPConstants.STORAGE.PENDING_ROOM_JOIN_OPTIONS,
+      WPConstants.STORAGE.CURRENT_ROOM,
+      WPConstants.STORAGE.USERNAME,
+    ], (stored) => {
       if (stored[WPConstants.STORAGE.PENDING_ROOM_CREATE]) {
+        clearPendingJoinOptions();
         chrome.storage.local.remove(WPConstants.STORAGE.PENDING_ROOM_CREATE);
         // Leave current room first if still connected (prevents rejoining old room)
         if (inRoom) {
@@ -292,6 +387,7 @@
         WPWS.send({ type: WPProtocol.C2S.ROOM_NEW, payload });
       } else {
         const roomToJoin = stored[WPConstants.STORAGE.PENDING_ROOM_JOIN] || stored[WPConstants.STORAGE.CURRENT_ROOM];
+        syncPendingJoinOptions(stored[WPConstants.STORAGE.PENDING_ROOM_JOIN_OPTIONS], roomToJoin);
         if (stored[WPConstants.STORAGE.PENDING_ROOM_JOIN]) chrome.storage.local.remove(WPConstants.STORAGE.PENDING_ROOM_JOIN);
         if (roomToJoin) {
           // Import E2E encryption key BEFORE joining (prevents race where first encrypted message arrives before key is ready)
@@ -306,6 +402,8 @@
             }
             await importKeyAndJoin(keyResult[keyStorageKey], roomToJoin, stored);
           });
+        } else {
+          clearPendingJoinOptions();
         }
       }
     });
@@ -370,6 +468,7 @@
     isHost = amIHost();
     if (video) { claimActiveTab(); attachSync(); }
     refreshOverlay();
+    const directJoinResult = !isHost ? maybeHandlePendingDirectJoin(roomState) : null;
     // E2E encryption is opt-in: only enabled when a key is provided via invite URL.
     // Auto-generating keys breaks multi-tab (other tabs can't reliably read the key from session storage).
     WPOverlay.bindRoomCodeCopy(roomState);
@@ -377,6 +476,9 @@
     if (isHost) {
       // Only the active video tab shares content link
       if (isActiveVideoTab) shareContentLink();
+    } else if (directJoinResult?.handled && !directJoinResult.failed) {
+      WPOverlay.openSidebar();
+      return;
     } else {
       // Auto-navigate to host's content — but only if this tab doesn't already have video
       // (prevents a tab mid-playback from being redirected)
@@ -402,6 +504,8 @@
     if (roomState?.id && extOk()) chrome.storage.local.set({ [WPConstants.STORAGE.CURRENT_ROOM]: roomState.id });
     WPSync.setHost(isHost);
     refreshOverlay();
+    const directJoinResult = !isHost ? maybeHandlePendingDirectJoin(roomState) : null;
+    if (directJoinResult?.navigated) return;
     if (!isHost && roomState.player) {
       if (video) {
         const newTime = roomState.player.time || 0;
@@ -465,13 +569,17 @@
   }
 
   // --- Content link sharing ---
-  function shareContentLink() {
+  async function shareContentLink() {
     const context = getCurrentContentContext();
     if (!context.meta && !context.launchUrl) return;
 
-    const stream = { url: context.launchUrl || PLACEHOLDER_STREAM_URL };
+    const stream = context.launchUrl
+      ? await WPDirectPlay.normalizeSharedStream({ url: context.launchUrl })
+      : { url: PLACEHOLDER_STREAM_URL };
+    if (!inRoom || !isHost || !isActiveVideoTab) return;
+
     if (!context.meta) {
-      const streamOnlyKey = `stream:::${stream.url}`;
+      const streamOnlyKey = `stream:::${buildSharedStreamKey(stream)}`;
       if (lastSharedContentKey === streamOnlyKey) return;
       lastSharedContentKey = streamOnlyKey;
       WPWS.send({ type: WPProtocol.C2S.ROOM_UPDATE_STREAM, payload: { stream } });
@@ -479,7 +587,7 @@
     }
 
     const meta = { ...context.meta };
-    const shareKey = `${meta.type}:${meta.id}:${meta.name || ''}:${stream.url}`;
+    const shareKey = `${meta.type}:${meta.id}:${meta.name || ''}:${buildSharedStreamKey(stream)}`;
     if (lastSharedContentKey === shareKey) return;
 
     if ((!meta.name || meta.name === meta.id) && meta.id?.startsWith('tt')) {
@@ -488,7 +596,7 @@
         .then(r => r.ok ? r.json() : null)
         .then(data => {
           if (data?.meta?.name) meta.name = data.meta.name;
-          lastSharedContentKey = `${meta.type}:${meta.id}:${meta.name || ''}:${stream.url}`;
+          lastSharedContentKey = `${meta.type}:${meta.id}:${meta.name || ''}:${buildSharedStreamKey(stream)}`;
           WPWS.send({ type: WPProtocol.C2S.ROOM_UPDATE_STREAM, payload: { stream, meta } });
         })
         .catch(() => {
@@ -553,6 +661,19 @@
     };
   }
 
+  function parsePlayerHash(hash) {
+    const m = (hash || '').match(/^#\/player\/([^/?#]+)(?:\/([^/?#]+)\/([^/?#]+)\/([^/?#]+)\/([^/?#]+)\/([^/?#]+))?/);
+    if (!m) return null;
+    return {
+      stream: decodeURIComponent(m[1]),
+      streamTransportUrl: m[2] ? decodeURIComponent(m[2]) : null,
+      metaTransportUrl: m[3] ? decodeURIComponent(m[3]) : null,
+      type: m[4] ? decodeURIComponent(m[4]) : null,
+      id: m[5] ? decodeURIComponent(m[5]) : null,
+      videoId: m[6] ? decodeURIComponent(m[6]) : null,
+    };
+  }
+
   function getCurrentLaunchUrl(hash = window.location.hash) {
     if (!/^#\/(?:detail|metadetails|player)\//.test(hash || '')) return null;
     return `${window.location.origin}/${hash}`;
@@ -560,11 +681,15 @@
 
   function updateKnownContentMeta() {
     const info = parseDetailHash(window.location.hash);
-    if (!info) return lastKnownContentMeta;
+    const playerInfo = parsePlayerHash(window.location.hash);
+    const nextInfo = info || (playerInfo?.type && playerInfo.id
+      ? { type: playerInfo.type, id: playerInfo.id }
+      : null);
+    if (!nextInfo) return lastKnownContentMeta;
     lastKnownContentMeta = {
-      id: info.id,
-      type: info.type,
-      name: getContentTitle() || lastKnownContentMeta?.name || info.id,
+      id: nextInfo.id,
+      type: nextInfo.type,
+      name: getContentTitle() || lastKnownContentMeta?.name || nextInfo.id,
     };
     return lastKnownContentMeta;
   }
@@ -573,6 +698,7 @@
     const hash = window.location.hash || '';
     const launchUrl = getCurrentLaunchUrl(hash);
     const detailInfo = parseDetailHash(hash);
+    const playerInfo = parsePlayerHash(hash);
     const title = getContentTitle();
 
     if (detailInfo) {
@@ -584,12 +710,25 @@
       return { meta: { ...lastKnownContentMeta }, launchUrl };
     }
 
-    if (hash.startsWith('#/player/') && lastKnownContentMeta) {
+    if (playerInfo) {
+      if (playerInfo.type && playerInfo.id) {
+        lastKnownContentMeta = {
+          id: playerInfo.id,
+          type: playerInfo.type,
+          name: title || lastKnownContentMeta?.name || playerInfo.id,
+        };
+      }
+      if (lastKnownContentMeta) {
+        return {
+          meta: {
+            ...lastKnownContentMeta,
+            name: title || lastKnownContentMeta.name || lastKnownContentMeta.id,
+          },
+          launchUrl,
+        };
+      }
       return {
-        meta: {
-          ...lastKnownContentMeta,
-          name: title || lastKnownContentMeta.name || lastKnownContentMeta.id,
-        },
+        meta: null,
         launchUrl,
       };
     }
@@ -598,7 +737,13 @@
   }
 
   function getCurrentContentInfo() {
-    const info = parseDetailHash(window.location.hash);
+    const info = parseDetailHash(window.location.hash)
+      || (() => {
+        const playerInfo = parsePlayerHash(window.location.hash);
+        return playerInfo?.type && playerInfo.id
+          ? { type: playerInfo.type, id: playerInfo.id }
+          : null;
+      })();
     if (info) return { ...info, url: getCurrentLaunchUrl() || window.location.href };
     return null;
   }

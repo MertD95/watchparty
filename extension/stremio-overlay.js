@@ -683,18 +683,7 @@ const WPOverlay = (() => {
   }
 
   function getDirectStreamUrl(roomState) {
-    const rawUrl = roomState?.stream?.url;
-    if (!rawUrl) return null;
-    try {
-      const url = new URL(rawUrl);
-      const isTrustedOrigin = url.origin === 'https://web.stremio.com'
-        || url.origin === 'https://web.strem.io'
-        || url.origin === 'https://app.strem.io';
-      if (!isTrustedOrigin || !url.hash.startsWith('#/player/')) return null;
-      return url.toString();
-    } catch {
-      return null;
-    }
+    return WPDirectPlay.getDirectJoinUrl(roomState?.stream);
   }
 
   function renderContentLink(contentLink, isHost, roomState) {
