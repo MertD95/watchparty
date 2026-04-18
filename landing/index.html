@@ -391,7 +391,7 @@
 
     <div class="rooms-section" id="rooms">
       <h2>Active Rooms</h2>
-      <p class="rooms-subtitle">Public rooms join instantly. Private rooms stay listed, but require the room key or invite link.</p>
+      <p class="rooms-subtitle">Public rooms join instantly. Private rooms stay listed, but require an invite or room key.</p>
       <div class="rooms-list" id="rooms-list">
         <div class="rooms-empty" id="rooms-empty">No active rooms right now. Create one from the extension!</div>
       </div>
@@ -684,13 +684,13 @@
       syncRoomPoster(posterSlot, room);
       card.classList.toggle('room-card-reconnecting', isReconnectListing);
       title.textContent = room.meta?.name || 'Untitled';
-      metaLine1.innerHTML = `Hosted by ${escapeHtml(room.owner)}${room.meta?.year ? ` &middot; ${room.meta.year}` : ''}${isPublic ? '' : ' &middot; Key required'}`;
+      metaLine1.innerHTML = `Hosted by ${escapeHtml(room.owner)}${room.meta?.year ? ` &middot; ${room.meta.year}` : ''}${isPublic ? '' : ' &middot; Invite required'}`;
       metaLine2.innerHTML = `<span style="color:${statusColor}">${statusIcon}</span> ${mins}:${secs}${room.bookmarks ? ` &middot; \uD83D\uDCCC ${room.bookmarks}` : ''}`;
       badge.className = isPublic ? 'room-badge room-badge-public' : 'room-badge room-badge-private';
       badge.textContent = isPublic ? 'Public' : 'Private';
       users.classList.toggle('room-users-reconnecting', isReconnectListing);
       users.textContent = isReconnectListing ? 'Reconnecting...' : `${room.users} watching`;
-      joinBtn.title = isPublic ? '' : 'Private room — room key required to join.';
+      joinBtn.title = isPublic ? '' : 'Private room - invite or room key required to join.';
       users.title = isReconnectListing
         ? `The host connection dropped. Keeping this room visible for about ${graceMinutes} minute${graceMinutes === 1 ? '' : 's'} while WatchParty reconnects.`
         : '';

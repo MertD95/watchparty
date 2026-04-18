@@ -435,11 +435,11 @@ async function main() {
     const privateReady = await page.waitForFunction(
       () => {
         const text = (document.querySelector('.room-card')?.innerText || '').toLowerCase();
-        return text.includes('neo') && text.includes('private') && text.includes('key required');
+        return text.includes('neo') && text.includes('private') && text.includes('invite required');
       },
       { timeout: 5000 }
     ).then(() => true).catch(() => false);
-    ok(privateReady, 'landing renders private rooms in the active room list with a key-required hint');
+    ok(privateReady, 'landing renders private rooms in the active room list with an invite-required hint');
 
     await page.evaluate(() => {
       window.__joinMessages = [];
