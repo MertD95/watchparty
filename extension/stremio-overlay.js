@@ -12,6 +12,7 @@ const WPOverlay = (() => {
   let overlay = null;
   let cachedUsername = 'You';
   let cachedUserId = null;
+  let cachedRoomState = null;
   let launcherHost = null;
   let launcherButton = null;
   let launcherLabel = null;
@@ -213,15 +214,35 @@ const WPOverlay = (() => {
   }
 
   // --- Push Stremio content when sidebar opens/closes ---
+  function getContentPushTarget() {
+    return document.getElementById('app') || document.body;
+  }
+
+  function clearContentMargin(target) {
+    if (!target) return;
+    target.style.transition = '';
+    target.style.width = '';
+    target.style.maxWidth = '';
+    target.style.overflow = '';
+  }
+
+  function isContentMarginApplied() {
+    const target = getContentPushTarget();
+    return target?.style.width?.includes(`${SIDEBAR_WIDTH}`) || false;
+  }
+
   function updateContentMargin(sidebarOpen) {
+    const target = getContentPushTarget();
+    clearContentMargin(document.body);
+    if (target && target !== document.body) clearContentMargin(target);
+
     // On small screens, sidebar overlays instead of pushing content
-    if (window.innerWidth <= 640) {
-      document.body.style.width = '';
-      document.body.style.overflow = '';
-      return;
-    }
-    document.body.style.transition = 'width .2s ease';
-    document.body.style.width = sidebarOpen ? `calc(100% - ${SIDEBAR_WIDTH}px)` : '';
+    if (window.innerWidth <= 640) return;
+
+    target.style.transition = 'width .2s ease';
+    target.style.width = sidebarOpen ? `calc(100% - ${SIDEBAR_WIDTH}px)` : '';
+    target.style.maxWidth = sidebarOpen ? `calc(100% - ${SIDEBAR_WIDTH}px)` : '';
+    if (target !== document.body) target.style.overflow = sidebarOpen ? 'hidden' : '';
     document.body.style.overflow = sidebarOpen ? 'hidden' : '';
   }
 
@@ -546,7 +567,7 @@ const WPOverlay = (() => {
   function initMarginObserver() {
     window.addEventListener('resize', () => updateContentMargin(isSidebarOpen()));
     const observer = new MutationObserver(() => {
-      if (isSidebarOpen() && !document.body.style.width?.includes(`${SIDEBAR_WIDTH}`)) {
+      if (isSidebarOpen() && !isContentMarginApplied()) {
         updateContentMargin(true);
       }
     });
@@ -589,7 +610,6 @@ const WPOverlay = (() => {
         </div>
         <div id="wp-body">
           <section id="wp-panel-chat" class="wp-panel" role="tabpanel">
-            <div id="wp-typing-indicator" class="wp-hidden-el"></div>
             <div id="wp-chat-container" class="wp-hidden-el">
               <div id="wp-chat-empty">
                 <div class="wp-chat-empty-card">
@@ -598,6 +618,7 @@ const WPOverlay = (() => {
                 </div>
               </div>
               <div id="wp-chat-messages"></div>
+              <div id="wp-typing-indicator" class="wp-hidden-el"></div>
               <div id="wp-chat-input-row">
                 <button id="wp-emoji-btn" title="Insert emoji" aria-label="Insert emoji">&#x1F600;</button>
                 <button id="wp-gif-btn" title="Send GIF" aria-label="Send GIF">GIF</button>
@@ -692,6 +713,59 @@ const WPOverlay = (() => {
     });
   }
 
+  function isOverlayInputNode(node) {
+    return node instanceof Element && (
+      node.id === 'wp-chat-input'
+      || node.id === 'wp-gif-search'
+      || !!node.closest('#wp-chat-input-row')
+      || !!node.closest('#wp-gif-picker')
+      || !!node.closest('#wp-emoji-picker')
+    );
+  }
+
+  function eventTargetsOverlayInput(event) {
+    if (isOverlayInputNode(event.target)) return true;
+    if (typeof event.composedPath !== 'function') return false;
+    return event.composedPath().some(isOverlayInputNode);
+  }
+
+  function hasOverlayInputFocus() {
+    return isOverlayInputNode(document.activeElement);
+  }
+
+  function bindInputFieldGuards(input, options = {}) {
+    const { allowEnterSubmit = false, onEscape = null } = options;
+    if (!input) return;
+
+    input.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      const lowerKey = String(e.key || '').toLowerCase();
+      if (allowEnterSubmit && e.key === 'Enter') {
+        e.preventDefault();
+        sendChat();
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        onEscape?.();
+        return;
+      }
+      if (e.altKey && lowerKey === 'w') {
+        e.preventDefault();
+      }
+    });
+    input.addEventListener('keyup', (e) => {
+      if (e.altKey && String(e.key || '').toLowerCase() === 'w') e.preventDefault();
+      e.stopPropagation();
+    });
+    input.addEventListener('keypress', (e) => {
+      if ((allowEnterSubmit && e.key === 'Enter') || (e.altKey && String(e.key || '').toLowerCase() === 'w')) {
+        e.preventDefault();
+      }
+      e.stopPropagation();
+    });
+  }
+
   // --- Event bindings ---
   function bindEvents() {
     const $ = (id) => document.getElementById(id);
@@ -701,12 +775,7 @@ const WPOverlay = (() => {
       btn.addEventListener('click', () => setActivePanel(btn.dataset.panel));
     });
     $('wp-chat-send').addEventListener('click', () => sendChat());
-    $('wp-chat-input').addEventListener('keydown', (e) => {
-      e.stopPropagation();
-      if (e.key === 'Enter') sendChat();
-    });
-    $('wp-chat-input').addEventListener('keyup', (e) => e.stopPropagation());
-    $('wp-chat-input').addEventListener('keypress', (e) => e.stopPropagation());
+    bindInputFieldGuards($('wp-chat-input'), { allowEnterSubmit: true });
     // --- Emoji picker toggle (library handles everything else) ---
     $('wp-emoji-btn').addEventListener('click', (ev) => {
       ev.stopPropagation();
@@ -731,6 +800,12 @@ const WPOverlay = (() => {
         $('wp-gif-search').focus();
         searchGifs('trending');
       }
+    });
+    bindInputFieldGuards($('wp-gif-search'), {
+      onEscape() {
+        $('wp-gif-picker').classList.add('wp-hidden-el');
+        $('wp-chat-input')?.focus();
+      },
     });
     $('wp-gif-search').addEventListener('input', (e) => {
       clearTimeout(gifDebounce);
@@ -824,6 +899,7 @@ const WPOverlay = (() => {
 
   function updateState({ inRoom, isHost, userId, sessionId, roomState, hasVideo, wsConnected }) {
     if (sessionId) cachedSessionId = sessionId;
+    cachedRoomState = roomState || null;
     // Cache username for local echo
     if (userId && roomState?.users) {
       cachedUserId = userId;
@@ -948,8 +1024,32 @@ const WPOverlay = (() => {
     renderCache.lastContentLinkKey = contentLinkKey;
   }
 
+  function formatPlaybackClock(timeSeconds) {
+    if (!Number.isFinite(timeSeconds) || timeSeconds < 0) return '';
+    const totalSeconds = Math.floor(timeSeconds);
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    if (hours > 0) return `${hours}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+    return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+  }
+
+  function getPlaybackSummary(user, roomState) {
+    const label = formatPlaybackClock(user?.playbackTime);
+    if (!label) return { label: '', title: '' };
+    let title = label;
+    const hostTime = roomState?.player?.time;
+    if (Number.isFinite(hostTime)) {
+      const drift = user.playbackTime - hostTime;
+      if (Math.abs(drift) >= 1) {
+        title = `${label} (${Math.abs(drift).toFixed(0)}s ${drift < 0 ? 'behind' : 'ahead of'} host)`;
+      }
+    }
+    return { label, title };
+  }
+
   function renderUsersList(usersDiv, roomState, userId, isHost) {
-    const usersKey = roomState.users.map(u => `${u.id}:${u.status}:${u.playbackStatus}`).join(',') + `:${roomState.owner}:${isHost}`;
+    const usersKey = roomState.users.map(u => `${u.id}:${u.status}:${u.playbackStatus}:${u.playbackTime ?? ''}`).join(',') + `:${roomState.owner}:${isHost}`;
     if (renderCache.lastUsersKey === usersKey) return;
     renderCache.lastUsersKey = usersKey;
     const ownerInList = roomState.users.some(u => u.id === roomState.owner);
@@ -967,8 +1067,12 @@ const WPOverlay = (() => {
       if (u.playbackStatus === 'buffering') statusIcon = '<span class="wp-user-status wp-status-buffering" title="Buffering">⟳</span>';
       else if (u.playbackStatus === 'paused') statusIcon = '<span class="wp-user-status wp-status-paused" title="Paused">❚❚</span>';
       else if (u.playbackStatus === 'playing') statusIcon = '<span class="wp-user-status wp-status-playing" title="Playing">▶</span>';
+      const playback = getPlaybackSummary(u, roomState);
+      const playbackLabel = playback.label
+        ? `<span class="wp-user-playhead" title="${escapeHtml(playback.title)}">${escapeHtml(playback.label)}</span>`
+        : '';
       const awayClass = u.status === 'away' ? ' wp-user-away' : '';
-      return `<div class="wp-user${awayClass}"><span class="wp-user-dot" style="background:${color}"></span>${crown}${escapeHtml(u.name)}${you}${statusIcon}${transferBtn}</div>`;
+      return `<div class="wp-user${awayClass}"><span class="wp-user-dot" style="background:${color}"></span><span class="wp-user-main">${crown}<span class="wp-user-name">${escapeHtml(u.name)}</span>${you}</span>${statusIcon}${playbackLabel}${transferBtn}</div>`;
     }).join('');
     usersDiv.onclick = (e) => {
       const btn = e.target.closest('.wp-transfer-btn');
@@ -1150,7 +1254,7 @@ const WPOverlay = (() => {
     container.appendChild(div);
     pruneChildren(container);
     container.scrollTop = container.scrollHeight;
-    updateChatEmptyState(roomState);
+    updateChatEmptyState(cachedRoomState);
   }
 
   function bindRoomCodeCopy(roomState) {
@@ -1230,6 +1334,7 @@ const WPOverlay = (() => {
   // --- Keyboard shortcuts ---
   function initKeyboardShortcuts() {
     document.addEventListener('keydown', (e) => {
+      if (eventTargetsOverlayInput(e) || hasOverlayInputFocus()) return;
       // Alt+W: toggle sidebar
       if (e.altKey && e.key === 'w') {
         e.preventDefault();

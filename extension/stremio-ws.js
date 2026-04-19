@@ -13,6 +13,7 @@ const WPWS = (() => {
   const BACKEND_MODES = BACKEND.MODES;
   const WS_URL_PROD = BACKEND.LIVE.wsUrl;
   const WS_URL_DEV = BACKEND.LOCAL.wsUrl;
+  const LOCAL_READY_URL = `${BACKEND.LOCAL.httpUrl}/ready`;
   const RECONNECT_BASE_MS = 1000;
   const RECONNECT_MAX_MS = 30000;
   const CLOCK_SAMPLES = 6;
@@ -41,7 +42,8 @@ const WPWS = (() => {
 
   async function probeLocalBackend() {
     try {
-      const res = await fetch(WS_URL_DEV.replace('ws://', 'http://'), { signal: AbortSignal.timeout(1000) });
+      // Probe the real health endpoint instead of `/`, which returns a non-OK response.
+      const res = await fetch(LOCAL_READY_URL, { signal: AbortSignal.timeout(1000) });
       return res.ok;
     } catch {
       return false;

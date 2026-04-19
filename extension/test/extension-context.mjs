@@ -10,6 +10,7 @@ export async function launchExtensionContext(extPath, options = {}) {
     args = [],
     viewport = { width: 1440, height: 900 },
     serviceWorkerTimeout = 10000,
+    backendMode = 'local',
   } = options;
 
   const context = await chromium.launchPersistentContext(userDataDir, {
@@ -36,6 +37,18 @@ export async function launchExtensionContext(extPath, options = {}) {
   }
 
   context._watchpartyExtensionId = serviceWorker.url().split('/')[2];
+
+  if (backendMode) {
+    await serviceWorker.evaluate(async (mode) => {
+      await chrome.storage.local.set({
+        wpBackendMode: mode,
+        wpActiveBackend: null,
+        wpActiveBackendUrl: null,
+        wpWsConnected: false,
+      });
+    }, backendMode);
+  }
+
   return context;
 }
 

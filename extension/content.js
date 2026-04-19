@@ -54,6 +54,11 @@ function onReady() {
   document.dispatchEvent(new CustomEvent('watchparty-ext-ready', {
     detail: { version: chrome.runtime.getManifest().version },
   }));
+  chrome.runtime.sendMessage({
+    type: 'watchparty-ext',
+    action: 'surface-ready',
+    surface: 'watchparty',
+  }).catch(() => {});
   sendCachedProfile();
   // Pass any saved authKey to the extension so it can fetch addons via API
   // (without the user needing to visit web.strem.io)
@@ -74,13 +79,18 @@ if (document.readyState === 'loading') {
 
 // ── Listen for updates pushed from background ──
 
-chrome.runtime.onMessage.addListener((message) => {
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type !== 'watchparty-ext') return;
+  if (message.action === 'probe-surface') {
+    sendResponse({ surface: 'watchparty' });
+    return true;
+  }
   if (message.action === 'profile-updated') {
     window.postMessage({ type: 'watchparty-ext-profile', data: { profile: message.data } }, location.origin);
   } else if (message.action === 'stremio-status') {
     window.postMessage({ type: 'watchparty-ext-profile', data: { stremioRunning: message.stremioRunning } }, location.origin);
   }
+  return false;
 });
 
 // ── Handle room join requests from the landing page ──
@@ -104,10 +114,12 @@ window.addEventListener('message', (event) => {
     const roomKey = event.data.roomKey || event.data.cryptoKey;
     // Store room/E2E key in session storage (in-memory only, cleared on browser restart — more secure)
     if (roomKey) {
-      chrome.storage.session.set({ [WPConstants.STORAGE.roomKey(event.data.roomId)]: roomKey }).catch(() => {
-        // Fallback to local storage if session storage unavailable (older browsers)
-        chrome.storage.local.set({ [WPConstants.STORAGE.roomKey(event.data.roomId)]: roomKey });
-      });
+      const encodedRoomKey = WPConstants.ROOM_KEYS.encodeForLocal(roomKey);
+      chrome.storage.session.set({ [WPConstants.STORAGE.roomKey(event.data.roomId)]: roomKey })
+        .catch(() => undefined)
+        .then(() => encodedRoomKey
+          ? chrome.storage.local.set({ [WPConstants.STORAGE.roomKey(event.data.roomId)]: encodedRoomKey })
+          : undefined);
     }
   }
   if (event.data?.type === 'watchparty-create-room' && event.data.username) {

@@ -9,9 +9,11 @@ const WPSync = (() => {
   const SOFT_DRIFT_ENTER = 0.35;    // Enter soft correction above 350ms (hysteresis: enter > exit)
   const SOFT_DRIFT_EXIT = 0.05;     // Exit soft correction below 50ms
   const SOFT_DRIFT_MAX = 3.0;       // Hard seek above 3s
+  const PAUSED_SEEK_THRESHOLD = 0.15; // When paused, seek on meaningful drift because playbackRate can't self-correct
   const CORRECTION_GAIN = 0.03;     // Proportional gain: 3% speed adjustment per second of drift
   const CORRECTION_MAX = 0.10;      // Clamp at ±10% speed (0.9x–1.1x) to stay imperceptible
   const SYNC_REPORT_INTERVAL = 500; // Report state every 500ms
+  const PAUSED_HEARTBEAT_INTERVAL = 1500; // Re-assert host authority while paused
   const SEEK_COOLDOWN = 2000;       // Don't re-seek within 2s (was 1.5s — too tight for slow connections)
 
   let video = null;
@@ -26,6 +28,23 @@ const WPSync = (() => {
   let clockOffset = 0; // ms offset from Cristian's algorithm
   let lastRemoteSeekTime = 0; // Prevent seek cascades: ignore remote seeks within cooldown of a local seek
   let onSyncOut = null; // Callback: (state) => void
+  let pausedHeartbeat = null;
+
+  function normalizeRemotePlayer(player) {
+    if (!player || typeof player !== 'object') return null;
+    if (typeof player.time !== 'number' || !isFinite(player.time) || player.time < 0) return null;
+    if (typeof player.paused !== 'boolean') return null;
+    return {
+      paused: player.paused,
+      buffering: player.buffering ?? false,
+      time: player.time,
+      // Keep playback authority intentionally narrow: speed is synced, but
+      // volume/mute/subtitles/audio-track remain local even if extra fields arrive.
+      speed: (typeof player.speed === 'number' && isFinite(player.speed) && player.speed >= 0.25 && player.speed <= 4)
+        ? player.speed
+        : 1,
+    };
+  }
 
   // --- Public API ---
 
@@ -40,6 +59,7 @@ const WPSync = (() => {
     video.addEventListener('seeked', onSeeked);
     video.addEventListener('ratechange', onRateChange);
     video.addEventListener('timeupdate', onTimeUpdate);
+    restartPausedHeartbeat();
   }
 
   function detach() {
@@ -56,9 +76,13 @@ const WPSync = (() => {
     isSyncing = false;
     lastDrift = 0;
     lastRemoteSeekTime = 0;
+    stopPausedHeartbeat();
   }
 
-  function setHost(val) { isHost = val; }
+  function setHost(val) {
+    isHost = val;
+    restartPausedHeartbeat();
+  }
   function getLastDrift() { return lastDrift; }
   function isAttached() { return video !== null; }
   function setClockOffset(offset) { clockOffset = offset; }
@@ -68,21 +92,21 @@ const WPSync = (() => {
     // Don't apply corrections while a hard seek is in-flight
     if (seekInProgress) return;
     // Validate player state — reject NaN/Infinity/negative time
-    if (typeof player.time !== 'number' || !isFinite(player.time) || player.time < 0) return;
-    if (typeof player.paused !== 'boolean') return;
+    const remote = normalizeRemotePlayer(player);
+    if (!remote) return;
 
-    hostSpeed = (typeof player.speed === 'number' && isFinite(player.speed) && player.speed >= 0.25 && player.speed <= 4) ? player.speed : 1;
+    hostSpeed = remote.speed;
 
     // Skip drift correction if either side is buffering
     const peerBuffering = video.readyState < 3;
-    const hostBuffering = player.buffering ?? false;
+    const hostBuffering = remote.buffering;
 
     // Apply pause/play
     // pause() fires 'pause' synchronously — safe to reset flag immediately
     // play() fires 'play' asynchronously — must reset flag after promise resolves
-    if (player.paused && !video.paused) {
+    if (remote.paused && !video.paused) {
       isSyncing = true; video.pause(); isSyncing = false;
-    } else if (!player.paused && video.paused) {
+    } else if (!remote.paused && video.paused) {
       isSyncing = true;
       video.play().then(() => { isSyncing = false; }).catch((e) => { isSyncing = false; if (e.name !== 'AbortError') console.warn('[WPSync] play() failed:', e.message); });
     }
@@ -92,18 +116,19 @@ const WPSync = (() => {
     // It represents how far the server clock is ahead of ours, already adjusted for one-way latency.
     // Convert ms to seconds (no halving — the offset is already one-way).
     const latencyCompensation = clockOffset / 1000;
-    const drift = (player.time + latencyCompensation) - video.currentTime;
+    const drift = (remote.time + latencyCompensation) - video.currentTime;
     lastDrift = drift;
     const now = Date.now();
 
     // Don't correct drift while either side is buffering — causes cascading seeks
     if (peerBuffering || hostBuffering) return;
 
-    if (Math.abs(drift) > SOFT_DRIFT_MAX) {
+    const shouldHardSeekWhilePaused = remote.paused && video.paused && Math.abs(drift) > PAUSED_SEEK_THRESHOLD;
+    if (shouldHardSeekWhilePaused || Math.abs(drift) > SOFT_DRIFT_MAX) {
       if (now - lastSeekTime > SEEK_COOLDOWN && now - lastRemoteSeekTime > SEEK_COOLDOWN) {
         seekInProgress = true;
         isSyncing = true;
-        video.currentTime = player.time + latencyCompensation;
+        video.currentTime = remote.time + latencyCompensation;
         lastSeekTime = now;
         lastRemoteSeekTime = now;
         // seeked event fires asynchronously; clear both flags when done
@@ -154,6 +179,24 @@ const WPSync = (() => {
     if (now - lastReportTime < SYNC_REPORT_INTERVAL) return;
     lastReportTime = now;
     report({ action: 'tick' });
+  }
+
+  function restartPausedHeartbeat() {
+    stopPausedHeartbeat();
+    if (!video || !isHost) return;
+    pausedHeartbeat = setInterval(() => {
+      if (!video || !isHost || isSyncing || !video.paused) return;
+      const now = Date.now();
+      if (now - lastReportTime < PAUSED_HEARTBEAT_INTERVAL - 50) return;
+      lastReportTime = now;
+      report({ action: 'tick' });
+    }, PAUSED_HEARTBEAT_INTERVAL);
+  }
+
+  function stopPausedHeartbeat() {
+    if (!pausedHeartbeat) return;
+    clearInterval(pausedHeartbeat);
+    pausedHeartbeat = null;
   }
 
   function report(extra) {

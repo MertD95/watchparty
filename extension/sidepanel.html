@@ -62,12 +62,17 @@
     .user-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
     .user-away { opacity: 0.4; }
     .user-status { font-size: 9px; color: #666; margin-left: 2px; }
+    .user-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+    .user-playhead { color: #98a2b3; font-size: 11px; font-variant-numeric: tabular-nums; flex-shrink: 0; }
 
     /* Chat */
     .chat-container { flex: 1; display: flex; flex-direction: column; min-height: 0; }
     .chat-messages {
       flex: 1; overflow-y: auto; padding: 8px 16px; font-size: 12px;
       scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.15) transparent;
+    }
+    .typing-indicator {
+      padding: 0 16px 8px; color: #98a2b3; font-size: 11px; font-style: italic;
     }
     .chat-msg { margin-bottom: 4px; line-height: 1.5; word-break: break-word; }
     .chat-name { font-weight: 600; }
@@ -129,6 +134,7 @@
 
   <div id="chat-container" class="chat-container hidden">
     <div id="chat-messages" class="chat-messages"></div>
+    <div id="typing-indicator" class="typing-indicator hidden"></div>
     <div class="chat-input-row">
       <input id="chat-input" class="chat-input" type="text" placeholder="Type a message..." maxlength="300" autocomplete="off">
       <button id="chat-send" class="chat-send">Send</button>

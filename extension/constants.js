@@ -54,6 +54,8 @@ const WPConstants = (() => {
     return `${getBrowseUrl(mode, activeKey)}/r/${roomId}`;
   }
 
+  const ROOM_KEY_LOCAL_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+
   // Chrome storage keys — single source of truth across all extension files
   const STORAGE = Object.freeze({
     ROOM_STATE: 'wpRoomState',
@@ -76,9 +78,42 @@ const WPConstants = (() => {
     PENDING_ROOM_JOIN_OPTIONS: 'pendingRoomJoinOptions',
     PENDING_LEAVE_ROOM: 'pendingLeaveRoom',
     PENDING_ACTION: 'pendingAction',
+    ROOM_SERVICE_ACTIVE: 'wpRoomServiceActive',
+    ROOM_SERVICE_ERROR: 'wpRoomServiceError',
     ACTIVE_VIDEO_TAB: 'wpActiveVideoTab', // userId of the tab that owns sync/playback
     // Dynamic key helper for per-room encryption keys
     roomKey(roomId) { return `wpRoomKey:${roomId}`; },
+  });
+
+  const ROOM_KEYS = Object.freeze({
+    LOCAL_TTL_MS: ROOM_KEY_LOCAL_TTL_MS,
+    encodeForLocal(roomKey) {
+      const value = typeof roomKey === 'string' ? roomKey.trim() : '';
+      if (!value) return null;
+      return {
+        value,
+        storedAt: Date.now(),
+      };
+    },
+    decodeFromLocal(storedValue, now = Date.now()) {
+      if (typeof storedValue === 'string') {
+        return { value: storedValue, expired: false, legacy: true };
+      }
+      if (!storedValue || typeof storedValue !== 'object') {
+        return { value: null, expired: false, legacy: false };
+      }
+      const value = typeof storedValue.value === 'string' ? storedValue.value.trim() : '';
+      const storedAt = Number(storedValue.storedAt);
+      if (!value || !Number.isFinite(storedAt) || storedAt <= 0) {
+        return { value: null, expired: true, legacy: false };
+      }
+      const expired = (now - storedAt) > ROOM_KEY_LOCAL_TTL_MS;
+      return {
+        value: expired ? null : value,
+        expired,
+        legacy: false,
+      };
+    },
   });
 
   const BACKEND = Object.freeze({
@@ -93,5 +128,5 @@ const WPConstants = (() => {
     buildInviteUrl,
   });
 
-  return { STORAGE, BACKEND };
+  return { STORAGE, BACKEND, ROOM_KEYS };
 })();

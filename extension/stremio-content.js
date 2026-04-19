@@ -116,17 +116,20 @@
   function cacheRoomKeyForRoom(roomId, roomKey) {
     if (!roomId || !roomKey || !extOk()) return Promise.resolve();
     const storageKey = WPConstants.STORAGE.roomKey(roomId);
-    return chrome.storage.session.set({ [storageKey]: roomKey }).catch(() =>
-      chrome.storage.local.set({ [storageKey]: roomKey }).catch(() => { })
-    );
+    const encodedRoomKey = WPConstants.ROOM_KEYS.encodeForLocal(roomKey);
+    return chrome.storage.session.set({ [storageKey]: roomKey })
+      .catch(() => undefined)
+      .then(() => encodedRoomKey
+        ? chrome.storage.local.set({ [storageKey]: encodedRoomKey }).catch(() => { })
+        : undefined);
   }
 
   function clearRoomKeyForRoom(roomId) {
     if (!roomId || !extOk()) return Promise.resolve();
     const storageKey = WPConstants.STORAGE.roomKey(roomId);
-    return chrome.storage.session.remove(storageKey).catch(() =>
-      chrome.storage.local.remove(storageKey).catch(() => { })
-    );
+    return chrome.storage.session.remove(storageKey)
+      .catch(() => undefined)
+      .then(() => chrome.storage.local.remove(storageKey).catch(() => { }));
   }
 
   function loadStoredRoomKey(roomId) {
@@ -136,7 +139,11 @@
       chrome.storage.session.get(storageKey, (result) => {
         if (!chrome.runtime?.id) return resolve(null);
         if (!chrome.runtime.lastError && result?.[storageKey]) return resolve(result[storageKey]);
-        chrome.storage.local.get(storageKey, (fallback) => resolve(fallback?.[storageKey] || null));
+        chrome.storage.local.get(storageKey, (fallback) => {
+          const decoded = WPConstants.ROOM_KEYS.decodeFromLocal(fallback?.[storageKey]);
+          if (decoded.expired) chrome.storage.local.remove(storageKey).catch(() => { });
+          resolve(decoded.value || null);
+        });
       });
     });
   }
@@ -585,6 +592,7 @@
         if (!p?.player || !roomState) return;
         prevPlayerTime = roomState.player?.time || 0;
         roomState.player = p.player;
+        persistState();
         onRoomSync();
         break;
 
@@ -592,19 +600,25 @@
         if (!p?.userId || !roomState?.users) return;
         const presUser = roomState.users.find(u => u.id === p.userId);
         if (presUser) presUser.status = p.status;
+        persistState();
         refreshOverlay();
         break;
 
       case WPProtocol.S2C.PLAYBACK_STATUS_UPDATE:
         if (!p?.userId || !roomState?.users) return;
         const pbUser = roomState.users.find(u => u.id === p.userId);
-        if (pbUser) pbUser.playbackStatus = p.status;
+        if (pbUser) {
+          pbUser.playbackStatus = p.status;
+          if (Number.isFinite(p.time)) pbUser.playbackTime = p.time;
+        }
+        persistState();
         refreshOverlay();
         break;
 
       case WPProtocol.S2C.SETTINGS_UPDATE:
         if (!p?.settings || !roomState) return;
         roomState.settings = p.settings;
+        persistState();
         refreshOverlay();
         break;
     }
@@ -625,6 +639,7 @@
       WPConstants.STORAGE.PENDING_ROOM_JOIN,
       WPConstants.STORAGE.PENDING_ROOM_JOIN_OPTIONS,
       WPConstants.STORAGE.PENDING_LEAVE_ROOM,
+      WPConstants.STORAGE.ROOM_SERVICE_ACTIVE,
       WPConstants.STORAGE.CURRENT_ROOM,
       WPConstants.STORAGE.USERNAME,
     ], async (stored) => {
@@ -660,7 +675,9 @@
         if (rc.roomName) payload.name = rc.roomName;
         WPWS.send({ type: WPProtocol.C2S.ROOM_NEW, payload });
       } else {
-        const roomToJoin = stored[WPConstants.STORAGE.PENDING_ROOM_JOIN] || stored[WPConstants.STORAGE.CURRENT_ROOM];
+        const roomServiceActive = !!stored[WPConstants.STORAGE.ROOM_SERVICE_ACTIVE];
+        const roomToJoin = stored[WPConstants.STORAGE.PENDING_ROOM_JOIN]
+          || (!roomServiceActive ? stored[WPConstants.STORAGE.CURRENT_ROOM] : null);
         const joinOptions = syncPendingJoinOptions(stored[WPConstants.STORAGE.PENDING_ROOM_JOIN_OPTIONS], roomToJoin);
         if (stored[WPConstants.STORAGE.PENDING_ROOM_JOIN]) chrome.storage.local.remove(WPConstants.STORAGE.PENDING_ROOM_JOIN);
         if (roomToJoin) {
@@ -671,7 +688,9 @@
             if (chrome.runtime.lastError || !keyResult[keyStorageKey]) {
               // Fallback: check local storage (older browsers or key stored before session migration)
               return chrome.storage.local.get(keyStorageKey, async (localResult) => {
-                await importKeyAndJoin(localResult[keyStorageKey], roomToJoin, stored);
+                const decoded = WPConstants.ROOM_KEYS.decodeFromLocal(localResult[keyStorageKey]);
+                if (decoded.expired) chrome.storage.local.remove(keyStorageKey).catch(() => { });
+                await importKeyAndJoin(decoded.value, roomToJoin, stored);
               });
             }
             await importKeyAndJoin(keyResult[keyStorageKey], roomToJoin, stored);
@@ -693,7 +712,9 @@
           if (chrome.runtime.lastError || !result?.[key]) {
             try {
               chrome.storage.local.get(key, async (local) => {
-                if (local[key]) try { await WPCrypto.importKey(local[key]); } catch { /* invalid key */ }
+                const decoded = WPConstants.ROOM_KEYS.decodeFromLocal(local[key]);
+                if (decoded.expired) chrome.storage.local.remove(key).catch(() => { });
+                if (decoded.value) try { await WPCrypto.importKey(decoded.value); } catch { /* invalid key */ }
                 resolve();
               });
             } catch { resolve(); } // Extension context invalidated
@@ -842,6 +863,7 @@
       typingUsers.delete(user);
     }
     WPOverlay.updateTypingIndicator(typingUsers, userId, roomState);
+    notifyBackground({ action: 'typing', payload: { user, typing } });
   }
 
   // --- Content link sharing ---
@@ -1088,9 +1110,14 @@
 
   // --- Action dispatch (from overlay events + background/popup messages) ---
   document.addEventListener('wp-action', (e) => handleAction(e.detail));
-  chrome.runtime.onMessage.addListener((message) => {
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type !== 'watchparty-ext') return;
+    if (message.action === 'probe-surface') {
+      sendResponse({ surface: 'stremio' });
+      return true;
+    }
     handleAction(message);
+    return false;
   });
 
   // Action handler map — replaces monolithic switch for testability and clarity
@@ -1172,14 +1199,25 @@
 
   // --- Playback status reporting (only from tab with active video) ---
   let lastPlaybackStatus = '';
+  let lastPlaybackSecond = -1;
   const playbackInterval = setInterval(() => {
-    if (!inRoom || !video || !isActiveVideoTab) return; // Only the active video tab reports
+    if (!inRoom || !video || !isActiveVideoTab) {
+      lastPlaybackStatus = '';
+      lastPlaybackSecond = -1;
+      return;
+    }
     if (!chrome.runtime?.id) { clearInterval(playbackInterval); return; }
     const status = video.paused ? 'paused' : video.readyState < 3 ? 'buffering' : 'playing';
-    if (status !== lastPlaybackStatus) {
-      lastPlaybackStatus = status;
-      WPWS.send({ type: WPProtocol.C2S.USER_PLAYBACK_STATUS, payload: { status } });
-    }
+    const currentSecond = Number.isFinite(video.currentTime) ? Math.floor(Math.max(0, video.currentTime)) : 0;
+    const statusChanged = status !== lastPlaybackStatus;
+    const timeChanged = lastPlaybackSecond < 0 || Math.abs(currentSecond - lastPlaybackSecond) >= (status === 'playing' ? 3 : 1);
+    if (!statusChanged && !timeChanged) return;
+    lastPlaybackStatus = status;
+    lastPlaybackSecond = currentSecond;
+    WPWS.send({
+      type: WPProtocol.C2S.USER_PLAYBACK_STATUS,
+      payload: { status, time: Math.max(0, Number(video.currentTime) || 0) },
+    });
   }, 3000);
 
   const hostShareInterval = setInterval(() => {
@@ -1202,6 +1240,7 @@
   if (extOk()) {
     chrome.storage.onChanged.addListener((changes) => {
       if (changes[WPConstants.STORAGE.PENDING_ROOM_CREATE] || changes[WPConstants.STORAGE.PENDING_ROOM_JOIN]) {
+        if (!sessionId) return;
         if (WPWS.isReady()) { processPendingActions(); }
         else { WPWS.connect(); }
       }
@@ -1237,6 +1276,15 @@
   });
 
   function init() {
+    chrome.runtime.sendMessage({
+      type: 'watchparty-ext',
+      action: 'surface-ready',
+      surface: 'stremio',
+    }).catch(() => {});
+    chrome.runtime.sendMessage({
+      type: 'watchparty-ext',
+      action: 'get-status',
+    }).catch(() => {});
     WPOverlay.create();
     WPOverlay.initKeyboardShortcuts();
     WPOverlay.bindTypingIndicator(
@@ -1249,7 +1297,14 @@
 
     // Generate or load persistent session ID (shared across all tabs via chrome.storage).
     // This lets the server identify all tabs as the same user — Twitch-style multi-tab.
-    chrome.storage.local.get([WPConstants.STORAGE.SESSION_ID, WPConstants.STORAGE.BACKEND_MODE], (result) => {
+    chrome.storage.local.get([
+      WPConstants.STORAGE.SESSION_ID,
+      WPConstants.STORAGE.BACKEND_MODE,
+      WPConstants.STORAGE.ACTIVE_BACKEND,
+      WPConstants.STORAGE.CURRENT_ROOM,
+      WPConstants.STORAGE.PENDING_ROOM_JOIN,
+      WPConstants.STORAGE.ROOM_SERVICE_ACTIVE,
+    ], (result) => {
       const storedSessionId = result[WPConstants.STORAGE.SESSION_ID];
       if (storedSessionId) {
         sessionId = storedSessionId;
@@ -1257,11 +1312,26 @@
         sessionId = crypto.randomUUID();
         chrome.storage.local.set({ [WPConstants.STORAGE.SESSION_ID]: sessionId });
       }
-      WPWS.setBackendMode(result[WPConstants.STORAGE.BACKEND_MODE]);
+      const backendMode = WPConstants.BACKEND.normalizeMode(result[WPConstants.STORAGE.BACKEND_MODE]);
+      const activeBackend = WPConstants.BACKEND.isKnownKey(result[WPConstants.STORAGE.ACTIVE_BACKEND])
+        ? result[WPConstants.STORAGE.ACTIVE_BACKEND]
+        : null;
+      const hasRoomBootstrap = !!result[WPConstants.STORAGE.CURRENT_ROOM]
+        || !!result[WPConstants.STORAGE.PENDING_ROOM_JOIN]
+        || !!result[WPConstants.STORAGE.ROOM_SERVICE_ACTIVE];
+      WPWS.setBackendMode(
+        backendMode === WPConstants.BACKEND.MODES.AUTO && hasRoomBootstrap && activeBackend
+          ? activeBackend
+          : backendMode
+      );
       persistConnectionState();
       // Every tab connects its own WS independently (like Twitch).
       // The server deduplicates by sessionId — multiple connections, one user.
-      WPWS.connect();
+      if (WPWS.isReady()) {
+        processPendingActions();
+      } else {
+        WPWS.connect();
+      }
     });
   }
 

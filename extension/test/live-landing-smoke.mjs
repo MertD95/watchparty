@@ -145,6 +145,7 @@ async function withLiveExtension(runScenario) {
   const context = await launchExtensionContext(EXT_PATH, {
     headless: true,
     viewport: { width: 1440, height: 900 },
+    backendMode: null,
   });
   try {
     const extId = await getExtensionId(context);

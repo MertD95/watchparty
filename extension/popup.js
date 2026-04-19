@@ -10,8 +10,23 @@ let currentUserId = null;
 let currentSessionId = null;
 let currentLobbyMode = 'create';
 let roomKeyRenderSeq = 0;
+let suppressedRoomId = null;
 
 const ROOM_KEY_RE = /^[A-Za-z0-9_-]{16,200}$/;
+
+function getErrorMessage(errorLike, fallback) {
+  if (!errorLike) return fallback;
+  const code = typeof errorLike?.code === 'string' ? errorLike.code : '';
+  if (code === 'ROOM_NOT_FOUND') return 'Room not found. Check the room ID or invite link and try again.';
+  if (code === 'ROOM_KEY_REQUIRED') return 'This private room requires a room key.';
+  if (code === 'INVALID_ROOM_KEY') return 'The room key is invalid. Paste the full invite link or a fresh room key.';
+  if (code === 'VALIDATION_FAILED') return 'That request was rejected. Check the room details and try again.';
+  if (code === 'NOT_OWNER') return 'Only the host can do that.';
+  const message = typeof errorLike?.message === 'string' && errorLike.message.trim()
+    ? errorLike.message.trim()
+    : (typeof errorLike?.error === 'string' && errorLike.error.trim() ? errorLike.error.trim() : '');
+  return message || fallback;
+}
 
 function getContentDetailUrl(room) {
   if (!room?.meta?.id || !room?.meta?.type) return null;
@@ -30,6 +45,20 @@ function setStremioStatus(isRunning) {
     $('stremio-dot').className = 'dot off';
     $('stremio-status').textContent = 'Stremio not detected';
   }
+}
+
+function updateStatusHint(hasStremioTab, stremioRunning) {
+  const hint = $('status-hint');
+  if (!hint) return;
+  if (!hasStremioTab) {
+    hint.textContent = 'No Stremio Web tab is open. You can still create or join a room here and open Stremio later when you are ready to watch.';
+    return;
+  }
+  if (!stremioRunning) {
+    hint.textContent = 'Stremio Web is open. The local streaming server is optional for room setup and only needed for local playback features.';
+    return;
+  }
+  hint.textContent = 'Stremio Web is ready. Create or join here and WatchParty will attach to the active session.';
 }
 
 function getKnownBackendKey(value) {
@@ -67,7 +96,11 @@ function getStoredRoomKey(roomId) {
     chrome.storage.session.get(storageKey, (result) => {
       if (!chrome.runtime?.id) return resolve(null);
       if (!chrome.runtime.lastError && result?.[storageKey]) return resolve(result[storageKey]);
-      chrome.storage.local.get(storageKey, (fallback) => resolve(fallback?.[storageKey] || null));
+      chrome.storage.local.get(storageKey, (fallback) => {
+        const decoded = WPConstants.ROOM_KEYS.decodeFromLocal(fallback?.[storageKey]);
+        if (decoded.expired) chrome.storage.local.remove(storageKey).catch(() => { });
+        resolve(decoded.value || null);
+      });
     });
   });
 }
@@ -81,9 +114,12 @@ async function buildInviteUrlWithKey(roomId) {
 function storeRoomKey(roomId, roomKey) {
   if (!roomId || !roomKey) return Promise.resolve();
   const storageKey = WPConstants.STORAGE.roomKey(roomId);
-  return chrome.storage.session.set({ [storageKey]: roomKey }).catch(() =>
-    chrome.storage.local.set({ [storageKey]: roomKey })
-  );
+  const encodedRoomKey = WPConstants.ROOM_KEYS.encodeForLocal(roomKey);
+  return chrome.storage.session.set({ [storageKey]: roomKey })
+    .catch(() => undefined)
+    .then(() => encodedRoomKey
+      ? chrome.storage.local.set({ [storageKey]: encodedRoomKey })
+      : undefined);
 }
 
 function isValidRoomKey(value) {
@@ -185,6 +221,7 @@ function applyStatusResponse(response) {
   currentActiveBackend = getKnownBackendKey(response.activeBackend);
   currentActiveBackendUrl = response.activeBackendUrl || null;
   currentWsConnected = !!response.wsConnected;
+  updateStatusHint(!!response.hasStremioTab, !!response.stremioRunning);
   renderBackendControls();
   setWsStatus(currentWsConnected);
 }
@@ -218,27 +255,73 @@ function loadIdentity(callback) {
 }
 
 // --- Reactive room state watcher (replaces polling) ---
-function waitForRoomState(onRoom, onTimeout) {
+function waitForRoomState({ onRoom, onError, onTimeout }) {
   let resolved = false;
   const timeoutId = setTimeout(() => {
     if (resolved) return;
     resolved = true;
     chrome.storage.onChanged.removeListener(listener);
     onTimeout();
-  }, 12000);
+  }, 20000);
+
+  function finish(callback) {
+    if (resolved) return;
+    resolved = true;
+    clearTimeout(timeoutId);
+    chrome.storage.onChanged.removeListener(listener);
+    callback?.();
+  }
 
   function listener(changes) {
     if (resolved) return;
     if (changes[WPConstants.STORAGE.ROOM_STATE]?.newValue) {
-      resolved = true;
-      clearTimeout(timeoutId);
-      chrome.storage.onChanged.removeListener(listener);
-      chrome.storage.local.get(WPConstants.STORAGE.USER_ID, (result) => {
-        onRoom(changes[WPConstants.STORAGE.ROOM_STATE].newValue, result[WPConstants.STORAGE.USER_ID]);
+      finish(() => {
+        chrome.storage.local.get(WPConstants.STORAGE.USER_ID, (result) => {
+          onRoom(changes[WPConstants.STORAGE.ROOM_STATE].newValue, result[WPConstants.STORAGE.USER_ID]);
+        });
       });
+      return;
+    }
+    if (changes[WPConstants.STORAGE.ROOM_SERVICE_ERROR]?.newValue) {
+      finish(() => onError?.(changes[WPConstants.STORAGE.ROOM_SERVICE_ERROR].newValue));
     }
   }
+
   chrome.storage.onChanged.addListener(listener);
+  return () => {
+    if (resolved) return;
+    resolved = true;
+    clearTimeout(timeoutId);
+    chrome.storage.onChanged.removeListener(listener);
+  };
+}
+
+function setCreateError(message) {
+  $('btn-create').disabled = false;
+  $('btn-create').textContent = 'Create Room';
+  $('create-error').textContent = message;
+  $('create-error').classList.remove('hidden');
+}
+
+function setJoinError(message) {
+  $('btn-join').disabled = false;
+  $('btn-join').textContent = 'Join Room';
+  $('join-error').textContent = message;
+  $('join-error').classList.remove('hidden');
+}
+
+function handleSendMessageFailure(response, fallbackMessage, stopWaiting, showError) {
+  if (chrome.runtime.lastError) {
+    stopWaiting?.();
+    showError(getErrorMessage(chrome.runtime.lastError, fallbackMessage));
+    return true;
+  }
+  if (response?.ok === false) {
+    stopWaiting?.();
+    showError(getErrorMessage(response, fallbackMessage));
+    return true;
+  }
+  return false;
 }
 
 // --- Init ---
@@ -282,6 +365,8 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     if (changes[WPConstants.STORAGE.ROOM_STATE]) {
       const nextRoom = changes[WPConstants.STORAGE.ROOM_STATE].newValue || null;
       if (nextRoom) {
+        if (suppressedRoomId && nextRoom.id === suppressedRoomId) return;
+        suppressedRoomId = null;
         showRoomView(nextRoom, currentUserId);
       } else {
         showLobbyView();
@@ -341,6 +426,7 @@ function showLobbyView() {
 }
 
 function showRoomView(room, myUserId) {
+  if (room?.id && suppressedRoomId && room.id === suppressedRoomId) return;
   $('view-lobby').classList.add('hidden');
   $('view-room').classList.remove('hidden');
 
@@ -506,6 +592,7 @@ function renderRoomDetails(room, myUserId, mySessionId) {
 // --- Actions ---
 
 $('btn-create').addEventListener('click', () => {
+  suppressedRoomId = null;
   setLobbyMode('create');
   const username = $('username-input').value.trim();
   if (!username) {
@@ -526,15 +613,11 @@ $('btn-create').addEventListener('click', () => {
   }
 
   // Arm the watcher before sending create-room so a warm WS can't win the race.
-  waitForRoomState(
-    (room, userId) => showRoomView(room, userId),
-    () => {
-      $('btn-create').disabled = false;
-      $('btn-create').textContent = 'Create Room';
-      $('create-error').textContent = 'Failed to create room. Make sure web.stremio.com is open.';
-      $('create-error').classList.remove('hidden');
-    }
-  );
+  const stopWaiting = waitForRoomState({
+    onRoom: (room, userId) => showRoomView(room, userId),
+    onError: (error) => setCreateError(getErrorMessage(error, 'Failed to create room. WatchParty could not reach the room service in time.')),
+    onTimeout: () => setCreateError('Failed to create room. WatchParty could not reach the room service in time.'),
+  });
 
   chrome.runtime.sendMessage({
     type: 'watchparty-ext',
@@ -544,6 +627,13 @@ $('btn-create').addEventListener('click', () => {
     stream: { url: 'https://watchparty.mertd.me/sync' },
     public: isPublic,
     roomName,
+  }, (response) => {
+    handleSendMessageFailure(
+      response,
+      'Failed to create room. WatchParty could not reach the room service in time.',
+      stopWaiting,
+      setCreateError,
+    );
   });
 
   $('btn-create').disabled = true;
@@ -551,6 +641,7 @@ $('btn-create').addEventListener('click', () => {
 });
 
 $('btn-join').addEventListener('click', () => {
+  suppressedRoomId = null;
   setLobbyMode('join');
   const username = $('username-input').value.trim();
   const parsedJoin = parseRoomJoinInput($('room-id-input').value);
@@ -562,15 +653,11 @@ $('btn-join').addEventListener('click', () => {
   chrome.storage.local.set({ [WPConstants.STORAGE.USERNAME]: username });
 
   // Arm the watcher before sending join-room so fast local updates aren't missed.
-  waitForRoomState(
-    (room, userId) => showRoomView(room, userId),
-    () => {
-      $('btn-join').disabled = false;
-      $('btn-join').textContent = 'Join Room';
-      $('join-error').textContent = 'Room not found. Make sure web.stremio.com is open.';
-      $('join-error').classList.remove('hidden');
-    }
-  );
+  const stopWaiting = waitForRoomState({
+    onRoom: (room, userId) => showRoomView(room, userId),
+    onError: (error) => setJoinError(getErrorMessage(error, 'Room join timed out. WatchParty could not reach the room service in time.')),
+    onTimeout: () => setJoinError('Room join timed out. WatchParty could not reach the room service in time.'),
+  });
 
   chrome.runtime.sendMessage({
     type: 'watchparty-ext',
@@ -578,6 +665,13 @@ $('btn-join').addEventListener('click', () => {
     username,
     roomId,
     roomKey: parsedJoin.roomKey || undefined,
+  }, (response) => {
+    handleSendMessageFailure(
+      response,
+      'Room join timed out. WatchParty could not reach the room service in time.',
+      stopWaiting,
+      setJoinError,
+    );
   });
 
   $('btn-join').disabled = true;
@@ -585,15 +679,14 @@ $('btn-join').addEventListener('click', () => {
 });
 
 $('btn-leave').addEventListener('click', () => {
+  suppressedRoomId = currentRenderedRoom?.id || null;
   chrome.runtime.sendMessage({ type: 'watchparty-ext', action: 'leave-room' });
   showLobbyView();
 });
 
 // --- Settings ---
-// Write directly to PENDING_ACTION storage — content script picks it up via onChanged.
-// This bypasses the background relay (chrome.tabs.sendMessage) which fails without tabs permission.
 function sendPendingAction(action) {
-  chrome.storage.local.set({ [WPConstants.STORAGE.PENDING_ACTION]: action });
+  chrome.runtime.sendMessage({ type: 'watchparty-ext', ...action });
 }
 
 $('btn-update-room-key').addEventListener('click', async () => {

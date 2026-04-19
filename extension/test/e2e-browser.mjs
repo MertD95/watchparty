@@ -13,7 +13,10 @@
 // Usage:    node extension/test/e2e-browser.mjs
 
 import path from 'path';
+import os from 'os';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
+import { deflateSync } from 'zlib';
 import { createBrowserDiagnostics } from './browser-diagnostics.mjs';
 import { getExtensionId, launchExtensionContext } from './extension-context.mjs';
 import { injectSeekableTestVideo } from './seekable-video.mjs';
@@ -22,6 +25,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const EXT_PATH = path.resolve(__dirname, '..');
 const STREMIO_URL = 'https://web.stremio.com';
 const TIMEOUT = 15000;
+const CHROME_FLAGS = [
+  '--disable-background-timer-throttling',
+  '--disable-backgrounding-occluded-windows',
+  '--disable-renderer-backgrounding',
+  '--no-first-run',
+  '--disable-blink-features=AutomationControlled',
+];
+const dirs = [];
 
 let passed = 0;
 let failed = 0;
@@ -52,7 +63,11 @@ function assertCleanDiagnostics(label) {
 }
 
 async function launchWithExtension() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wp-browser-'));
+  dirs.push(dir);
   return launchExtensionContext(EXT_PATH, {
+    userDataDir: dir,
+    args: CHROME_FLAGS,
     viewport: { width: 1440, height: 900 },
   });
 }
@@ -107,7 +122,34 @@ async function injectMockVideo(page, currentTime = 0) {
   await injectSeekableTestVideo(page, currentTime);
 }
 
+async function findRoomSnapshot(roomApis, roomId, predicate = () => true) {
+  for (const api of roomApis) {
+    try {
+      let offset = 0;
+      let total = 0;
+      do {
+        const separator = api.includes('?') ? '&' : '?';
+        const res = await fetch(`${api}${separator}offset=${offset}&limit=50`);
+        const data = await res.json();
+        const rooms = data.rooms || [];
+        const room = rooms.find((entry) => entry.id === roomId);
+        if (room && predicate(room)) return room;
+        total = data.total || rooms.length || 0;
+        offset += data.limit || rooms.length || 50;
+      } while (offset < total);
+    } catch {
+      // Ignore backend fetch failures in favor of the next backend.
+    }
+  }
+  return null;
+}
+
 // ── Tests ──
+
+function buildPlayerHash(payload) {
+  const encoded = deflateSync(Buffer.from(JSON.stringify(payload), 'utf8')).toString('base64url');
+  return `#/player/${encodeURIComponent(encoded)}`;
+}
 
 async function testPopupLoadsWithStatus() {
   console.log('\n── Test: Popup loads and shows status ──');
@@ -123,7 +165,10 @@ async function testPopupLoadsWithStatus() {
 
     // WS status should show connected (server is running)
     const wsText = await popup.evaluate(() => document.getElementById('ws-status').textContent);
-    assert(/^Connected to(?: [A-Za-z]+)? server$/.test(wsText || ''), `WS status: "${wsText}"`);
+    assert(wsText === 'Connected to Local server', `WS status: "${wsText}"`);
+
+    const backendNote = await popup.evaluate(() => document.getElementById('backend-note')?.textContent || '');
+    assert(backendNote.includes('Local mode is selected'), `Backend note: "${backendNote}"`);
 
     // Username input exists
     const hasInput = await popup.evaluate(() => !!document.getElementById('username-input'));
@@ -136,6 +181,135 @@ async function testPopupLoadsWithStatus() {
     assert(hasJoin, 'Join button exists');
 
     await stremio.close();
+    await popup.close();
+  } finally {
+    await context.close();
+  }
+}
+
+async function testCreateRoomWithoutStremioTabAttachesLater() {
+  console.log('\nâ”€â”€ Test: Create room auto-opens Stremio when no tab exists â”€â”€');
+  const context = await launchWithExtension();
+  let popup = null;
+  let stremio = null;
+  console.log('\nTest: Create room without Stremio tab and attach later');
+  try {
+    const extId = await getExtensionId(context);
+    popup = await openPopup(context, extId);
+
+    const hintText = await popup.evaluate(() => document.getElementById('status-hint')?.textContent || '');
+    assert(
+      hintText.includes('open Stremio later'),
+      `Lobby hint explains popup-first room setup: "${hintText}"`
+    );
+
+    await popup.fill('#username-input', 'PopupFirstHost');
+    const stremioPagePromise = context.waitForEvent('page', { timeout: 3000 }).catch(() => null);
+    await popup.click('#btn-create');
+
+    const autoOpenedStremio = await stremioPagePromise;
+    const openedStremio = !!autoOpenedStremio && autoOpenedStremio.url().startsWith(STREMIO_URL);
+    assert(!openedStremio, 'Create room does not require WatchParty to auto-open Stremio Web');
+    await autoOpenedStremio?.close().catch(() => {});
+
+    const gotRoom = await popup.waitForFunction(
+      () => !document.getElementById('view-room').classList.contains('hidden'),
+      { timeout: TIMEOUT * 2 }
+    ).then(() => true).catch(() => false);
+    assert(gotRoom, 'Popup switches to room view without a Stremio tab');
+
+    if (gotRoom) {
+      const roomId = await popup.evaluate(() => document.getElementById('room-id-display').textContent);
+      assert(roomId && roomId.length > 10, `Popup-first room flow shows room ID: ${roomId?.substring(0, 8)}...`);
+      const usersHtml = await popup.evaluate(() => document.getElementById('users-list')?.textContent || '');
+      assert(usersHtml.includes('PopupFirstHost'), 'Popup room view shows the host before Stremio is opened');
+
+      stremio = await openStremio(context);
+      const attachedToRoom = await stremio.waitForFunction(
+        () => !document.getElementById('wp-sidebar')?.innerText?.includes('Not in a room'),
+        { timeout: TIMEOUT * 2 }
+      ).then(() => true).catch(() => false);
+      assert(attachedToRoom, 'Opening Stremio later attaches the existing popup-created room');
+
+      if (attachedToRoom) {
+        await stremio.evaluate(() => document.querySelector('[data-panel="people"]')?.click());
+        const peopleReady = await stremio.waitForFunction(
+          () => document.getElementById('wp-users')?.innerText?.includes('PopupFirstHost'),
+          { timeout: TIMEOUT }
+        ).then(() => true).catch(() => false);
+        assert(peopleReady, 'Stremio overlay inherits the popup-created room state');
+      }
+    }
+  } finally {
+    await stremio?.close().catch(() => {});
+    await popup?.close().catch(() => {});
+    await context.close();
+  }
+}
+
+async function testPopupFirstJoinMissingRoomShowsImmediateError() {
+  console.log('\n-- Test: Popup-first join shows room-service errors immediately --');
+  const context = await launchWithExtension();
+  try {
+    const extId = await getExtensionId(context);
+    const popup = await openPopup(context, extId);
+
+    await popup.fill('#username-input', 'PopupJoiner');
+    await popup.click('#lobby-tab-join');
+    await popup.fill('#room-id-input', 'missing-room-1234');
+    await popup.click('#btn-join');
+
+    const errorState = await popup.waitForFunction(
+      () => {
+        const error = document.getElementById('join-error');
+        const button = document.getElementById('btn-join');
+        return !error.classList.contains('hidden')
+          && /Room not found/i.test(error.textContent || '')
+          && button.textContent === 'Join Room'
+          && button.disabled === false;
+      },
+      { timeout: TIMEOUT }
+    ).then(() => true).catch(() => false);
+
+    assert(errorState, 'Popup-first join surfaces ROOM_NOT_FOUND without waiting for the timeout fallback');
+    await popup.close();
+  } finally {
+    await context.close();
+  }
+}
+
+async function testPopupHidesStaleInactiveBackgroundRoomState() {
+  console.log('\n-- Test: Popup ignores stale room state when no tab or room service is active --');
+  const context = await launchWithExtension();
+  try {
+    const extId = await getExtensionId(context);
+    let popup = await openPopup(context, extId);
+
+    await popup.evaluate(() => chrome.storage.local.set({
+      [WPConstants.STORAGE.CURRENT_ROOM]: 'stale-room-id',
+      [WPConstants.STORAGE.ROOM_STATE]: {
+        id: 'stale-room-id',
+        owner: 'stale-owner',
+        public: false,
+        users: [{ id: 'stale-owner', name: 'Ghost Host', room_id: 'stale-room-id' }],
+        meta: { id: 'pending', type: 'movie', name: 'Ghost Room' },
+        stream: { url: 'https://watchparty.mertd.me/sync' },
+        player: { paused: true, buffering: false, time: 0, speed: 1 },
+        settings: { autoPauseOnDisconnect: false },
+      },
+      [WPConstants.STORAGE.ROOM_SERVICE_ACTIVE]: false,
+      [WPConstants.STORAGE.ROOM_SERVICE_ERROR]: null,
+    }));
+
+    await popup.close();
+    popup = await openPopup(context, extId);
+
+    const lobbyVisible = await popup.evaluate(() =>
+      !document.getElementById('view-lobby').classList.contains('hidden')
+      && document.getElementById('view-room').classList.contains('hidden')
+    );
+    assert(lobbyVisible, 'Popup stays on the lobby when persisted room state is stale and inactive');
+
     await popup.close();
   } finally {
     await context.close();
@@ -208,8 +382,14 @@ async function testCreateRoomFlow() {
       // Test leave room
       await popup.bringToFront();
       await popup.click('#btn-leave');
-      await popup.waitForTimeout(500);
-      const backToLobby = await popup.evaluate(() => !document.getElementById('view-lobby').classList.contains('hidden'));
+      const backToLobby = await popup.waitForFunction(
+        () => {
+          const lobbyVisible = !document.getElementById('view-lobby').classList.contains('hidden');
+          const createVisible = !!document.getElementById('btn-create')?.offsetParent;
+          return lobbyVisible && createVisible;
+        },
+        { timeout: 5000 }
+      ).then(() => true).catch(() => false);
       assert(backToLobby, 'Back to lobby after leaving');
 
       // Stremio sidebar should show "Not in a room" (wait for background → content script relay)
@@ -226,6 +406,10 @@ async function testCreateRoomFlow() {
 
       // Regression: re-create immediately after leaving in the same popup session.
       await popup.bringToFront();
+      await popup.waitForFunction(
+        () => !document.getElementById('view-lobby').classList.contains('hidden') && !!document.getElementById('btn-create')?.offsetParent,
+        { timeout: 5000 }
+      ).catch(() => {});
       await popup.click('#btn-create');
       const recreatedRoom = await popup.waitForFunction(
         () => !document.getElementById('view-room').classList.contains('hidden'),
@@ -253,6 +437,62 @@ async function testCreateRoomFlow() {
   }
 }
 
+async function testPopupReloadReadsWrappedLocalRoomKeyFallback() {
+  console.log('\n-- Test: Popup can reload private room keys from wrapped local storage --');
+  const context = await launchWithExtension();
+  try {
+    const stremio = await openStremio(context);
+    const extId = await getExtensionId(context);
+    let popup = await openPopup(context, extId);
+
+    await popup.fill('#username-input', 'KeyHost');
+    await popup.click('#btn-create');
+    await popup.waitForFunction(
+      () => !document.getElementById('view-room').classList.contains('hidden'),
+      { timeout: TIMEOUT }
+    );
+    await popup.waitForFunction(
+      async () => {
+        const roomId = document.getElementById('room-id-display')?.textContent;
+        const roomKey = document.getElementById('room-key-input')?.value;
+        if (!roomId || !roomKey) return false;
+        const storageKey = WPConstants.STORAGE.roomKey(roomId);
+        const stored = await chrome.storage.local.get(storageKey);
+        return stored?.[storageKey]?.value === roomKey && typeof stored?.[storageKey]?.storedAt === 'number';
+      },
+      { timeout: TIMEOUT }
+    );
+
+    const roomState = await popup.evaluate(async () => {
+      const roomId = document.getElementById('room-id-display').textContent;
+      const roomKey = document.getElementById('room-key-input').value;
+      const storageKey = WPConstants.STORAGE.roomKey(roomId);
+      await chrome.storage.session.remove(storageKey);
+      return { roomId, roomKey };
+    });
+
+    await popup.close();
+    popup = await openPopup(context, extId);
+
+    const recoveredRoomKey = await popup.waitForFunction(
+      (expected) => {
+        const roomId = document.getElementById('room-id-display')?.textContent;
+        const roomKey = document.getElementById('room-key-input')?.value;
+        return roomId === expected.roomId && roomKey === expected.roomKey;
+      },
+      roomState,
+      { timeout: TIMEOUT }
+    ).then(() => true).catch(() => false);
+
+    assert(recoveredRoomKey, 'Popup reloads the private room key from the wrapped local-storage fallback');
+
+    await popup.close();
+    await stremio.close();
+  } finally {
+    await context.close();
+  }
+}
+
 async function testJoinRoomFlow() {
   console.log('\n── Test: Create room on User1, join via popup on User2 ──');
   const ctx1 = await launchWithExtension();
@@ -263,6 +503,7 @@ async function testJoinRoomFlow() {
     const extId1 = await getExtensionId(ctx1);
     const popup1 = await openPopup(ctx1, extId1);
     await popup1.fill('#username-input', 'Alice');
+    await popup1.check('#public-check');
     await popup1.click('#btn-create');
     await popup1.waitForFunction(
       () => !document.getElementById('view-room').classList.contains('hidden'),
@@ -312,6 +553,189 @@ async function testJoinRoomFlow() {
   }
 }
 
+async function testJoinRoomWithoutStremioTabAttachesLater() {
+  console.log('\nâ”€â”€ Test: Join room without Stremio tab and attach later â”€â”€');
+  const ctx1 = await launchWithExtension();
+  const ctx2 = await launchWithExtension();
+  let popup2 = null;
+  let stremio2 = null;
+  try {
+    const stremio1 = await openStremio(ctx1);
+    const extId1 = await getExtensionId(ctx1);
+    const popup1 = await openPopup(ctx1, extId1);
+    await popup1.fill('#username-input', 'Alice');
+    await popup1.check('#public-check');
+    await popup1.click('#btn-create');
+    await popup1.waitForFunction(
+      () => !document.getElementById('view-room').classList.contains('hidden'),
+      { timeout: TIMEOUT }
+    );
+    const roomId = await popup1.evaluate(() => document.getElementById('room-id-display').textContent);
+    assert(roomId && roomId.length > 10, `Alice created room for popup-first join: ${roomId?.substring(0, 8)}...`);
+
+    const extId2 = await getExtensionId(ctx2);
+    popup2 = await openPopup(ctx2, extId2);
+    const hintText = await popup2.evaluate(() => document.getElementById('status-hint')?.textContent || '');
+    assert(
+      hintText.includes('open Stremio later'),
+      `Join hint explains popup-first flow: "${hintText}"`
+    );
+
+    await popup2.fill('#username-input', 'Bob');
+    await popup2.click('#lobby-tab-join');
+    await popup2.fill('#room-id-input', roomId);
+    const stremioPagePromise = ctx2.waitForEvent('page', { timeout: 3000 }).catch(() => null);
+    await popup2.click('#btn-join');
+
+    const autoOpenedStremio = await stremioPagePromise;
+    const openedStremio = !!autoOpenedStremio && autoOpenedStremio.url().startsWith(STREMIO_URL);
+    assert(!openedStremio, 'Join room does not require WatchParty to auto-open Stremio Web');
+    await autoOpenedStremio?.close().catch(() => {});
+
+    const joined = await popup2.waitForFunction(
+      () => !document.getElementById('view-room').classList.contains('hidden'),
+      { timeout: TIMEOUT * 2 }
+    ).then(() => true).catch(() => false);
+    assert(joined, 'Popup joins the room without a Stremio tab');
+
+    if (joined) {
+      const bobUsers = await popup2.evaluate(() => document.getElementById('users-list')?.innerText || '');
+      assert(bobUsers.includes('Alice') && bobUsers.includes('Bob'), 'Popup-first join shows both room members');
+
+      stremio2 = await openStremio(ctx2);
+      const attachedToRoom = await stremio2.waitForFunction(
+        () => !document.getElementById('wp-sidebar')?.innerText?.includes('Not in a room'),
+        { timeout: TIMEOUT * 2 }
+      ).then(() => true).catch(() => false);
+      assert(attachedToRoom, 'Opening Stremio later attaches the popup-joined room');
+
+      if (attachedToRoom) {
+        await stremio2.evaluate(() => document.querySelector('[data-panel="people"]')?.click());
+        const peopleReady = await stremio2.waitForFunction(
+          () => {
+            const text = document.getElementById('wp-users')?.innerText || '';
+            return text.includes('Alice') && text.includes('Bob');
+          },
+          { timeout: TIMEOUT }
+        ).then(() => true).catch(() => false);
+        assert(peopleReady, 'Stremio overlay reflects the popup-first join members');
+      }
+    }
+
+    await popup1.close();
+    await stremio1.close();
+  } finally {
+    await stremio2?.close().catch(() => {});
+    await popup2?.close().catch(() => {});
+    await ctx1.close();
+    await ctx2.close();
+  }
+}
+
+async function testPopupFirstRoomControlsWithoutStremioTab() {
+  console.log('\nTest: Popup-first room controls work without a Stremio tab');
+  const context = await launchWithExtension();
+  let popup = null;
+  try {
+    const extId = await getExtensionId(context);
+    popup = await openPopup(context, extId);
+
+    await popup.fill('#username-input', 'PopupControlsHost');
+    await popup.click('#btn-create');
+
+    const gotRoom = await popup.waitForFunction(
+      () => !document.getElementById('view-room').classList.contains('hidden'),
+      { timeout: TIMEOUT * 2 }
+    ).then(() => true).catch(() => false);
+    assert(gotRoom, 'Popup-first room shows the room view');
+
+    if (gotRoom) {
+      const roomId = await popup.evaluate(() => document.getElementById('room-id-display').textContent);
+      assert(roomId && roomId.length > 10, `Popup-first controls test has room ID: ${roomId?.substring(0, 8)}...`);
+
+      const roomKeyVisible = await popup.waitForFunction(
+        () => {
+          const row = document.getElementById('room-key-row');
+          const input = document.getElementById('room-key-input');
+          return !!row && !row.classList.contains('hidden') && !!input && !!input.value && input.value.length >= 16;
+        },
+        { timeout: TIMEOUT * 2 }
+      ).then(() => true).catch(() => false);
+      assert(roomKeyVisible, 'Private room key is available before Stremio opens');
+
+      const hostControlsReady = await popup.waitForFunction(
+        () => !!document.getElementById('setting-public')?.offsetParent,
+        { timeout: TIMEOUT }
+      ).then(() => true).catch(() => false);
+      assert(hostControlsReady, 'Popup-first host controls are visible before changing room privacy');
+
+      if (!hostControlsReady) return;
+
+      await popup.evaluate(() => {
+        const input = document.getElementById('setting-public');
+        if (!input) return;
+        input.checked = true;
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      let publicRoom = null;
+      for (let i = 0; i < 12; i++) {
+        publicRoom = await findRoomSnapshot(
+          ['http://localhost:8181/rooms', 'https://ws.mertd.me/rooms'],
+          roomId,
+          (room) => room.public === true
+        );
+        if (publicRoom) break;
+        await popup.waitForTimeout(400);
+      }
+      assert(!!publicRoom, `Popup-first room can be made public (${JSON.stringify(publicRoom)})`);
+
+      const roomKeyHidden = await popup.waitForFunction(
+        () => document.getElementById('room-key-row')?.classList.contains('hidden'),
+        { timeout: TIMEOUT }
+      ).then(() => true).catch(() => false);
+      assert(roomKeyHidden, 'Room key UI hides when the popup-first room becomes public');
+
+      await popup.evaluate(() => {
+        const input = document.getElementById('setting-public');
+        if (!input) return;
+        input.checked = false;
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      let privateRoom = null;
+      for (let i = 0; i < 12; i++) {
+        privateRoom = await findRoomSnapshot(
+          ['http://localhost:8181/rooms', 'https://ws.mertd.me/rooms'],
+          roomId,
+          (room) => room.public === false
+        );
+        if (privateRoom) break;
+        await popup.waitForTimeout(400);
+      }
+      assert(!!privateRoom, `Popup-first room can be made private again (${JSON.stringify(privateRoom)})`);
+
+      const roomKeyReturned = await popup.waitForFunction(
+        () => {
+          const row = document.getElementById('room-key-row');
+          const input = document.getElementById('room-key-input');
+          return !!row && !row.classList.contains('hidden') && !!input && !!input.value;
+        },
+        { timeout: TIMEOUT }
+      ).then(() => true).catch(() => false);
+      assert(roomKeyReturned, 'Room key UI returns after switching back to private');
+
+      await popup.click('#btn-leave');
+      const backToLobby = await popup.waitForFunction(
+        () => !document.getElementById('view-lobby').classList.contains('hidden'),
+        { timeout: TIMEOUT }
+      ).then(() => true).catch(() => false);
+      assert(backToLobby, 'Popup-first room can be left without a Stremio tab');
+    }
+  } finally {
+    await popup?.close().catch(() => {});
+    await context.close();
+  }
+}
+
 async function testChatFlow() {
   console.log('\n── Test: Two-user chat via sidebar ──');
   const ctx1 = await launchWithExtension();
@@ -322,6 +746,7 @@ async function testChatFlow() {
     const extId1 = await getExtensionId(ctx1);
     const popup1 = await openPopup(ctx1, extId1);
     await popup1.fill('#username-input', 'Alice');
+    await popup1.check('#public-check');
     await popup1.click('#btn-create');
     await popup1.waitForFunction(() => !document.getElementById('view-room').classList.contains('hidden'), { timeout: TIMEOUT });
     const roomId = await popup1.evaluate(() => document.getElementById('room-id-display').textContent);
@@ -389,8 +814,11 @@ async function testChatFlow() {
     await stremio1.bringToFront();
     await stremio1.waitForTimeout(1000);
     await openSidebarIfHidden(stremio1);
-    const aliceChat = await stremio1.evaluate(() => document.getElementById('wp-chat-messages')?.innerText || '');
-    assert(aliceChat.includes('Hello from Bob!'), `Alice sees Bob's message in chat`);
+    const aliceSawMessage = await stremio1.waitForFunction(
+      () => document.getElementById('wp-chat-messages')?.innerText?.includes('Hello from Bob!'),
+      { timeout: TIMEOUT }
+    ).then(() => true).catch(() => false);
+    assert(aliceSawMessage, `Alice sees Bob's message in chat`);
 
     // === Unread badge test while Chat tab is not active ===
     await stremio1.evaluate(() => document.querySelector('[data-panel="people"]')?.click());
@@ -404,11 +832,16 @@ async function testChatFlow() {
 
     await stremio1.bringToFront();
     await stremio1.waitForTimeout(600);
-    const chatTabBadge = await stremio1.evaluate(() => {
-      const el = document.getElementById('wp-tab-chat-badge');
-      return el ? { text: el.textContent, hidden: el.classList.contains('wp-hidden-el') } : null;
-    });
-    assert(chatTabBadge && !chatTabBadge.hidden && parseInt(chatTabBadge.text) > 0, `Chat tab badge shows: "${chatTabBadge?.text}"`);
+    const chatTabBadge = await stremio1.waitForFunction(
+      () => {
+        const el = document.getElementById('wp-tab-chat-badge');
+        if (!el || el.classList.contains('wp-hidden-el')) return null;
+        const text = el.textContent || '';
+        return parseInt(text, 10) > 0 ? text : null;
+      },
+      { timeout: TIMEOUT }
+    ).then((handle) => handle.jsonValue()).catch(() => null);
+    assert(!!chatTabBadge, `Chat tab badge shows: "${chatTabBadge || ''}"`);
 
     await stremio1.evaluate(() => document.querySelector('[data-panel="chat"]')?.click());
     await stremio1.waitForTimeout(400);
@@ -434,11 +867,16 @@ async function testChatFlow() {
     // Check Alice's unread badge (light DOM, NOT shadow root)
     await stremio1.bringToFront();
     await stremio1.waitForTimeout(1000);
-    const badge = await stremio1.evaluate(() => {
-      const el = document.getElementById('wp-unread-badge');
-      return el ? { text: el.textContent, hidden: el.classList.contains('wp-hidden-el') } : null;
-    });
-    assert(badge && !badge.hidden && parseInt(badge.text) > 0, `Unread badge shows: "${badge?.text}"`);
+    const badge = await stremio1.waitForFunction(
+      () => {
+        const el = document.getElementById('wp-unread-badge');
+        if (!el || el.classList.contains('wp-hidden-el')) return null;
+        const text = el.textContent || '';
+        return parseInt(text, 10) > 0 ? text : null;
+      },
+      { timeout: TIMEOUT }
+    ).then((handle) => handle.jsonValue()).catch(() => null);
+    assert(!!badge, `Unread badge shows: "${badge || ''}"`);
 
     // Open sidebar → badge should clear
     await stremio1.evaluate(() => document.getElementById('wp-toggle-host')?.click());
@@ -500,6 +938,7 @@ async function setupTwoUsers() {
   const extId1 = await getExtensionId(ctx1);
   const popup1 = await openPopup(ctx1, extId1);
   await popup1.fill('#username-input', 'Alice');
+  await popup1.check('#public-check');
   await popup1.click('#btn-create');
   await popup1.waitForFunction(() => !document.getElementById('view-room').classList.contains('hidden'), { timeout: TIMEOUT });
   const roomId = await popup1.evaluate(() => document.getElementById('room-id-display').textContent);
@@ -694,6 +1133,119 @@ async function testPeerDirectStreamLink() {
   }
 }
 
+async function testDebridLikeHostRequiresManualPeerStreamButStillSyncs() {
+  console.log('\n── Test: Debrid-like host stream requires manual peer stream but still syncs ──');
+  const env = await setupTwoUsers();
+  const roomApis = ['http://localhost:8181/rooms', 'https://ws.mertd.me/rooms'];
+  try {
+    await injectMockVideo(env.stremio1, 1.2);
+    await env.stremio1.evaluate(() => {
+      window.location.hash = '/detail/movie/tt0468569/tt0468569';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    await env.stremio1.waitForTimeout(800);
+
+    const debridHash = buildPlayerHash({
+      url: 'https://real-debrid.example/download/the-dark-knight.mkv',
+      description: 'The Dark Knight',
+    });
+    await env.stremio1.evaluate((nextHash) => {
+      window.location.hash = nextHash.slice(1);
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    }, debridHash);
+    await env.stremio1.waitForTimeout(1500);
+    await env.stremio1.evaluate(() => document.querySelector('[data-panel="room"]')?.click());
+
+    const hostSawVideo = await env.stremio1.waitForFunction(
+      () => !!document.getElementById('wp-bookmark-btn'),
+      { timeout: TIMEOUT }
+    ).then(() => true).catch(() => false);
+    assert(hostSawVideo, 'Host keeps sync controls after switching to a debrid-like player route');
+
+    let roomSnapshot = null;
+    for (let i = 0; i < 20; i++) {
+      roomSnapshot = await findRoomSnapshot(
+        roomApis,
+        env.roomId,
+        (room) => room.hasDirectJoin === false && room.directJoinType === 'debrid-url'
+      );
+      if (roomSnapshot?.directJoinType === 'debrid-url') break;
+      await env.stremio1.waitForTimeout(400);
+    }
+
+    assert(
+      roomSnapshot?.hasDirectJoin === false && roomSnapshot?.directJoinType === 'debrid-url',
+      `Public room marks the host stream as manual-join (${JSON.stringify(roomSnapshot)})`
+    );
+
+    await env.stremio2.bringToFront();
+    await env.stremio2.waitForTimeout(1000);
+    const overlayLinks = await env.stremio2.evaluate(() => Array.from(
+      document.querySelectorAll('#wp-content-link a')
+    ).map((link) => ({
+      text: link.textContent?.trim() || '',
+      href: link.href || '',
+    })));
+    assert(
+      overlayLinks.some((link) => link.text === 'The Dark Knight' && link.href.includes('/detail/movie/tt0468569')),
+      `Peer overlay keeps the host title link for manual selection (${JSON.stringify(overlayLinks)})`
+    );
+    assert(
+      !overlayLinks.some((link) => link.text === 'Open host stream'),
+      `Peer overlay hides the direct host stream link for debrid streams (${JSON.stringify(overlayLinks)})`
+    );
+
+    await env.popup2.bringToFront();
+    await env.popup2.reload({ waitUntil: 'domcontentloaded' });
+    await env.popup2.waitForTimeout(1500);
+    const popupPeerLinks = await env.popup2.evaluate(() => ({
+      contentVisible: !document.getElementById('content-link')?.classList.contains('hidden'),
+      contentHref: document.getElementById('content-link')?.href || '',
+      streamVisible: !document.getElementById('content-stream-link')?.classList.contains('hidden'),
+      streamHref: document.getElementById('content-stream-link')?.href || '',
+    }));
+    assert(
+      popupPeerLinks.contentVisible && popupPeerLinks.contentHref.includes('/detail/movie/tt0468569'),
+      `Peer popup keeps the host title link (${JSON.stringify(popupPeerLinks)})`
+    );
+    assert(
+      popupPeerLinks.streamVisible === false && !popupPeerLinks.streamHref.includes('/#/player/'),
+      `Peer popup hides the direct host stream link for debrid streams (${JSON.stringify(popupPeerLinks)})`
+    );
+
+    if (hostSawVideo) {
+      await env.stremio1.bringToFront();
+      const targetTime = await env.stremio1.evaluate(async () => {
+        const video = document.querySelector('video');
+        if (!video) return 0;
+        const nextTime = Math.min(2.8, Math.max(0.5, (video.duration || 3) - 0.1));
+        await new Promise((resolve) => {
+          const onSeeked = () => resolve();
+          video.addEventListener('seeked', onSeeked, { once: true });
+          video.currentTime = nextTime;
+          setTimeout(resolve, 800);
+        });
+        return nextTime;
+      });
+      await env.stremio1.waitForTimeout(800);
+
+      await env.stremio2.bringToFront();
+      await injectMockVideo(env.stremio2, 0.2);
+      const peerCaughtUp = await env.stremio2.waitForFunction(
+        (expectedTime) => {
+          const video = document.querySelector('video');
+          return !!video && Math.abs(video.currentTime - expectedTime) < 0.5;
+        },
+        targetTime,
+        { timeout: TIMEOUT }
+      ).then(() => true).catch(() => false);
+      assert(peerCaughtUp, 'Peer catches up after opening a different local stream for the same title');
+    }
+  } finally {
+    await cleanupTwoUsers(env);
+  }
+}
+
 async function testCreateRoomFromPlayerPagePublishesSafeDirectJoinMetadata() {
   console.log('\n── Test: Host creates a room directly from player page ──');
   const context = await launchWithExtension();
@@ -717,16 +1269,7 @@ async function testCreateRoomFromPlayerPagePublishesSafeDirectJoinMetadata() {
     let roomSnapshot = null;
     const roomApis = ['http://localhost:8181/rooms', 'https://ws.mertd.me/rooms'];
     for (let i = 0; i < 10; i++) {
-      for (const api of roomApis) {
-        try {
-          const res = await fetch(api);
-          const data = await res.json();
-          roomSnapshot = data.rooms.find((room) => room.id === roomId) || null;
-          if (roomSnapshot) break;
-        } catch {
-          // Ignore backend fetch failures in favor of the other backend.
-        }
-      }
+      roomSnapshot = await findRoomSnapshot(roomApis, roomId);
       if (roomSnapshot?.hasDirectJoin) break;
       await stremio.waitForTimeout(500);
     }
@@ -768,16 +1311,7 @@ async function testRoomCreatedFromDetailPageUpgradesDirectJoinAfterOpeningPlayer
     const roomId = await popup.evaluate(() => document.getElementById('room-id-display').textContent);
     let roomSnapshot = null;
     for (let i = 0; i < 10; i++) {
-      for (const api of roomApis) {
-        try {
-          const res = await fetch(api);
-          const data = await res.json();
-          roomSnapshot = data.rooms?.find((room) => room.id === roomId) || null;
-          if (roomSnapshot) break;
-        } catch {
-          // Ignore backend fetch failures in favor of the other backend.
-        }
-      }
+      roomSnapshot = await findRoomSnapshot(roomApis, roomId);
       if (roomSnapshot) break;
       await stremio.waitForTimeout(300);
     }
@@ -795,16 +1329,11 @@ async function testRoomCreatedFromDetailPageUpgradesDirectJoinAfterOpeningPlayer
 
     roomSnapshot = null;
     for (let i = 0; i < 20; i++) {
-      for (const api of roomApis) {
-        try {
-          const res = await fetch(api);
-          const data = await res.json();
-          roomSnapshot = data.rooms?.find((room) => room.id === roomId) || null;
-          if (roomSnapshot?.hasDirectJoin === true && roomSnapshot?.directJoinType === 'direct-url') break;
-        } catch {
-          // Ignore backend fetch failures in favor of the other backend.
-        }
-      }
+      roomSnapshot = await findRoomSnapshot(
+        roomApis,
+        roomId,
+        (room) => room.hasDirectJoin === true && room.directJoinType === 'direct-url'
+      );
       if (roomSnapshot?.hasDirectJoin === true && roomSnapshot?.directJoinType === 'direct-url') break;
       await stremio.waitForTimeout(400);
     }
@@ -830,6 +1359,7 @@ async function testPreferDirectJoinOpensPrivatePlayerLocally() {
     const extId1 = await getExtensionId(ctx1);
     const popup1 = await openPopup(ctx1, extId1);
     await popup1.fill('#username-input', 'Alice');
+    await popup1.check('#public-check');
     await popup1.click('#btn-create');
     await popup1.waitForFunction(() => !document.getElementById('view-room').classList.contains('hidden'), { timeout: TIMEOUT });
     const roomId = await popup1.evaluate(() => document.getElementById('room-id-display').textContent);
@@ -961,11 +1491,17 @@ async function testLatePeerVideoAttachmentResyncsToHost() {
     assert(hostSawVideo, 'Host content script detects the newly opened video');
 
     if (hostSawVideo) {
-      await env.stremio1.evaluate(() => {
+      const targetTime = await env.stremio1.evaluate(async () => {
         const video = document.querySelector('video');
-        if (!video) return;
-        video.currentTime = 11.5;
-        video.dispatchEvent(new Event('seeked'));
+        if (!video) return 0;
+        const nextTime = Math.min(2.8, Math.max(0, (video.duration || 2.8) - 0.1));
+        await new Promise((resolve) => {
+          const onSeeked = () => resolve();
+          video.addEventListener('seeked', onSeeked, { once: true });
+          video.currentTime = nextTime;
+          setTimeout(resolve, 800);
+        });
+        return nextTime;
       });
       await env.stremio1.waitForTimeout(800);
 
@@ -973,10 +1509,11 @@ async function testLatePeerVideoAttachmentResyncsToHost() {
       await injectMockVideo(env.stremio2, 0.1);
 
       const peerCaughtUp = await env.stremio2.waitForFunction(
-        () => {
+        (expectedTime) => {
           const video = document.querySelector('video');
-          return !!video && Math.abs(video.currentTime - 11.5) < 0.5;
+          return !!video && Math.abs(video.currentTime - expectedTime) < 0.5;
         },
+        targetTime,
         { timeout: TIMEOUT }
       ).then(() => true).catch(() => false);
       assert(peerCaughtUp, 'Peer catches up after opening a video late');
@@ -1037,7 +1574,9 @@ async function testNamedRoom() {
     // Create named room
     const popup = await openPopup(ctx, extId);
     await popup.fill('#username-input', 'Alice');
-    await popup.fill('#room-name-input', 'test-persist');
+    const roomName = `test-persist-${Date.now().toString().slice(-6)}`;
+    await popup.fill('#room-name-input', roomName);
+    await popup.check('#public-check');
     await popup.click('#btn-create');
     await popup.waitForFunction(() => !document.getElementById('view-room').classList.contains('hidden'), { timeout: TIMEOUT });
     const roomId = await popup.evaluate(() => document.getElementById('room-id-display').textContent);
@@ -1071,7 +1610,8 @@ async function testNamedRoom() {
     // Rejoin with same name — should get same room
     const popup2 = await openPopup(ctx, extId);
     await popup2.fill('#username-input', 'Alice');
-    await popup2.fill('#room-name-input', 'test-persist');
+    await popup2.fill('#room-name-input', roomName);
+    await popup2.check('#public-check');
     await popup2.click('#btn-create');
     await popup2.waitForFunction(() => !document.getElementById('view-room').classList.contains('hidden'), { timeout: TIMEOUT });
     const roomId2 = await popup2.evaluate(() => document.getElementById('room-id-display').textContent);
@@ -1103,13 +1643,20 @@ async function main() {
   const tests = [
     testPopupLoadsWithStatus,
     testEmptyUsernameValidation,
+    testCreateRoomWithoutStremioTabAttachesLater,
+    testPopupFirstJoinMissingRoomShowsImmediateError,
+    testPopupHidesStaleInactiveBackgroundRoomState,
     testCreateRoomFlow,
+    testPopupReloadReadsWrappedLocalRoomKeyFallback,
     testJoinRoomFlow,
+    testJoinRoomWithoutStremioTabAttachesLater,
+    testPopupFirstRoomControlsWithoutStremioTab,
     testChatFlow,
     testHostVsPeerSettings,
     testThemePropagation,
     testPeerContentLink,
     testPeerDirectStreamLink,
+    testDebridLikeHostRequiresManualPeerStreamButStillSyncs,
     testCreateRoomFromPlayerPagePublishesSafeDirectJoinMetadata,
     testRoomCreatedFromDetailPageUpgradesDirectJoinAfterOpeningPlayer,
     testPreferDirectJoinOpensPrivatePlayerLocally,
@@ -1134,6 +1681,7 @@ async function main() {
 
   console.log(`\n${'='.repeat(30)}`);
   console.log(`Results: ${passed} passed, ${failed} failed`);
+  for (const dir of dirs) { try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} }
   process.exit(failed > 0 ? 1 : 0);
 }
 

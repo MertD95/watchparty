@@ -11,6 +11,7 @@
   let currentUserId = null;
   let currentSessionId = null;
   let currentRoomState = null;
+  const typingUsers = new Map();
 
   /** Check if a user ID belongs to the current user (multi-tab: matches by sessionId) */
   function isMe(uid) {
@@ -27,6 +28,72 @@
     const ownerInList = currentRoomState.users?.some((entry) => entry.id === currentRoomState.owner);
     if (!ownerInList && currentRoomState.users?.some((entry) => isMe(entry.id))) return true;
     return false;
+  }
+
+  function formatPlaybackClock(timeSeconds) {
+    if (!Number.isFinite(timeSeconds) || timeSeconds < 0) return '';
+    const totalSeconds = Math.floor(timeSeconds);
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    if (hours > 0) return `${hours}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+    return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+  }
+
+  function getPlaybackSummary(entry) {
+    const label = formatPlaybackClock(entry?.playbackTime);
+    if (!label) return { label: '', title: '' };
+    let title = label;
+    const hostTime = currentRoomState?.player?.time;
+    if (Number.isFinite(hostTime)) {
+      const drift = entry.playbackTime - hostTime;
+      if (Math.abs(drift) >= 1) {
+        title = `${label} (${Math.abs(drift).toFixed(0)}s ${drift < 0 ? 'behind' : 'ahead of'} host)`;
+      }
+    }
+    return { label, title };
+  }
+
+  function updateTypingIndicator() {
+    const indicator = document.getElementById('typing-indicator');
+    if (!indicator) return;
+    if (!currentRoomState?.users) {
+      indicator.classList.add('hidden');
+      indicator.textContent = '';
+      return;
+    }
+    const names = [];
+    for (const [uid] of typingUsers) {
+      const entry = currentRoomState.users.find((user) => user.id === uid);
+      if (!entry || isMe(uid)) continue;
+      names.push(entry.name);
+    }
+    if (names.length === 0) {
+      indicator.classList.add('hidden');
+      indicator.textContent = '';
+      return;
+    }
+    indicator.textContent = names.length === 1
+      ? `${names[0]} is typing...`
+      : `${names.join(', ')} are typing...`;
+    indicator.classList.remove('hidden');
+  }
+
+  function handleTypingUpdate(userId, typing) {
+    if (!userId) return;
+    if (typing) {
+      const existing = typingUsers.get(userId);
+      if (existing) clearTimeout(existing);
+      typingUsers.set(userId, setTimeout(() => {
+        typingUsers.delete(userId);
+        updateTypingIndicator();
+      }, 3000));
+    } else {
+      const existing = typingUsers.get(userId);
+      if (existing) clearTimeout(existing);
+      typingUsers.delete(userId);
+    }
+    updateTypingIndicator();
   }
 
   // --- State polling from storage ---
@@ -61,6 +128,8 @@
       chatContainer.classList.add('hidden');
       roomCode.classList.add('hidden');
       syncIndicator.classList.add('hidden');
+      typingUsers.clear();
+      updateTypingIndicator();
       return;
     }
 
@@ -128,19 +197,27 @@
         if (entry.playbackStatus === 'buffering') statusIcon = '<span class="user-status" title="Buffering">&#x27F3;</span>';
         else if (entry.playbackStatus === 'paused') statusIcon = '<span class="user-status" title="Paused">&#x275A;&#x275A;</span>';
         else if (entry.playbackStatus === 'playing') statusIcon = '<span class="user-status" title="Playing" style="color:#22c55e">&#x25B6;</span>';
-        return `<div class="user${awayClass}"><span class="user-dot" style="background:${color}"></span>${crown}${escapeHtml(entry.name)}${you}${statusIcon}</div>`;
+        const playback = getPlaybackSummary(entry);
+        const playhead = playback.label
+          ? ` <span class="user-playhead" title="${escapeHtml(playback.title)}">${escapeHtml(playback.label)}</span>`
+          : '';
+        return `<div class="user${awayClass}"><span class="user-dot" style="background:${color}"></span><span class="user-name">${crown}${escapeHtml(entry.name)}${you}</span>${statusIcon}${playhead}</div>`;
       }).join('');
     } else {
       users.classList.add('hidden');
     }
 
     chatContainer.classList.remove('hidden');
+    updateTypingIndicator();
   }
 
   // --- Chat ---
   document.getElementById('chat-send').addEventListener('click', sendChat);
   document.getElementById('chat-input').addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') sendChat();
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      sendChat();
+    }
   });
 
   function sendChat() {
@@ -212,6 +289,10 @@
 
     if (message.action === 'bookmark' && message.payload) {
       appendBookmark(message.payload);
+    }
+
+    if (message.action === 'typing' && message.payload) {
+      handleTypingUpdate(message.payload.user, message.payload.typing);
     }
   });
 

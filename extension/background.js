@@ -4,6 +4,8 @@
 
 // Load shared constants (service workers don't get content_scripts injection)
 importScripts('constants.js');
+importScripts('wp-protocol.js');
+importScripts('background-room-service.js');
 
 const BG_VERSION = '2025-04-12-fix-chat';
 const STREMIO_BASE = 'http://localhost:11470';
@@ -11,11 +13,15 @@ const STREMIO_API = 'https://api.strem.io';
 const POLL_INTERVAL_MS = 5000;
 const STREMIO_WEB_URLS = ['https://web.stremio.com/*', 'https://web.strem.io/*', 'https://app.strem.io/*'];
 const WATCHPARTY_URLS = ['https://watchparty.mertd.me/*', 'http://localhost:8080/*', 'http://localhost:8090/*'];
+const STREMIO_WEB_ORIGINS = new Set(['https://web.stremio.com', 'https://web.strem.io', 'https://app.strem.io']);
+const WATCHPARTY_ORIGINS = new Set(['https://watchparty.mertd.me', 'http://localhost:8080', 'http://localhost:8090']);
 
 // --- State ---
 let stremioRunning = false;
 let stremioSettings = null;
 const stats = { bytesProxied: 0, requestsProxied: 0, lastLatencyMs: 0 };
+const knownStremioTabIds = new Set();
+const knownWatchPartyTabIds = new Set();
 
 // ── Stremio server detection ──
 
@@ -112,30 +118,139 @@ function relayToPanel(action, payload) {
   chrome.runtime.sendMessage({ type: 'watchparty-ext', action, payload }).catch(() => {});
 }
 
-function storeAndForward(storageData, message, sendResponse) {
-  chrome.storage.local.set(storageData, () => forwardToStremioTab(message));
-  if (sendResponse) sendResponse({ ok: true });
+function respondAsync(sendResponse, work) {
+  Promise.resolve()
+    .then(work)
+    .then((result) => sendResponse?.(result ?? { ok: true }))
+    .catch((error) => {
+      const message = error?.message || String(error);
+      console.warn('[WP-BG] async handler failed:', message);
+      sendResponse?.({ ok: false, error: message });
+    });
+  return true;
 }
 
-function removeStorageKeys(keys, callback) {
-  chrome.storage.local.remove(keys, () => callback?.());
+function urlMatchesOrigins(url, origins) {
+  try {
+    return origins.has(new URL(url).origin);
+  } catch {
+    return false;
+  }
 }
 
-function cacheRoomKey(roomId, roomKey, callback) {
-  if (!roomId || !roomKey) {
-    callback?.();
+async function getTabsByOrigins(origins) {
+  try {
+    const tabs = await chrome.tabs.query({});
+    return tabs.filter((tab) => !!tab.url && urlMatchesOrigins(tab.url, origins));
+  } catch {
+    return [];
+  }
+}
+
+function rememberSurfaceTab(surface, tabId) {
+  if (tabId == null) return;
+  if (surface === 'stremio') {
+    knownStremioTabIds.add(tabId);
+    knownWatchPartyTabIds.delete(tabId);
     return;
   }
+  if (surface === 'watchparty') {
+    knownWatchPartyTabIds.add(tabId);
+    knownStremioTabIds.delete(tabId);
+  }
+}
+
+function forgetSurfaceTab(tabId) {
+  if (tabId == null) return;
+  knownStremioTabIds.delete(tabId);
+  knownWatchPartyTabIds.delete(tabId);
+}
+
+async function resolveKnownTabs(tabIds) {
+  const resolved = [];
+  for (const tabId of Array.from(tabIds)) {
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      resolved.push(tab);
+    } catch {
+      tabIds.delete(tabId);
+    }
+  }
+  return resolved;
+}
+
+async function probeKnownExtensionSurfaces() {
+  try {
+    const tabs = await chrome.tabs.query({});
+    await Promise.allSettled(tabs.map(async (tab) => {
+      if (tab.id == null) return;
+      try {
+        const response = await chrome.tabs.sendMessage(tab.id, {
+          type: 'watchparty-ext',
+          action: 'probe-surface',
+        });
+        if (response?.surface) rememberSurfaceTab(response.surface, tab.id);
+      } catch {
+        // Ignore tabs without a WatchParty content script.
+      }
+    }));
+  } catch {
+    // Ignore probe failures and fall back to the known tab set.
+  }
+}
+
+async function getStremioTabs() {
+  if (knownStremioTabIds.size === 0) await probeKnownExtensionSurfaces();
+  return resolveKnownTabs(knownStremioTabIds);
+}
+
+async function getWatchPartyTabs() {
+  if (knownWatchPartyTabIds.size === 0) await probeKnownExtensionSurfaces();
+  return resolveKnownTabs(knownWatchPartyTabIds);
+}
+
+async function hasStremioTabs() {
+  return (await getStremioTabs()).length > 0;
+}
+
+async function handoffBackgroundRoomToTab() {
+  if (!WPBackgroundRoomService.isActive()) return false;
+  const tabs = await getStremioTabs();
+  if (tabs.length === 0) return false;
+  return WPBackgroundRoomService.handoffToTab();
+}
+
+async function storeAndForward(storageData, message) {
+  await chrome.storage.local.set(storageData);
+  await forwardToStremioTab(message);
+  return { ok: true, openedStremio: false };
+}
+
+async function removeStorageKeys(keys) {
+  await chrome.storage.local.remove(keys);
+}
+
+async function cacheRoomKey(roomId, roomKey) {
+  if (!roomId || !roomKey) return;
   const storageKey = WPConstants.STORAGE.roomKey(roomId);
-  chrome.storage.session.set({ [storageKey]: roomKey }).then(
-    () => callback?.(),
-    () => chrome.storage.local.set({ [storageKey]: roomKey }, () => callback?.())
-  );
+  const encodedRoomKey = WPConstants.ROOM_KEYS.encodeForLocal(roomKey);
+  try {
+    await chrome.storage.session.set({ [storageKey]: roomKey });
+  } catch { /* session storage may be unavailable */ }
+  if (encodedRoomKey) {
+    await chrome.storage.local.set({ [storageKey]: encodedRoomKey });
+  }
 }
 
 const messageHandlers = {
-  'get-status': (_m, _s, sendResponse) => {
-    chrome.storage.local.get([
+  'get-status': (_m, _s, sendResponse) => respondAsync(sendResponse, async () => {
+    const hasStremioTab = await hasStremioTabs();
+    if (hasStremioTab) {
+      await handoffBackgroundRoomToTab().catch(() => {});
+    } else {
+      await WPBackgroundRoomService.resumeIfNeeded().catch(() => {});
+    }
+    const result = await chrome.storage.local.get([
       WPConstants.STORAGE.STREMIO_PROFILE,
       WPConstants.STORAGE.ROOM_STATE,
       WPConstants.STORAGE.USER_ID,
@@ -143,28 +258,27 @@ const messageHandlers = {
       WPConstants.STORAGE.BACKEND_MODE,
       WPConstants.STORAGE.ACTIVE_BACKEND,
       WPConstants.STORAGE.ACTIVE_BACKEND_URL,
-    ], async (result) => {
-      let hasStremioTab = false;
-      try {
-        const tabs = await chrome.tabs.query({ url: STREMIO_WEB_URLS });
-        hasStremioTab = tabs.length > 0;
-      } catch {}
-      sendResponse({
-        stremioRunning, stremioSettings,
-        profile: result[WPConstants.STORAGE.STREMIO_PROFILE] ?? null,
-        stats,
-        wsConnected: result[WPConstants.STORAGE.WS_CONNECTED] ?? false,
-        backendMode: result[WPConstants.STORAGE.BACKEND_MODE] ?? WPConstants.BACKEND.MODES.AUTO,
-        activeBackend: result[WPConstants.STORAGE.ACTIVE_BACKEND] ?? null,
-        activeBackendUrl: result[WPConstants.STORAGE.ACTIVE_BACKEND_URL] ?? null,
-        userId: result[WPConstants.STORAGE.USER_ID] ?? null,
-        room: result[WPConstants.STORAGE.ROOM_STATE] ?? null,
-        hasStremioTab,
-        bgVersion: BG_VERSION,
-      });
-    });
-    return true; // async sendResponse
-  },
+      WPConstants.STORAGE.ROOM_SERVICE_ACTIVE,
+      WPConstants.STORAGE.ROOM_SERVICE_ERROR,
+    ]);
+    const roomServiceActive = result[WPConstants.STORAGE.ROOM_SERVICE_ACTIVE] ?? false;
+    const trustedPersistedRoom = hasStremioTab || roomServiceActive;
+    return {
+      stremioRunning, stremioSettings,
+      profile: result[WPConstants.STORAGE.STREMIO_PROFILE] ?? null,
+      stats,
+      wsConnected: result[WPConstants.STORAGE.WS_CONNECTED] ?? false,
+      backendMode: result[WPConstants.STORAGE.BACKEND_MODE] ?? WPConstants.BACKEND.MODES.AUTO,
+      activeBackend: result[WPConstants.STORAGE.ACTIVE_BACKEND] ?? null,
+      activeBackendUrl: result[WPConstants.STORAGE.ACTIVE_BACKEND_URL] ?? null,
+      userId: result[WPConstants.STORAGE.USER_ID] ?? null,
+      room: trustedPersistedRoom ? (result[WPConstants.STORAGE.ROOM_STATE] ?? null) : null,
+      hasStremioTab,
+      roomServiceActive,
+      roomServiceError: result[WPConstants.STORAGE.ROOM_SERVICE_ERROR] ?? null,
+      bgVersion: BG_VERSION,
+    };
+  }),
   'ws-status-changed': (m) => {
     const connectionState = {
       [WPConstants.STORAGE.WS_CONNECTED]: !!m.connected,
@@ -175,82 +289,155 @@ const messageHandlers = {
     updateBadge();
   },
   'chat-message': (m) => relayToPanel('chat-message', m.payload),
+  'typing': (m) => relayToPanel('typing', m.payload),
   'bookmark': (m) => relayToPanel('bookmark', m.payload),
-  'create-room': (m, _s, sr) => {
-    removeStorageKeys([
-      WPConstants.STORAGE.PENDING_ROOM_JOIN_OPTIONS,
-      WPConstants.STORAGE.PENDING_LEAVE_ROOM,
-    ], () => {
-      storeAndForward({
+  'create-room': (m, _s, sr) => respondAsync(sr, async () => {
+    if (await hasStremioTabs()) {
+      if (WPBackgroundRoomService.isActive()) await WPBackgroundRoomService.stop();
+      await removeStorageKeys([
+        WPConstants.STORAGE.PENDING_ROOM_JOIN_OPTIONS,
+        WPConstants.STORAGE.PENDING_LEAVE_ROOM,
+        WPConstants.STORAGE.ROOM_SERVICE_ACTIVE,
+        WPConstants.STORAGE.ROOM_SERVICE_ERROR,
+      ]);
+      return storeAndForward({
         [WPConstants.STORAGE.PENDING_ROOM_CREATE]: {
           username: m.username, meta: m.meta, stream: m.stream, public: m.public, roomName: m.roomName,
         },
-      }, m, sr);
-    });
-  },
-  'join-room': (m, _s, sr) => {
-    const updates = {
-      [WPConstants.STORAGE.PENDING_ROOM_JOIN]: m.roomId,
-      [WPConstants.STORAGE.USERNAME]: m.username,
-    };
-    const continueJoin = () => {
+      }, m);
+    }
+    await removeStorageKeys([
+      WPConstants.STORAGE.PENDING_ROOM_JOIN_OPTIONS,
+      WPConstants.STORAGE.PENDING_LEAVE_ROOM,
+      WPConstants.STORAGE.ROOM_SERVICE_ERROR,
+    ]);
+    await WPBackgroundRoomService.createRoom(m);
+    return { ok: true, openedStremio: false };
+  }),
+  'join-room': (m, _s, sr) => respondAsync(sr, async () => {
+    if (await hasStremioTabs()) {
+      if (WPBackgroundRoomService.isActive()) await WPBackgroundRoomService.stop();
+      const updates = {
+        [WPConstants.STORAGE.PENDING_ROOM_JOIN]: m.roomId,
+        [WPConstants.STORAGE.USERNAME]: m.username,
+      };
+      if (m.roomKey) {
+        await cacheRoomKey(m.roomId, m.roomKey);
+      }
       if (m.preferDirectJoin) {
         updates[WPConstants.STORAGE.PENDING_ROOM_JOIN_OPTIONS] = {
           roomId: m.roomId,
           preferDirectJoin: true,
           requestedAt: Date.now(),
         };
-        removeStorageKeys([WPConstants.STORAGE.PENDING_LEAVE_ROOM], () => {
-          storeAndForward(updates, m, sr);
-        });
-        return;
+        await removeStorageKeys([
+          WPConstants.STORAGE.PENDING_LEAVE_ROOM,
+          WPConstants.STORAGE.ROOM_SERVICE_ACTIVE,
+          WPConstants.STORAGE.ROOM_SERVICE_ERROR,
+        ]);
+        return storeAndForward(updates, m);
       }
-      removeStorageKeys([
+      await removeStorageKeys([
         WPConstants.STORAGE.PENDING_ROOM_JOIN_OPTIONS,
         WPConstants.STORAGE.PENDING_LEAVE_ROOM,
-      ], () => {
-        storeAndForward(updates, m, sr);
-      });
+        WPConstants.STORAGE.ROOM_SERVICE_ACTIVE,
+        WPConstants.STORAGE.ROOM_SERVICE_ERROR,
+      ]);
+      return storeAndForward(updates, m);
+    }
+    const updates = {
+      [WPConstants.STORAGE.USERNAME]: m.username,
     };
     if (m.roomKey) {
-      cacheRoomKey(m.roomId, m.roomKey, continueJoin);
-      return;
+      await cacheRoomKey(m.roomId, m.roomKey);
     }
-    continueJoin();
-  },
-  'leave-room': (m, _s, sr) => {
-    removeStorageKeys([
+    await removeStorageKeys([
+      WPConstants.STORAGE.PENDING_ROOM_JOIN_OPTIONS,
+      WPConstants.STORAGE.PENDING_LEAVE_ROOM,
+      WPConstants.STORAGE.ROOM_SERVICE_ERROR,
+    ]);
+    if (m.preferDirectJoin) {
+      updates[WPConstants.STORAGE.PENDING_ROOM_JOIN_OPTIONS] = {
+        roomId: m.roomId,
+        preferDirectJoin: true,
+        requestedAt: Date.now(),
+      };
+    }
+    await chrome.storage.local.set(updates);
+    await WPBackgroundRoomService.joinRoom(m);
+    return { ok: true, openedStremio: false };
+  }),
+  'leave-room': (m, _s, sr) => respondAsync(sr, async () => {
+    if (!await hasStremioTabs() || WPBackgroundRoomService.isActive()) {
+      await WPBackgroundRoomService.leaveRoom();
+      await removeStorageKeys([
+        WPConstants.STORAGE.CURRENT_ROOM,
+        WPConstants.STORAGE.ROOM_STATE,
+        WPConstants.STORAGE.PENDING_ROOM_JOIN,
+        WPConstants.STORAGE.PENDING_ROOM_JOIN_OPTIONS,
+        WPConstants.STORAGE.ROOM_SERVICE_ACTIVE,
+      ]);
+      return { ok: true };
+    }
+    await removeStorageKeys([
       WPConstants.STORAGE.CURRENT_ROOM,
       WPConstants.STORAGE.ROOM_STATE,
       WPConstants.STORAGE.PENDING_ROOM_JOIN,
       WPConstants.STORAGE.PENDING_ROOM_JOIN_OPTIONS,
-    ], () => {
-      storeAndForward({
-        [WPConstants.STORAGE.PENDING_LEAVE_ROOM]: { requestedAt: Date.now() },
-      }, m, sr);
-    });
-  },
-  'toggle-public': (m, _s, sr) => storeAndForward({ [WPConstants.STORAGE.PENDING_ACTION]: { action: m.action, ...m } }, m, sr),
-  'update-room-settings': (m, _s, sr) => storeAndForward({ [WPConstants.STORAGE.PENDING_ACTION]: { action: m.action, ...m } }, m, sr),
-  'transfer-ownership': (m, _s, sr) => storeAndForward({ [WPConstants.STORAGE.PENDING_ACTION]: { action: m.action, ...m } }, m, sr),
-  'update-username': (m, _s, sr) => { forwardToStremioTab(m); sr?.({ ok: true }); },
-  'ready-check': (m, _s, sr) => { forwardToStremioTab(m); sr?.({ ok: true }); },
-  'send-bookmark': (m, _s, sr) => { forwardToStremioTab(m); sr?.({ ok: true }); },
-  'seek-bookmark': (m, _s, sr) => { forwardToStremioTab(m); sr?.({ ok: true }); },
-  'send-chat': (m, _s, sr) => { forwardToStremioTab(m); sr?.({ ok: true }); },
-  'send-typing': (m, _s, sr) => { forwardToStremioTab(m); sr?.({ ok: true }); },
-  'send-reaction': (m, _s, sr) => { forwardToStremioTab(m); sr?.({ ok: true }); },
-  'send-presence': (m, _s, sr) => { forwardToStremioTab(m); sr?.({ ok: true }); },
-  'send-playback-status': (m, _s, sr) => { forwardToStremioTab(m); sr?.({ ok: true }); },
-  'request-sync': (m, _s, sr) => { forwardToStremioTab(m); sr?.({ ok: true }); },
+    ]);
+    return storeAndForward({
+      [WPConstants.STORAGE.PENDING_LEAVE_ROOM]: { requestedAt: Date.now() },
+    }, m);
+  }),
+  'toggle-public': (m, _s, sr) => respondAsync(sr, async () => {
+    if (!await hasStremioTabs() && WPBackgroundRoomService.isActive()) {
+      await WPBackgroundRoomService.updatePublic(m);
+      return { ok: true };
+    }
+    return storeAndForward({ [WPConstants.STORAGE.PENDING_ACTION]: { action: m.action, ...m } }, m);
+  }),
+  'update-room-settings': (m, _s, sr) => respondAsync(sr, async () => {
+    if (!await hasStremioTabs() && WPBackgroundRoomService.isActive()) {
+      await WPBackgroundRoomService.updateSettings(m.settings);
+      return { ok: true };
+    }
+    return storeAndForward({ [WPConstants.STORAGE.PENDING_ACTION]: { action: m.action, ...m } }, m);
+  }),
+  'transfer-ownership': (m, _s, sr) => respondAsync(sr, async () => {
+    if (!await hasStremioTabs() && WPBackgroundRoomService.isActive()) {
+      await WPBackgroundRoomService.transferOwnership(m.targetUserId);
+      return { ok: true };
+    }
+    return storeAndForward({ [WPConstants.STORAGE.PENDING_ACTION]: { action: m.action, ...m } }, m);
+  }),
+  'update-username': (m, _s, sr) => respondAsync(sr, async () => {
+    if (!await hasStremioTabs() && WPBackgroundRoomService.isActive()) {
+      await WPBackgroundRoomService.updateUsername(m.username);
+      return { ok: true };
+    }
+    await forwardToStremioTab(m);
+    return { ok: true };
+  }),
+  'ready-check': (m, _s, sr) => respondAsync(sr, async () => { await forwardToStremioTab(m); return { ok: true }; }),
+  'send-bookmark': (m, _s, sr) => respondAsync(sr, async () => { await forwardToStremioTab(m); return { ok: true }; }),
+  'seek-bookmark': (m, _s, sr) => respondAsync(sr, async () => { await forwardToStremioTab(m); return { ok: true }; }),
+  'send-chat': (m, _s, sr) => respondAsync(sr, async () => { await forwardToStremioTab(m); return { ok: true }; }),
+  'send-typing': (m, _s, sr) => respondAsync(sr, async () => { await forwardToStremioTab(m); return { ok: true }; }),
+  'send-reaction': (m, _s, sr) => respondAsync(sr, async () => { await forwardToStremioTab(m); return { ok: true }; }),
+  'send-presence': (m, _s, sr) => respondAsync(sr, async () => { await forwardToStremioTab(m); return { ok: true }; }),
+  'send-playback-status': (m, _s, sr) => respondAsync(sr, async () => { await forwardToStremioTab(m); return { ok: true }; }),
+  'request-sync': (m, _s, sr) => respondAsync(sr, async () => { await forwardToStremioTab(m); return { ok: true }; }),
   'profile-updated': (m) => broadcastToWatchParty({ action: 'profile-updated', data: m.data }),
+  'surface-ready': (m, sender) => {
+    rememberSurfaceTab(sender?.tab ? (m.surface || null) : null, sender?.tab?.id ?? null);
+    if (m.surface === 'stremio' && WPBackgroundRoomService.isActive()) {
+      WPBackgroundRoomService.handoffToTab().catch(() => {});
+    }
+  },
   'save-auth-key': (m) => {
     if (m.authKey) { chrome.storage.session.set({ [WPConstants.STORAGE.SAVED_AUTH_KEY]: m.authKey }); tryProfileSync(); }
   },
-  'proxy-fetch': (m, _s, sendResponse) => {
-    proxyFetch(m.url, m.method, m.headers).then(sendResponse).catch(e => sendResponse({ error: e.message }));
-    return true; // async sendResponse
-  },
+  'proxy-fetch': (m, _s, sendResponse) => respondAsync(sendResponse, () => proxyFetch(m.url, m.method, m.headers)),
 };
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -260,19 +447,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return false;
 });
 
+chrome.tabs?.onRemoved?.addListener((tabId) => {
+  forgetSurfaceTab(tabId);
+});
+
 // ── Forward popup commands to the active Stremio content script ──
 
 async function forwardToStremioTab(message) {
   try {
-    const tabs = await chrome.tabs.query({ url: STREMIO_WEB_URLS });
+    const tabs = await getStremioTabs();
     // Debug logging removed for production — uncomment for troubleshooting:
     // console.log(`[WP-BG] forwardToStremioTab: action=${message.action}, tabs found=${tabs.length}`);
+    const deliveries = [];
     for (const tab of tabs) {
       if (tab.id != null) {
-        chrome.tabs.sendMessage(tab.id, { type: 'watchparty-ext', ...message })
-          .catch((e) => console.warn(`[WP-BG] sendMessage to tab ${tab.id} failed:`, e.message));
+        deliveries.push(
+          chrome.tabs.sendMessage(tab.id, { type: 'watchparty-ext', ...message })
+            .catch((e) => {
+              forgetSurfaceTab(tab.id);
+              console.warn(`[WP-BG] sendMessage to tab ${tab.id} failed:`, e.message);
+            })
+        );
       }
     }
+    await Promise.allSettled(deliveries);
   } catch (e) { console.warn('[WP-BG] forwardToStremioTab failed:', e.message); }
 }
 
@@ -280,10 +478,14 @@ async function forwardToStremioTab(message) {
 
 async function broadcastToTabs(urlPatterns, message) {
   try {
-    const tabs = await chrome.tabs.query({ url: urlPatterns });
+    const tabs = urlPatterns === STREMIO_WEB_URLS
+      ? await getStremioTabs()
+      : await getWatchPartyTabs();
     for (const tab of tabs) {
       if (tab.id != null) {
-        chrome.tabs.sendMessage(tab.id, { type: 'watchparty-ext', ...message }).catch(() => {});
+        chrome.tabs.sendMessage(tab.id, { type: 'watchparty-ext', ...message }).catch(() => {
+          forgetSurfaceTab(tab.id);
+        });
       }
     }
   } catch (e) { console.warn('[WP-BG] broadcastToTabs failed:', e.message); }
@@ -362,10 +564,18 @@ if (chrome.sidePanel) {
   // When user navigates to Stremio, enable the side panel for that tab
   chrome.tabs?.onUpdated?.addListener((tabId, changeInfo, tab) => {
     if (!tab.url) return;
-    const isStremio = STREMIO_WEB_URLS.some(pattern => {
-      const regex = new RegExp('^' + pattern.replace(/\*/g, '.*'));
-      return regex.test(tab.url);
-    });
+    const isStremio = urlMatchesOrigins(tab.url, STREMIO_WEB_ORIGINS);
+    const isWatchParty = urlMatchesOrigins(tab.url, WATCHPARTY_ORIGINS);
+    if (isStremio) {
+      rememberSurfaceTab('stremio', tabId);
+      if (WPBackgroundRoomService.isActive()) {
+        WPBackgroundRoomService.handoffToTab().catch(() => {});
+      }
+    } else if (isWatchParty) {
+      rememberSurfaceTab('watchparty', tabId);
+    } else {
+      forgetSurfaceTab(tabId);
+    }
     chrome.sidePanel.setOptions({
       tabId,
       path: 'sidepanel.html',
@@ -382,7 +592,7 @@ chrome.runtime.onInstalled.addListener(async (details) => {
   if (details.reason !== 'update') return;
   // console.log('[WP-BG] Extension updated — re-injecting content scripts');
   try {
-    const tabs = await chrome.tabs.query({ url: STREMIO_WEB_URLS });
+    const tabs = await getStremioTabs();
     for (const tab of tabs) {
       if (tab.id == null) continue;
       chrome.scripting.executeScript({
@@ -407,5 +617,12 @@ chrome.runtime.onInstalled.addListener(async (details) => {
 checkStremio();
 fetchStremioSettings();
 setInterval(checkStremio, POLL_INTERVAL_MS);
+getStremioTabs().then((tabs) => {
+  if (tabs.length > 0) {
+    handoffBackgroundRoomToTab().catch(() => {});
+  } else {
+    WPBackgroundRoomService.resumeIfNeeded().catch(() => {});
+  }
+}).catch(() => {});
 // Dev-only: auto-reload on file changes (no update_url = unpacked/dev extension)
 if (!('update_url' in chrome.runtime.getManifest())) connectDevReload();

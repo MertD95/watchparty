@@ -2,6 +2,8 @@
 // Verifies that the extension sidepanel stays in sync with the live Stremio page.
 
 import path from 'path';
+import os from 'os';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { createBrowserDiagnostics } from './browser-diagnostics.mjs';
 import { getExtensionId, launchExtensionContext } from './extension-context.mjs';
@@ -11,6 +13,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const EXT_PATH = path.resolve(__dirname, '..');
 const STREMIO_URL = 'https://web.stremio.com';
 const TIMEOUT = 15000;
+const CHROME_FLAGS = [
+  '--disable-background-timer-throttling',
+  '--disable-backgrounding-occluded-windows',
+  '--disable-renderer-backgrounding',
+  '--no-first-run',
+  '--disable-blink-features=AutomationControlled',
+];
+const dirs = [];
 
 let passed = 0;
 let failed = 0;
@@ -41,7 +51,11 @@ function assertCleanDiagnostics(label) {
 }
 
 async function launchWithExtension() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wp-sidepanel-'));
+  dirs.push(dir);
   return launchExtensionContext(EXT_PATH, {
+    userDataDir: dir,
+    args: CHROME_FLAGS,
     viewport: { width: 1440, height: 900 },
   });
 }
@@ -93,6 +107,7 @@ async function setupTwoUsers() {
   const extId1 = await getExtensionId(ctx1);
   const popup1 = await openPopup(ctx1, extId1);
   await popup1.fill('#username-input', 'Alice');
+  await popup1.check('#public-check');
   await popup1.click('#btn-create');
   await popup1.waitForFunction(() => !document.getElementById('view-room').classList.contains('hidden'), { timeout: TIMEOUT });
   const roomId = await popup1.evaluate(() => document.getElementById('room-id-display').textContent);
@@ -137,10 +152,28 @@ async function testSidepanelChatAndBookmarks() {
       const statusText = await env.sidepanel.evaluate(() => document.getElementById('status')?.innerText || '');
       assert(statusText.includes('Synced to host'), 'peer sidepanel reflects the non-host role');
 
+      await env.stremio1.focus('#wp-chat-input');
+      await env.stremio1.keyboard.type('T');
+      const sidepanelSawTyping = await env.sidepanel.waitForFunction(
+        () => {
+          const el = document.getElementById('typing-indicator');
+          return el && !el.classList.contains('hidden') && el.textContent.includes('Alice is typing');
+        },
+        { timeout: 5000 }
+      ).then(() => true).catch(() => false);
+      assert(sidepanelSawTyping, 'sidepanel shows typing indicators from the page overlay');
+      await env.stremio1.keyboard.type('yping from Alice');
+      await env.stremio1.keyboard.press('Enter');
+      const sidepanelTypingCleared = await env.sidepanel.waitForFunction(
+        () => document.getElementById('typing-indicator')?.classList.contains('hidden'),
+        { timeout: 5000 }
+      ).then(() => true).catch(() => false);
+      assert(sidepanelTypingCleared, 'sidepanel typing indicator clears after send');
+
       await env.sidepanel.focus('#chat-input');
       await env.sidepanel.keyboard.type('Hello from the sidepanel');
       await env.sidepanel.keyboard.press('Enter');
-      await env.sidepanel.waitForTimeout(800);
+      await env.sidepanel.waitForTimeout(1200);
 
       const aliceSawChat = await env.stremio1.waitForFunction(
         () => document.getElementById('wp-chat-messages')?.innerText?.includes('Hello from the sidepanel'),
@@ -148,13 +181,18 @@ async function testSidepanelChatAndBookmarks() {
       ).then(() => true).catch(() => false);
       assert(aliceSawChat, 'sidepanel chat send reaches the other user overlay');
 
-      const sidepanelChatState = await env.sidepanel.evaluate(() => ({
-        inputValue: document.getElementById('chat-input')?.value || '',
-        ownCount: [...document.querySelectorAll('#chat-messages .chat-msg')]
-          .filter((el) => (el.innerText || '').includes('Hello from the sidepanel')).length,
-      }));
-      assert(sidepanelChatState.inputValue === '', 'sidepanel chat input clears after send');
-      assert(sidepanelChatState.ownCount === 1, 'sidepanel keeps a single local echo for its own chat send');
+      const sidepanelInputCleared = await env.sidepanel.waitForFunction(
+        () => (document.getElementById('chat-input')?.value || '') === '',
+        { timeout: 5000 }
+      ).then(() => true).catch(() => false);
+      assert(sidepanelInputCleared, 'sidepanel chat input clears after send');
+
+      const sidepanelSingleEcho = await env.sidepanel.waitForFunction(
+        () => [...document.querySelectorAll('#chat-messages .chat-msg')]
+          .filter((el) => (el.innerText || '').includes('Hello from the sidepanel')).length === 1,
+        { timeout: 5000 }
+      ).then(() => true).catch(() => false);
+      assert(sidepanelSingleEcho, 'sidepanel keeps a single local echo for its own chat send');
 
       await injectMockVideo(env.stremio2, 2);
       await env.sidepanel.click('#sp-bookmark');
@@ -168,7 +206,17 @@ async function testSidepanelChatAndBookmarks() {
       assert(aliceSawBobBookmark, 'sidepanel bookmark send uses the peer video time and reaches the host');
 
       await injectMockVideo(env.stremio1, 2);
-      await env.stremio1.click('#wp-bookmark-btn');
+      await env.stremio1.evaluate(() => document.querySelector('[data-panel="room"]')?.click());
+      await env.stremio1.waitForTimeout(300);
+      const hostBookmarkReady = await env.stremio1.waitForFunction(
+        () => {
+          const button = document.getElementById('wp-bookmark-btn');
+          return !!button && button.offsetParent !== null;
+        },
+        { timeout: TIMEOUT }
+      ).then(() => true).catch(() => false);
+      assert(hostBookmarkReady, 'host overlay shows the bookmark action when the room panel is active');
+      await env.stremio1.evaluate(() => document.getElementById('wp-bookmark-btn')?.click());
       const bobSidepanelSawBookmark = await env.sidepanel.waitForFunction(
         () => [...document.querySelectorAll('.bookmark-msg')].some((el) => (el.innerText || '').includes('Alice') && (el.innerText || '').includes('0:02')),
         { timeout: 5000 }
@@ -215,6 +263,7 @@ async function main() {
   }
 
   console.log(`\nResults: ${passed} passed, ${failed} failed`);
+  for (const dir of dirs) { try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} }
   process.exit(failed > 0 ? 1 : 0);
 }
 

@@ -80,6 +80,30 @@ async function sidebar(page) {
   if (h) { await page.evaluate(() => document.getElementById('wp-toggle-host')?.click()); await page.waitForTimeout(500); }
 }
 
+async function findRoomInListing(roomId, predicate = () => true, options = {}) {
+  const { attempts = 8, delayMs = 400 } = options;
+
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    let offset = 0;
+    let total = 0;
+    do {
+      const res = await fetch(`http://localhost:8181/rooms?offset=${offset}&limit=50`);
+      const payload = await res.json();
+      const rooms = payload.rooms || [];
+      const room = rooms.find((entry) => entry.id === roomId);
+      if (room && predicate(room)) return room;
+      total = payload.total || rooms.length || 0;
+      offset += payload.limit || rooms.length || 50;
+    } while (offset < total);
+
+    if (attempt < attempts - 1) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+
+  return null;
+}
+
 async function runTest(name, fn) {
   console.log(`\n── ${name} ──`);
   const contexts = [];
@@ -122,6 +146,7 @@ async function main() {
     const extA = await getExtensionId(ctxA);
     const popA = await popup(ctxA, extA);
     await popA.fill('#username-input', 'Alice');
+    await popA.check('#public-check');
     await popA.click('#btn-create');
     await popA.waitForFunction(() => !document.getElementById('view-room')?.classList.contains('hidden'), { timeout: TIMEOUT });
     const roomId = await popA.evaluate(() => document.getElementById('room-id-display')?.textContent);
@@ -144,9 +169,18 @@ async function main() {
     ok(await popB.evaluate(() => document.getElementById('setting-public-row')?.classList.contains('hidden')), 'Peer no Public');
     await popB.close();
 
+    await sidebar(pageA);
     await sidebar(pageB);
-    ok(await pageB.evaluate(() => document.getElementById('wp-sidebar')?.innerText?.includes('Alice')), 'Bob sees Alice');
-    ok(await pageA.waitForFunction(() => document.getElementById('wp-sidebar')?.innerText?.includes('Bob'), { timeout: 5000 }).then(() => true).catch(() => false), 'Alice sees Bob');
+    await pageA.evaluate(() => document.querySelector('[data-panel="people"]')?.click());
+    await pageB.evaluate(() => document.querySelector('[data-panel="people"]')?.click());
+    await pageA.waitForTimeout(300);
+    await pageB.waitForTimeout(300);
+    ok(await pageB.evaluate(() => document.getElementById('wp-users')?.innerText?.includes('Alice')), 'Bob sees Alice');
+    ok(await pageA.waitForFunction(() => document.getElementById('wp-users')?.innerText?.includes('Bob'), { timeout: 5000 }).then(() => true).catch(() => false), 'Alice sees Bob');
+    await pageA.evaluate(() => document.querySelector('[data-panel="chat"]')?.click());
+    await pageB.evaluate(() => document.querySelector('[data-panel="chat"]')?.click());
+    await pageA.waitForTimeout(200);
+    await pageB.waitForTimeout(200);
 
     await pageB.focus('#wp-chat-input');
     await pageB.keyboard.type('Hi from Bob');
@@ -190,18 +224,17 @@ async function main() {
     const pubId = await new Promise(resolve => {
       ws1.on('message', d => { const m = JSON.parse(d.toString()); if (m.type === 'ready') { ws1.send(JSON.stringify({ type: 'user.update', payload: { username: 'Host' } })); ws1.send(JSON.stringify({ type: 'room.new', payload: { meta: { id: 'tt1', type: 'movie', name: 'PubTest' }, stream: { url: 'http://x/s' }, public: true } })); } if (m.type === 'room') resolve(m.payload.id); });
     });
-    const r1 = await fetch('http://localhost:8181/rooms').then(r => r.json());
-    ok(r1.rooms?.some(r => r.id === pubId), 'Public in /rooms');
-    ok(r1.rooms?.find(r => r.id === pubId)?.owner === 'Host', 'Owner = Host');
+    const publicRoom = await findRoomInListing(pubId, (room) => room.public === true && room.owner === 'Host');
+    ok(!!publicRoom, 'Public in /rooms');
+    ok(publicRoom?.owner === 'Host', 'Owner = Host');
 
     ws1.send(JSON.stringify({ type: 'room.updatePublic', payload: { public: false, roomKey: PRIVATE_ROOM_KEY } }));
-    await new Promise(r => setTimeout(r, 1000));
-    const privateListing = await fetch('http://localhost:8181/rooms').then(r => r.json());
-    ok(privateListing.rooms?.some(r => r.id === pubId && r.public === false), 'Private room stays listed after toggle private');
+    const privateRoom = await findRoomInListing(pubId, (room) => room.public === false);
+    ok(!!privateRoom, 'Private room stays listed after toggle private');
 
     ws1.send(JSON.stringify({ type: 'room.updatePublic', payload: { public: true } }));
-    await new Promise(r => setTimeout(r, 1000));
-    ok((await fetch('http://localhost:8181/rooms').then(r => r.json())).rooms?.some(r => r.id === pubId && r.public === true), 'Visible after toggle public');
+    const publicAgain = await findRoomInListing(pubId, (room) => room.public === true);
+    ok(!!publicAgain, 'Visible after toggle public');
     ws1.close();
   });
 
@@ -224,7 +257,10 @@ async function main() {
     await page.evaluate(() => document.getElementById('wp-toggle-host')?.click());
     await page.waitForTimeout(300);
     ok(await page.evaluate(() => !document.getElementById('wp-sidebar')?.classList.contains('wp-sidebar-hidden')), 'Toggle opens');
-    ok(await page.evaluate(() => Math.round(document.body.getBoundingClientRect().width)) < 1280, 'Body pushed');
+    ok(await page.evaluate(() => {
+      const pushTarget = document.getElementById('app') || document.body;
+      return Math.round(pushTarget.getBoundingClientRect().width) < window.innerWidth;
+    }), 'App content pushed');
 
     await page.evaluate(() => document.querySelector('[data-panel="people"]')?.click());
     await page.waitForTimeout(300);
@@ -233,12 +269,27 @@ async function main() {
     await page.waitForTimeout(300);
     ok(await page.evaluate(() => document.querySelector('[data-panel="room"]')?.getAttribute('aria-selected') === 'true'), 'Room tab activates');
 
+    await page.evaluate(() => document.querySelector('[data-panel="chat"]')?.click());
+    await page.waitForTimeout(300);
+    ok(await page.evaluate(() => document.querySelector('[data-panel="chat"]')?.getAttribute('aria-selected') === 'true'), 'Chat tab activates');
+
     await page.keyboard.press('Alt+w');
     await page.waitForTimeout(300);
     ok(await page.evaluate(() => document.getElementById('wp-sidebar')?.classList.contains('wp-sidebar-hidden')), 'Alt+W closes');
     await page.keyboard.press('Alt+w');
     await page.waitForTimeout(300);
     ok(await page.evaluate(() => !document.getElementById('wp-sidebar')?.classList.contains('wp-sidebar-hidden')), 'Alt+W opens');
+
+    await page.focus('#wp-chat-input');
+    await page.keyboard.press('Alt+w');
+    await page.waitForTimeout(300);
+    ok(await page.evaluate(() =>
+      !document.getElementById('wp-sidebar')?.classList.contains('wp-sidebar-hidden')
+      && document.activeElement?.id === 'wp-chat-input'
+    ), 'Alt+W ignored while chat input is focused');
+    await page.keyboard.type('mute');
+    ok(await page.evaluate(() => document.getElementById('wp-chat-input')?.value === 'mute'), 'Chat input keeps typed keys local');
+    await page.evaluate(() => { document.getElementById('wp-chat-input').value = ''; });
 
     await page.setViewportSize({ width: 360, height: 844 });
     await page.waitForTimeout(600);
@@ -259,19 +310,25 @@ async function main() {
       return roomRect.left >= tabRect.left - 1 && roomRect.right <= tabRect.right + 1 && roomRect.width > 0;
     }), 'Room tab remains unobstructed on mobile');
     await page.evaluate(() => document.getElementById('wp-close-sidebar')?.click());
-    await page.waitForTimeout(400);
-    ok(await page.evaluate(() => document.getElementById('wp-sidebar')?.classList.contains('wp-sidebar-hidden')), 'Mobile close button closes sidebar');
-    ok(await page.evaluate(() => {
+    const mobileClosed = await page.waitForFunction(
+      () => document.getElementById('wp-sidebar')?.classList.contains('wp-sidebar-hidden'),
+      { timeout: 5000 }
+    ).then(() => true).catch(() => false);
+    ok(mobileClosed, 'Mobile close button closes sidebar');
+    const mobileLauncherRestored = await page.waitForFunction(() => {
       const toggle = document.getElementById('wp-toggle-host');
       if (!toggle) return false;
       const style = getComputedStyle(toggle);
       const rect = toggle.getBoundingClientRect();
       return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
-    }), 'Mobile close restores launcher');
+    }, { timeout: 5000 }).then(() => true).catch(() => false);
+    ok(mobileLauncherRestored, 'Mobile close restores launcher');
     await page.evaluate(() => document.getElementById('wp-toggle-host')?.click());
     await page.waitForTimeout(300);
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.waitForTimeout(400);
+    await page.evaluate(() => document.querySelector('[data-panel="chat"]')?.click());
+    await page.waitForTimeout(200);
 
     await page.evaluate(() => document.querySelector('#wp-emoji-btn')?.click());
     await page.waitForTimeout(300);
@@ -281,6 +338,20 @@ async function main() {
     await page.evaluate(() => document.querySelector('#wp-gif-btn')?.click());
     await page.waitForTimeout(300);
     ok(await page.evaluate(() => { const p = document.getElementById('wp-gif-picker'); return p && !p.classList.contains('wp-hidden-el') && !!p.querySelector('input'); }), 'GIF opens');
+    await page.focus('#wp-gif-search');
+    await page.keyboard.type('cats');
+    await page.keyboard.press('Alt+w');
+    await page.waitForTimeout(300);
+    ok(await page.evaluate(() => {
+      const sidebarHidden = document.getElementById('wp-sidebar')?.classList.contains('wp-sidebar-hidden');
+      return !sidebarHidden && document.getElementById('wp-gif-search')?.value === 'cats';
+    }), 'GIF search keeps keyboard focus and ignores Alt+W');
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(200);
+    ok(await page.evaluate(() => {
+      const picker = document.getElementById('wp-gif-picker');
+      return picker?.classList.contains('wp-hidden-el') && !document.getElementById('wp-sidebar')?.classList.contains('wp-sidebar-hidden');
+    }), 'Escape closes GIF picker without closing the sidebar');
     await page.evaluate(() => document.querySelector('#wp-gif-btn')?.click());
   });
 
@@ -308,9 +379,11 @@ async function main() {
     const ctx = await launch('named');
     const page = await stremio(ctx);
     const ext = await getExtensionId(ctx);
+    const roomName = `persist-test-${Date.now().toString().slice(-6)}`;
     const pop1 = await popup(ctx, ext);
     await pop1.fill('#username-input', 'Alice');
-    await pop1.fill('#room-name-input', 'persist-test');
+    await pop1.fill('#room-name-input', roomName);
+    await pop1.check('#public-check');
     await pop1.click('#btn-create');
     await pop1.waitForFunction(() => !document.getElementById('view-room')?.classList.contains('hidden'), { timeout: TIMEOUT });
     const id1 = await pop1.evaluate(() => document.getElementById('room-id-display')?.textContent);
@@ -323,7 +396,8 @@ async function main() {
 
     const pop2 = await popup(ctx, ext);
     await pop2.fill('#username-input', 'Alice');
-    await pop2.fill('#room-name-input', 'persist-test');
+    await pop2.fill('#room-name-input', roomName);
+    await pop2.check('#public-check');
     await pop2.click('#btn-create');
     await pop2.waitForFunction(() => !document.getElementById('view-room')?.classList.contains('hidden'), { timeout: TIMEOUT });
     const id2 = await pop2.evaluate(() => document.getElementById('room-id-display')?.textContent);

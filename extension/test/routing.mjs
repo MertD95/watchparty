@@ -197,7 +197,9 @@ const BG_NON_UI_SENDERS = new Set([
   'send-playback-status',  // content.js programmatic (periodic status)
   'update-username',       // content.js processPendingActions (username from storage)
   'chat-message',          // content.js → background (relay to sidepanel)
+  'typing',                // content.js → background (relay typing indicator to sidepanel)
   'bookmark',              // content.js → background (relay to sidepanel)
+  'surface-ready',         // content.js / stremio-content.js → background (tab registration)
   // Overlay actions now use DOM events directly — background.js cases kept for popup relay
   'send-chat', 'send-typing', 'send-reaction', 'send-bookmark', 'seek-bookmark',
   'ready-check', 'transfer-ownership', 'request-sync',

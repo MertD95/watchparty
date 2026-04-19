@@ -25,7 +25,9 @@ function loadSyncEngine() {
   const source = `${fs.readFileSync(SYNC_PATH, 'utf8')}\n;globalThis.__WPSync = WPSync;`;
   const context = vm.createContext({
     console,
+    setInterval,
     setTimeout,
+    clearInterval,
     clearTimeout,
     Date,
   });
@@ -39,6 +41,10 @@ class FakeVideo {
     this.paused = paused;
     this.readyState = readyState;
     this.playbackRate = playbackRate;
+    this.volume = 0.42;
+    this.muted = false;
+    this.audioTrack = 1;
+    this.subtitleTrack = -1;
     this.listeners = new Map();
   }
 
@@ -127,6 +133,24 @@ async function testPeerHardSeekAndPlayPause() {
   WPSync.detach();
 }
 
+async function testHostPausedHeartbeat() {
+  console.log('\n-- Host reasserts pause while paused --');
+  const WPSync = loadSyncEngine();
+  const events = [];
+  const video = new FakeVideo({ paused: true, currentTime: 21, playbackRate: 1 });
+
+  WPSync.attach(video, {
+    isHost: true,
+    onSync: (state) => events.push(state),
+  });
+
+  await sleep(1700);
+
+  ok(events.some((event) => event.action === 'tick' && event.paused === true), 'paused host emits heartbeat syncs');
+
+  WPSync.detach();
+}
+
 async function testPeerSoftCorrectionAndExit() {
   console.log('\n-- Peer soft-corrects drift and exits cleanly --');
   const WPSync = loadSyncEngine();
@@ -144,6 +168,19 @@ async function testPeerSoftCorrectionAndExit() {
   WPSync.detach();
 }
 
+async function testPeerPausedDriftSeeksImmediately() {
+  console.log('\n-- Peer seeks immediately when paused drift is meaningful --');
+  const WPSync = loadSyncEngine();
+  const video = new FakeVideo({ paused: true, currentTime: 0.1, readyState: 4, playbackRate: 1 });
+
+  WPSync.attach(video, { isHost: false });
+  WPSync.applyRemote({ paused: true, buffering: false, time: 2.8, speed: 1 });
+
+  ok(Math.abs(video.currentTime - 2.8) < 0.0001, 'paused peer hard-seeks to the paused host position');
+
+  WPSync.detach();
+}
+
 async function testInvalidRemoteStateIsIgnored() {
   console.log('\n-- Invalid remote state is ignored --');
   const WPSync = loadSyncEngine();
@@ -155,6 +192,31 @@ async function testInvalidRemoteStateIsIgnored() {
 
   WPSync.applyRemote({ paused: false, buffering: true, time: 20, speed: 1 });
   ok(video.currentTime === 5, 'buffering remote state skips drift correction');
+
+  WPSync.detach();
+}
+
+async function testRemotePlaybackKeepsLocalOnlyControlsUntouched() {
+  console.log('\n-- Remote playback leaves local-only controls untouched --');
+  const WPSync = loadSyncEngine();
+  const video = new FakeVideo({ paused: false, currentTime: 5, readyState: 4, playbackRate: 1 });
+
+  WPSync.attach(video, { isHost: false });
+  WPSync.applyRemote({
+    paused: false,
+    buffering: false,
+    time: 5.5,
+    speed: 1,
+    volume: 0,
+    muted: true,
+    audioTrack: 9,
+    subtitleTrack: 2,
+  });
+
+  ok(video.volume === 0.42, 'remote sync does not change local volume');
+  ok(video.muted === false, 'remote sync does not change local mute state');
+  ok(video.audioTrack === 1, 'remote sync does not change local audio track');
+  ok(video.subtitleTrack === -1, 'remote sync does not change local subtitle track');
 
   WPSync.detach();
 }
@@ -179,9 +241,12 @@ async function main() {
 
   const tests = [
     testHostReportsPlaybackChanges,
+    testHostPausedHeartbeat,
     testPeerHardSeekAndPlayPause,
     testPeerSoftCorrectionAndExit,
+    testPeerPausedDriftSeeksImmediately,
     testInvalidRemoteStateIsIgnored,
+    testRemotePlaybackKeepsLocalOnlyControlsUntouched,
     testClockOffsetAffectsSeekTarget,
   ];
 
