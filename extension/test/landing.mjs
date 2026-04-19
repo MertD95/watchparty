@@ -246,6 +246,8 @@ async function main() {
     ok(initialButtons.joinText === 'Join Room', 'landing renders a Join Room button');
     ok(initialButtons.directText === 'Direct Join' && initialButtons.directDisabled === false, 'landing renders an enabled Direct Join button when the stream is available');
 
+    await page.fill('#profile-name-input', 'Tester');
+
     const initialRoomNodeToken = await page.evaluate(() => {
       const card = document.querySelector('.room-card[data-room-id="room-1"]') || document.querySelector('.room-card');
       card.__nodeToken = card.__nodeToken || 'room-1-stable-node';
@@ -297,6 +299,7 @@ async function main() {
       navTarget: window.__navTargets[0] || null,
     }));
     ok(roomJoinAction.joinMessage?.roomId === 'room-1', 'Join Room posts the room ID to the extension bridge');
+    ok(roomJoinAction.joinMessage?.username === 'Tester', 'Join Room carries the website display name into the extension bridge');
     ok(roomJoinAction.joinMessage?.preferDirectJoin === false, 'Join Room keeps direct-join preference off');
     ok(roomJoinAction.navTarget === 'https://web.stremio.com/#/detail/movie/tt1375666', 'Join Room navigates to the Stremio title page');
 

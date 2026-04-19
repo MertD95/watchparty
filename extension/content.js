@@ -99,7 +99,12 @@ window.addEventListener('message', (event) => {
   if (event.source !== window) return;
   if (!ALLOWED_ORIGINS.has(event.origin)) return;
   if (event.data?.type === 'watchparty-join-room' && event.data.roomId) {
-    chrome.storage.local.set({ [WPConstants.STORAGE.PENDING_ROOM_JOIN]: event.data.roomId });
+    const updates = {
+      [WPConstants.STORAGE.PENDING_ROOM_JOIN]: event.data.roomId,
+    };
+    const username = typeof event.data.username === 'string' ? event.data.username.trim() : '';
+    if (username) updates[WPConstants.STORAGE.USERNAME] = username;
+    chrome.storage.local.set(updates);
     if (event.data.preferDirectJoin) {
       chrome.storage.local.set({
         [WPConstants.STORAGE.PENDING_ROOM_JOIN_OPTIONS]: {
@@ -123,14 +128,30 @@ window.addEventListener('message', (event) => {
     }
   }
   if (event.data?.type === 'watchparty-create-room' && event.data.username) {
+    const username = typeof event.data.username === 'string' ? event.data.username.trim() : '';
+    if (username) {
+      chrome.storage.local.set({ [WPConstants.STORAGE.USERNAME]: username }).catch(() => {});
+    }
     chrome.runtime.sendMessage({
       type: 'watchparty-ext',
       action: 'create-room',
-      username: event.data.username,
+      username,
       meta: event.data.meta || { id: 'pending', type: 'movie', name: 'WatchParty Session' },
       stream: event.data.stream || { url: 'https://watchparty.mertd.me/sync' },
       public: event.data.public || false,
       roomName: event.data.roomName,
     });
+  }
+  if (event.data?.type === 'watchparty-resume-room') {
+    chrome.runtime.sendMessage({
+      type: 'watchparty-ext',
+      action: 'resume-room',
+    }).catch(() => {});
+  }
+  if (event.data?.type === 'watchparty-open-options') {
+    chrome.runtime.sendMessage({
+      type: 'watchparty-ext',
+      action: 'open-options',
+    }).catch(() => {});
   }
 });

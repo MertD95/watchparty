@@ -863,7 +863,8 @@
       typingUsers.delete(user);
     }
     WPOverlay.updateTypingIndicator(typingUsers, userId, roomState);
-    notifyBackground({ action: 'typing', payload: { user, typing } });
+    const userName = roomState?.users?.find((entry) => entry.id === user)?.name || null;
+    notifyBackground({ action: 'typing', payload: { user, typing, userName } });
   }
 
   // --- Content link sharing ---
@@ -1124,6 +1125,7 @@
   const actionHandlers = {
     'create-room': () => { if (WPWS.isReady()) processPendingActions(); else WPWS.connect(); },
     'join-room': () => { if (WPWS.isReady()) processPendingActions(); else WPWS.connect(); },
+    'open-sidebar': (m) => { WPOverlay.openSidebar(m.panel); },
     'leave-room': () => {
       clearTimeout(presenceTimeout);
       finalizeLeaveIntent({ sendLeave: true });

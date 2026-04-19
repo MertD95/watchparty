@@ -168,7 +168,10 @@ async function testPopupLoadsWithStatus() {
     assert(wsText === 'Connected to Local server', `WS status: "${wsText}"`);
 
     const backendNote = await popup.evaluate(() => document.getElementById('backend-note')?.textContent || '');
-    assert(backendNote.includes('Local mode is selected'), `Backend note: "${backendNote}"`);
+    assert(
+      backendNote.includes('Current backend: Local') || backendNote.includes('development builds may use localhost'),
+      `Backend note: "${backendNote}"`
+    );
 
     // Username input exists
     const hasInput = await popup.evaluate(() => !!document.getElementById('username-input'));
@@ -221,8 +224,8 @@ async function testCreateRoomWithoutStremioTabAttachesLater() {
     if (gotRoom) {
       const roomId = await popup.evaluate(() => document.getElementById('room-id-display').textContent);
       assert(roomId && roomId.length > 10, `Popup-first room flow shows room ID: ${roomId?.substring(0, 8)}...`);
-      const usersHtml = await popup.evaluate(() => document.getElementById('users-list')?.textContent || '');
-      assert(usersHtml.includes('PopupFirstHost'), 'Popup room view shows the host before Stremio is opened');
+      const roomCountBadge = await popup.evaluate(() => document.getElementById('room-count-badge')?.textContent || '');
+      assert(roomCountBadge.includes('1 watching'), 'Popup room summary shows the host before Stremio is opened');
 
       stremio = await openStremio(context);
       const attachedToRoom = await stremio.waitForFunction(
@@ -528,11 +531,6 @@ async function testJoinRoomFlow() {
     assert(joined, 'Bob joined the room');
 
     if (joined) {
-      // Bob's popup should show both users
-      const bobUsers = await popup2.evaluate(() => document.getElementById('users-list').innerHTML);
-      assert(bobUsers.includes('Alice'), 'Bob sees Alice in users list');
-      assert(bobUsers.includes('Bob'), 'Bob sees himself in users list');
-
       // Alice's sidebar should show Bob joined
       await stremio1.bringToFront();
       await stremio1.waitForTimeout(1500);
@@ -540,6 +538,12 @@ async function testJoinRoomFlow() {
       await stremio1.waitForTimeout(300);
       const alicePeople = await stremio1.evaluate(() => document.getElementById('wp-users')?.innerText || '');
       assert(alicePeople.includes('Bob'), 'Alice people tab shows Bob joined');
+      await stremio2.bringToFront();
+      await stremio2.waitForTimeout(1000);
+      await stremio2.evaluate(() => document.querySelector('[data-panel="people"]')?.click());
+      await stremio2.waitForTimeout(300);
+      const bobPeople = await stremio2.evaluate(() => document.getElementById('wp-users')?.innerText || '');
+      assert(bobPeople.includes('Alice'), 'Bob people tab shows Alice after join');
       await stremio1.evaluate(() => document.querySelector('[data-panel="chat"]')?.click());
     }
 

@@ -262,6 +262,19 @@
       gap: 14px;
     }
 
+    .quick-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .quick-note {
+      margin-top: 10px;
+      font-size: 12px;
+      line-height: 1.45;
+      color: var(--text-muted);
+    }
+
     .mode-switch {
       display: grid;
       grid-template-columns: repeat(2, 1fr);
@@ -704,6 +717,19 @@
       </div>
     </div>
 
+    <div class="surface">
+      <div class="surface-inner">
+        <div class="surface-title">Quick Actions</div>
+        <div class="quick-grid">
+          <button class="btn btn-primary" id="btn-resume-room" type="button">Open Stremio</button>
+          <button class="btn btn-secondary" id="btn-open-watchparty" type="button">Open WatchParty</button>
+          <button class="btn btn-secondary" id="btn-open-stremio" type="button">Open Stremio Web</button>
+          <button class="btn btn-secondary" id="btn-open-settings" type="button">Extension Settings</button>
+        </div>
+        <div class="quick-note">Use WatchParty for room discovery and Stremio for the live session. The popup stays available as a fallback surface.</div>
+      </div>
+    </div>
+
     <details class="surface fold-card" id="connection-card" open>
       <summary>Connection</summary>
       <div class="fold-body">
@@ -712,7 +738,7 @@
           <button class="backend-btn" id="backend-local" data-mode="local" type="button">Local</button>
           <button class="backend-btn" id="backend-live" data-mode="live" type="button">Live</button>
         </div>
-        <div class="backend-note" id="backend-note">Auto mode uses localhost when available, otherwise live.</div>
+        <div class="backend-note" id="backend-note">Auto mode uses the live backend by default. Unpacked development builds can use localhost when it is available.</div>
       </div>
     </details>
 
@@ -727,6 +753,7 @@
 
       <div class="surface">
         <div class="surface-inner">
+          <div class="surface-title">Fallback Room Setup</div>
           <div class="mode-switch" role="tablist" aria-label="Room action">
             <button class="mode-btn active" id="lobby-tab-create" type="button" role="tab" aria-selected="true">Create</button>
             <button class="mode-btn" id="lobby-tab-join" type="button" role="tab" aria-selected="false">Join</button>
@@ -763,7 +790,7 @@
       </div>
 
       <div class="info-banner">
-        Use <a href="https://web.stremio.com" target="_blank">web.stremio.com</a> whenever you want to pick something first. Room setup works here even before Stremio Web is open.
+        The preferred flow now starts on <a href="https://watchparty.mertd.me" target="_blank">WatchParty</a>. Keep this popup for recovery, diagnostics, and fallback room setup when the website handoff is unavailable.
       </div>
     </div>
 
@@ -782,16 +809,6 @@
               <span class="room-badge" id="room-count-badge">1 watching</span>
             </div>
           </div>
-
-          <div class="room-key-row hidden" id="room-key-row">
-            <div class="room-key-label">Invite Key</div>
-            <input type="text" id="room-key-input" aria-label="Room key" spellcheck="false" autocomplete="off" />
-            <div class="room-key-actions">
-              <button class="btn btn-secondary" id="btn-update-room-key" type="button">Update Key</button>
-            </div>
-            <div class="room-key-help" id="room-key-help"></div>
-            <div class="error-text hidden" id="room-key-error"></div>
-          </div>
         </div>
       </div>
 
@@ -802,83 +819,12 @@
       </div>
 
       <div class="surface">
-        <div class="list-card">
-          <div class="section-header">
-            <div class="surface-title">Participants</div>
-            <div class="section-count" id="participants-count">0 people</div>
-          </div>
-          <div class="users-list" id="users-list"></div>
-        </div>
-      </div>
-
-      <details class="surface fold-card" id="room-settings">
-        <summary>Room Settings</summary>
-        <div class="fold-body">
-          <div class="settings-grid">
-            <label class="setting-row" id="setting-public-row">
-              <span class="setting-copy">
-                <span class="setting-name">Public room</span>
-                <span class="setting-desc">Anyone on the WatchParty site can join without an invite.</span>
-              </span>
-              <input type="checkbox" id="setting-public" />
-            </label>
-            <label class="setting-row" id="setting-autopause-row">
-              <span class="setting-copy">
-                <span class="setting-name">Auto-pause on disconnect</span>
-                <span class="setting-desc">Pause playback if someone drops from the room unexpectedly.</span>
-              </span>
-              <input type="checkbox" id="setting-autopause" />
-            </label>
-            <label class="setting-row">
-              <span class="setting-copy">
-                <span class="setting-name">Reaction sounds</span>
-                <span class="setting-desc">Play small audio cues for reactions in chat.</span>
-              </span>
-              <input type="checkbox" id="setting-reaction-sound" checked />
-            </label>
-            <label class="setting-row">
-              <span class="setting-copy">
-                <span class="setting-name">Floating reactions</span>
-                <span class="setting-desc">Show on-screen emoji bursts while people react.</span>
-              </span>
-              <input type="checkbox" id="setting-floating-reactions" checked />
-            </label>
-          </div>
-        </div>
-      </details>
-
-      <details class="surface fold-card" id="theme-settings">
-        <summary>Appearance</summary>
-        <div class="fold-body">
-          <div class="theme-grid">
-            <div>
-              <div class="field-label">Accent Color</div>
-              <div class="color-row">
-                <button class="color-btn" data-color="#6366f1" style="background:#6366f1" title="Indigo"></button>
-                <button class="color-btn" data-color="#ec4899" style="background:#ec4899" title="Pink"></button>
-                <button class="color-btn" data-color="#22c55e" style="background:#22c55e" title="Green"></button>
-                <button class="color-btn" data-color="#f59e0b" style="background:#f59e0b" title="Amber"></button>
-                <button class="color-btn" data-color="#06b6d4" style="background:#06b6d4" title="Cyan"></button>
-                <button class="color-btn" data-color="#ef4444" style="background:#ef4444" title="Red"></button>
-              </div>
-            </div>
-            <label class="setting-row">
-              <span class="setting-copy">
-                <span class="setting-name">Compact chat</span>
-                <span class="setting-desc">Use denser message spacing inside the Stremio sidebar.</span>
-              </span>
-              <input type="checkbox" id="setting-compact" />
-            </label>
-          </div>
-        </div>
-      </details>
-
-      <div class="surface">
         <div class="action-stack">
           <div class="action-grid">
             <button class="btn btn-primary" id="btn-share">Copy Invite</button>
             <a href="https://watchparty.mertd.me" target="_blank" class="btn btn-secondary" id="browse-rooms-link">Browse Rooms</a>
           </div>
+          <div class="quick-note">Use Go to Room in Stremio for live controls, people, privacy, and browser preferences. The popup only keeps quick recovery actions.</div>
           <button class="btn btn-danger" id="btn-leave">Leave Room</button>
         </div>
       </div>

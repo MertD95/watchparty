@@ -152,6 +152,8 @@ const BG_ONLY_ACTIONS = new Set([
   'ws-status-changed',  // Badge update from content→background, no forwarding
   'profile-updated',    // Broadcasts to WatchParty tabs, not Stremio tabs
   'save-auth-key',      // Stores auth key + triggers profile sync
+  'resume-room',        // Website/popup intent handled fully in background
+  'open-options',       // Opens extension settings page from website/popup
   'proxy-fetch',        // CORS proxy handled entirely in background
 ]);
 
@@ -192,6 +194,8 @@ const BG_NON_UI_SENDERS = new Set([
   'ws-status-changed',     // content script → background (notifyBackground)
   'profile-updated',       // content.js WPProfile → background
   'save-auth-key',         // content.js (landing page) → background
+  'resume-room',           // content.js (landing page) → background
+  'open-options',          // content.js (landing page) → background
   'proxy-fetch',           // content.js → background (CORS proxy for localhost)
   'send-presence',         // content.js programmatic (visibility change)
   'send-playback-status',  // content.js programmatic (periodic status)

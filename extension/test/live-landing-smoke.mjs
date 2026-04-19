@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getExtensionId, launchExtensionContext } from './extension-context.mjs';
+import { launchExtensionContext } from './extension-context.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const EXT_PATH = path.resolve(__dirname, '..');
@@ -28,13 +28,6 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function openPopup(context, extId) {
-  const page = await context.newPage();
-  await page.goto(`chrome-extension://${extId}/popup.html`, { waitUntil: 'domcontentloaded' });
-  await page.waitForTimeout(1200);
-  return page;
-}
-
 async function openStremioAt(context, url) {
   const page = await context.newPage();
   await page.goto(url, { waitUntil: 'domcontentloaded' });
@@ -49,14 +42,6 @@ async function openSite(context) {
   await page.waitForFunction(() => document.getElementById('rooms-list') !== null, { timeout: TIMEOUT });
   await page.waitForTimeout(1200);
   return page;
-}
-
-async function setLiveBackend(popup) {
-  await popup.click('#backend-live');
-  await popup.waitForFunction(() => {
-    const wsText = document.getElementById('ws-status')?.textContent || '';
-    return wsText.includes('Live');
-  }, { timeout: TIMEOUT });
 }
 
 async function fetchPublicRooms() {
@@ -93,6 +78,17 @@ async function waitForRoomGoneInApi(roomId, timeout = 15000) {
   return false;
 }
 
+async function waitForRoomByOwner(username, predicate = () => true, timeout = 15000) {
+  const started = Date.now();
+  while ((Date.now() - started) < timeout) {
+    const data = await fetchPublicRooms();
+    const room = data?.rooms?.find((entry) => entry.owner === username && predicate(entry)) || null;
+    if (room) return room;
+    await sleep(800);
+  }
+  return null;
+}
+
 async function waitForSiteUser(page, username, timeout = 15000) {
   return page.waitForFunction(
     (expected) => (document.getElementById('rooms-list')?.innerText || '').includes(expected),
@@ -117,39 +113,69 @@ async function getSiteCards(page) {
   })));
 }
 
-async function createRoomViaPopup(popup, { username, roomName, isPublic }) {
-  await popup.fill('#username-input', username);
-  await popup.fill('#room-name-input', roomName);
-  const currentlyPublic = await popup.isChecked('#public-check');
-  if (currentlyPublic !== isPublic) await popup.click('#public-check');
-  await popup.click('#btn-create');
-  const roomVisible = await popup.waitForFunction(
-    () => !document.getElementById('view-room').classList.contains('hidden'),
+async function createRoomViaWebsite(page, { username, roomName, isPublic }) {
+  const hasWebsiteFirstUi = await page.evaluate(() => ({
+    hasProfile: !!document.getElementById('profile-name-input'),
+    hasCreateButton: !!document.getElementById('hero-primary-btn'),
+    hasCreateModal: !!document.getElementById('create-modal'),
+  }));
+
+  if (!hasWebsiteFirstUi.hasProfile || !hasWebsiteFirstUi.hasCreateButton || !hasWebsiteFirstUi.hasCreateModal) {
+    throw new Error(
+      'Live landing page is still serving the legacy UI. Missing website-first controls: '
+      + JSON.stringify(hasWebsiteFirstUi)
+    );
+  }
+
+  await page.fill('#profile-name-input', username);
+  await page.click('#hero-primary-btn');
+  await page.waitForFunction(
+    () => getComputedStyle(document.getElementById('create-modal')).display !== 'none',
+    { timeout: TIMEOUT }
+  );
+
+  await page.fill('#create-room-name', roomName);
+  const currentlyPublic = await page.isChecked('#create-room-public');
+  if (currentlyPublic !== isPublic) await page.click('#create-room-public');
+
+  await page.click('#create-submit-btn');
+  const reachedStremio = await page.waitForFunction(
+    () => location.origin === 'https://web.stremio.com' && document.getElementById('wp-overlay') !== null,
     { timeout: TIMEOUT }
   ).then(() => true).catch(() => false);
-  await popup.waitForTimeout(1000);
-  return {
-    roomVisible,
-    roomId: await popup.locator('#room-id-display').innerText().catch(() => ''),
-    roomMeta: await popup.locator('#room-meta').innerText().catch(() => ''),
-    wsStatus: await popup.locator('#ws-status').innerText().catch(() => ''),
-  };
+
+  return { reachedStremio };
 }
 
-async function leaveRoomViaPopup(popup) {
-  await popup.click('#btn-leave').catch(() => {});
-  await popup.waitForTimeout(1200);
+async function waitForRoomAttached(page, timeout = TIMEOUT) {
+  return page.waitForFunction(
+    () => {
+      const sidebar = document.getElementById('wp-sidebar');
+      return !!sidebar && !sidebar.innerText.includes('Not in a room');
+    },
+    { timeout }
+  ).then(() => true).catch(() => false);
+}
+
+async function leaveRoomViaOverlay(page) {
+  await page.evaluate(() => {
+    document.dispatchEvent(new CustomEvent('wp-action', { detail: { action: 'leave-room' } }));
+  });
+  await page.waitForFunction(
+    () => document.getElementById('wp-sidebar')?.innerText?.includes('Not in a room'),
+    { timeout: TIMEOUT }
+  ).catch(() => {});
+  await page.waitForTimeout(1200);
 }
 
 async function withLiveExtension(runScenario) {
   const context = await launchExtensionContext(EXT_PATH, {
     headless: true,
     viewport: { width: 1440, height: 900 },
-    backendMode: null,
+    backendMode: 'live',
   });
   try {
-    const extId = await getExtensionId(context);
-    await runScenario({ context, extId });
+    await runScenario({ context });
   } finally {
     await context.close();
   }
@@ -157,22 +183,21 @@ async function withLiveExtension(runScenario) {
 
 async function testPublicDetailRoomAppearsWithReadableTitle() {
   console.log('\n-- Live Smoke: public detail room --');
-  await withLiveExtension(async ({ context, extId }) => {
+  await withLiveExtension(async ({ context }) => {
     const suffix = Date.now().toString().slice(-6);
     const username = `Detail${suffix}`;
     const roomName = `detail-${suffix}`;
-    const site = await openSite(context);
     const stremio = await openStremioAt(context, DETAIL_URL);
-    const popup = await openPopup(context, extId);
+    const site = await openSite(context);
+    const lobby = await openSite(context);
     try {
-      await setLiveBackend(popup);
-      const created = await createRoomViaPopup(popup, { username, roomName, isPublic: true });
-      assert(created.roomVisible, 'detail create reaches room view', JSON.stringify(created));
-      assert(created.wsStatus.includes('Live'), 'detail create uses live backend', created.wsStatus);
-      assert(created.roomMeta === 'The Dark Knight', 'detail create seeds popup title', created.roomMeta);
+      const created = await createRoomViaWebsite(lobby, { username, roomName, isPublic: true });
+      assert(created.reachedStremio, 'website create hands off to Stremio');
+      const attached = await waitForRoomAttached(stremio);
+      assert(attached, 'existing detail page attaches the room after website create');
 
-      const apiRoom = await waitForRoomInApi(created.roomId);
-      assert(!!apiRoom, 'detail room appears in live /rooms', created.roomId);
+      const apiRoom = await waitForRoomByOwner(username);
+      assert(!!apiRoom, 'detail room appears in live /rooms', username);
       assert(apiRoom?.meta?.name === 'The Dark Knight', 'detail room publishes readable title', JSON.stringify(apiRoom));
 
       const siteSeen = await waitForSiteUser(site, username);
@@ -184,34 +209,34 @@ async function testPublicDetailRoomAppearsWithReadableTitle() {
       assert(card?.text.includes('The Dark Knight'), 'detail room card shows readable title', JSON.stringify(card));
       assert(card?.directDisabled === true, 'detail room keeps Direct Join disabled before player playback', JSON.stringify(card));
 
-      await leaveRoomViaPopup(popup);
-      const removedFromApi = await waitForRoomGoneInApi(created.roomId);
-      assert(removedFromApi, 'detail room disappears from live /rooms after leave', created.roomId);
+      await leaveRoomViaOverlay(stremio);
+      const removedFromApi = await waitForRoomGoneInApi(apiRoom?.id);
+      assert(removedFromApi, 'detail room disappears from live /rooms after leave', apiRoom?.id);
       const removedFromSite = await waitForSiteUserGone(site, username);
       assert(removedFromSite, 'detail room disappears from website without refresh', username);
     } finally {
-      await Promise.allSettled([popup.close(), stremio.close(), site.close()]);
+      await Promise.allSettled([lobby.close(), stremio.close(), site.close()]);
     }
   });
 }
 
 async function testPublicPlayerRoomAppearsWithDirectJoinEnabled() {
   console.log('\n-- Live Smoke: public player room --');
-  await withLiveExtension(async ({ context, extId }) => {
+  await withLiveExtension(async ({ context }) => {
     const suffix = Date.now().toString().slice(-6);
     const username = `Player${suffix}`;
     const roomName = `player-${suffix}`;
-    const site = await openSite(context);
     const stremio = await openStremioAt(context, PLAYER_URL);
-    const popup = await openPopup(context, extId);
+    const site = await openSite(context);
+    const lobby = await openSite(context);
     try {
-      await setLiveBackend(popup);
-      const created = await createRoomViaPopup(popup, { username, roomName, isPublic: true });
-      assert(created.roomVisible, 'player create reaches room view', JSON.stringify(created));
-      assert(created.wsStatus.includes('Live'), 'player create uses live backend', created.wsStatus);
+      const created = await createRoomViaWebsite(lobby, { username, roomName, isPublic: true });
+      assert(created.reachedStremio, 'website create hands off to Stremio from the player page');
+      const attached = await waitForRoomAttached(stremio);
+      assert(attached, 'existing player page attaches the room after website create');
 
-      const apiRoom = await waitForRoomInApi(created.roomId);
-      assert(!!apiRoom, 'player room appears in live /rooms', created.roomId);
+      const apiRoom = await waitForRoomByOwner(username);
+      assert(!!apiRoom, 'player room appears in live /rooms', username);
       assert(apiRoom?.hasDirectJoin === true, 'player room advertises Direct Join', JSON.stringify(apiRoom));
       assert(apiRoom?.directJoinType === 'direct-url', 'player room exposes direct-url classification', JSON.stringify(apiRoom));
 
@@ -223,33 +248,34 @@ async function testPublicPlayerRoomAppearsWithDirectJoinEnabled() {
       assert(!!card, 'player room card exists on website', JSON.stringify(cards));
       assert(card?.directDisabled === false, 'player room enables Direct Join on website', JSON.stringify(card));
 
-      await leaveRoomViaPopup(popup);
-      const removedFromApi = await waitForRoomGoneInApi(created.roomId);
-      assert(removedFromApi, 'player room disappears from live /rooms after leave', created.roomId);
+      await leaveRoomViaOverlay(stremio);
+      const removedFromApi = await waitForRoomGoneInApi(apiRoom?.id);
+      assert(removedFromApi, 'player room disappears from live /rooms after leave', apiRoom?.id);
       const removedFromSite = await waitForSiteUserGone(site, username);
       assert(removedFromSite, 'player room disappears from website without refresh', username);
     } finally {
-      await Promise.allSettled([popup.close(), stremio.close(), site.close()]);
+      await Promise.allSettled([lobby.close(), stremio.close(), site.close()]);
     }
   });
 }
 
 async function testPrivateRoomAppearsOnWebsite() {
   console.log('\n-- Live Smoke: private room listed --');
-  await withLiveExtension(async ({ context, extId }) => {
+  await withLiveExtension(async ({ context }) => {
     const suffix = Date.now().toString().slice(-6);
     const username = `Private${suffix}`;
     const roomName = `private-${suffix}`;
-    const site = await openSite(context);
     const stremio = await openStremioAt(context, DETAIL_URL);
-    const popup = await openPopup(context, extId);
+    const site = await openSite(context);
+    const lobby = await openSite(context);
     try {
-      await setLiveBackend(popup);
-      const created = await createRoomViaPopup(popup, { username, roomName, isPublic: false });
-      assert(created.roomVisible, 'private create reaches room view', JSON.stringify(created));
+      const created = await createRoomViaWebsite(lobby, { username, roomName, isPublic: false });
+      assert(created.reachedStremio, 'private website create hands off to Stremio');
+      const attached = await waitForRoomAttached(stremio);
+      assert(attached, 'existing detail page attaches the private room after website create');
 
-      const apiRoom = await waitForRoomInApi(created.roomId);
-      assert(!!apiRoom, 'private room appears in live /rooms', created.roomId);
+      const apiRoom = await waitForRoomByOwner(username);
+      assert(!!apiRoom, 'private room appears in live /rooms', username);
       assert(apiRoom?.public === false, 'private room keeps its private flag in /rooms', JSON.stringify(apiRoom));
 
       const siteSeen = await waitForSiteUser(site, username);
@@ -260,32 +286,33 @@ async function testPrivateRoomAppearsOnWebsite() {
       assert(!!card, 'private room card exists on website', JSON.stringify(siteCards));
       assert(card?.text.includes('Private'), 'private room card shows the private badge', JSON.stringify(card));
 
-      await leaveRoomViaPopup(popup);
-      const removedFromApi = await waitForRoomGoneInApi(created.roomId);
-      assert(removedFromApi, 'private room disappears from /rooms after leave', created.roomId);
+      await leaveRoomViaOverlay(stremio);
+      const removedFromApi = await waitForRoomGoneInApi(apiRoom?.id);
+      assert(removedFromApi, 'private room disappears from /rooms after leave', apiRoom?.id);
       const removedFromSite = await waitForSiteUserGone(site, username);
       assert(removedFromSite, 'private room disappears from website without refresh', username);
     } finally {
-      await Promise.allSettled([popup.close(), stremio.close(), site.close()]);
+      await Promise.allSettled([lobby.close(), stremio.close(), site.close()]);
     }
   });
 }
 
 async function testLatePageLoadStillSeesRoom() {
   console.log('\n-- Live Smoke: late page load --');
-  await withLiveExtension(async ({ context, extId }) => {
+  await withLiveExtension(async ({ context }) => {
     const suffix = Date.now().toString().slice(-6);
     const username = `Late${suffix}`;
     const roomName = `late-${suffix}`;
     const stremio = await openStremioAt(context, DETAIL_URL);
-    const popup = await openPopup(context, extId);
+    const lobby = await openSite(context);
     try {
-      await setLiveBackend(popup);
-      const created = await createRoomViaPopup(popup, { username, roomName, isPublic: true });
-      assert(created.roomVisible, 'late-load create reaches room view', JSON.stringify(created));
+      const created = await createRoomViaWebsite(lobby, { username, roomName, isPublic: true });
+      assert(created.reachedStremio, 'late-load website create hands off to Stremio');
+      const attached = await waitForRoomAttached(stremio);
+      assert(attached, 'late-load detail page attaches the room after website create');
 
-      const apiRoom = await waitForRoomInApi(created.roomId);
-      assert(!!apiRoom, 'late-load room appears in live /rooms before site opens', created.roomId);
+      const apiRoom = await waitForRoomByOwner(username);
+      assert(!!apiRoom, 'late-load room appears in live /rooms before site opens', username);
 
       const site = await openSite(context);
       try {
@@ -298,11 +325,11 @@ async function testLatePageLoadStillSeesRoom() {
         await site.close();
       }
 
-      await leaveRoomViaPopup(popup);
-      const removedFromApi = await waitForRoomGoneInApi(created.roomId);
-      assert(removedFromApi, 'late-load room disappears from /rooms after leave', created.roomId);
+      await leaveRoomViaOverlay(stremio);
+      const removedFromApi = await waitForRoomGoneInApi(apiRoom?.id);
+      assert(removedFromApi, 'late-load room disappears from /rooms after leave', apiRoom?.id);
     } finally {
-      await Promise.allSettled([popup.close(), stremio.close()]);
+      await Promise.allSettled([lobby.close(), stremio.close()]);
     }
   });
 }

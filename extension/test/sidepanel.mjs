@@ -152,6 +152,8 @@ async function testSidepanelChatAndBookmarks() {
       const statusText = await env.sidepanel.evaluate(() => document.getElementById('status')?.innerText || '');
       assert(statusText.includes('Synced to host'), 'peer sidepanel reflects the non-host role');
 
+      await env.stremio1.evaluate(() => document.querySelector('[data-panel="chat"]')?.click());
+      await env.stremio1.waitForTimeout(250);
       await env.stremio1.focus('#wp-chat-input');
       await env.stremio1.keyboard.type('T');
       const sidepanelSawTyping = await env.sidepanel.waitForFunction(
@@ -253,7 +255,9 @@ async function main() {
   }
 
   try {
-    currentDiagnostics = createBrowserDiagnostics();
+    currentDiagnostics = createBrowserDiagnostics([
+      /Error enabling fullscreen.*not granted/i,
+    ]);
     await testSidepanelChatAndBookmarks();
   } catch (error) {
     console.error(`  FAIL ${error.message}`);

@@ -10,7 +10,7 @@ export async function launchExtensionContext(extPath, options = {}) {
     args = [],
     viewport = { width: 1440, height: 900 },
     serviceWorkerTimeout = 10000,
-    backendMode = 'local',
+    backendMode = 'auto',
   } = options;
 
   const context = await chromium.launchPersistentContext(userDataDir, {

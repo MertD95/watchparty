@@ -151,8 +151,6 @@ async function main() {
     await popA.waitForFunction(() => !document.getElementById('view-room')?.classList.contains('hidden'), { timeout: TIMEOUT });
     const roomId = await popA.evaluate(() => document.getElementById('room-id-display')?.textContent);
     ok(!!roomId, `Room created: ${roomId?.substring(0, 8)}`);
-    ok(await popA.evaluate(() => !document.getElementById('setting-public-row')?.classList.contains('hidden')), 'Host sees Public');
-    ok(await popA.evaluate(() => !document.getElementById('setting-autopause-row')?.classList.contains('hidden')), 'Host sees Auto-pause');
     await popA.close();
 
     await pageA.waitForFunction(() => !document.getElementById('wp-sidebar')?.innerText?.includes('Not in a room'), { timeout: 8000 });
@@ -166,7 +164,6 @@ async function main() {
     await popB.click('#btn-join');
     await popB.waitForFunction(() => !document.getElementById('view-room')?.classList.contains('hidden'), { timeout: TIMEOUT });
     ok(true, 'Bob joined');
-    ok(await popB.evaluate(() => document.getElementById('setting-public-row')?.classList.contains('hidden')), 'Peer no Public');
     await popB.close();
 
     await sidebar(pageA);
@@ -177,6 +174,17 @@ async function main() {
     await pageB.waitForTimeout(300);
     ok(await pageB.evaluate(() => document.getElementById('wp-users')?.innerText?.includes('Alice')), 'Bob sees Alice');
     ok(await pageA.waitForFunction(() => document.getElementById('wp-users')?.innerText?.includes('Bob'), { timeout: 5000 }).then(() => true).catch(() => false), 'Alice sees Bob');
+
+    await pageA.evaluate(() => document.querySelector('[data-panel="room"]')?.click());
+    await pageB.evaluate(() => document.querySelector('[data-panel="room"]')?.click());
+    await pageA.waitForTimeout(300);
+    await pageB.waitForTimeout(300);
+    ok(await pageA.evaluate(() => !!document.getElementById('wp-session-public')), 'Host sees Session Controls in the sidebar');
+    ok(await pageA.evaluate(() => !!document.getElementById('wp-session-autopause')), 'Host sees auto-pause safeguard in the sidebar');
+    ok(await pageB.evaluate(() => !document.getElementById('wp-session-public')), 'Peer does not see host-only session controls');
+    ok(await pageA.evaluate(() => !!document.getElementById('wp-settings-sound')), 'Host sees personal browser settings in the sidebar');
+    ok(await pageB.evaluate(() => !!document.getElementById('wp-settings-sound')), 'Peer sees personal browser settings in the sidebar');
+
     await pageA.evaluate(() => document.querySelector('[data-panel="chat"]')?.click());
     await pageB.evaluate(() => document.querySelector('[data-panel="chat"]')?.click());
     await pageA.waitForTimeout(200);
@@ -194,12 +202,14 @@ async function main() {
     await pageA.keyboard.press('Enter');
     ok(await pageA.waitForFunction(() => document.getElementById('wp-chat-messages')?.innerText?.includes('Hi from Alice'), { timeout: 5000 }).then(() => true).catch(() => false), 'Alice chat round-trip');
 
-    const popA2 = await popup(ctxA, extA);
-    await popA2.evaluate(() => document.querySelector('.color-btn[data-color="#ec4899"]')?.click());
-    await popA2.close();
-    const popB2 = await popup(ctxB, extB);
-    await popB2.evaluate(() => document.querySelector('.color-btn[data-color="#22c55e"]')?.click());
-    await popB2.close();
+    await pageA.evaluate(() => {
+      document.querySelector('[data-panel="room"]')?.click();
+      document.querySelector('.wp-color-btn[data-color="#ec4899"]')?.click();
+    });
+    await pageB.evaluate(() => {
+      document.querySelector('[data-panel="room"]')?.click();
+      document.querySelector('.wp-color-btn[data-color="#22c55e"]')?.click();
+    });
     await pageA.waitForTimeout(1000);
     ok(await pageA.evaluate(() => document.getElementById('wp-sidebar')?.style.getPropertyValue('--wp-accent') === '#ec4899'), 'Alice pink');
     await pageB.waitForTimeout(1000);

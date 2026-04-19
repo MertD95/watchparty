@@ -242,6 +242,77 @@ async function cacheRoomKey(roomId, roomKey) {
   }
 }
 
+async function focusTab(tab) {
+  if (!tab?.id) return null;
+  try {
+    await chrome.tabs.update(tab.id, { active: true });
+  } catch { /* tab may have closed */ }
+  if (typeof tab.windowId === 'number') {
+    try {
+      await chrome.windows.update(tab.windowId, { focused: true });
+    } catch { /* window may have closed */ }
+  }
+  return tab;
+}
+
+async function openSidebarOnTab(tab, panel) {
+  if (!tab?.id) return false;
+  await focusTab(tab);
+  try {
+    await chrome.tabs.sendMessage(tab.id, {
+      type: 'watchparty-ext',
+      action: 'open-sidebar',
+      panel,
+    });
+    return true;
+  } catch {
+    forgetSurfaceTab(tab.id);
+    return false;
+  }
+}
+
+async function resolveBrowseUrl() {
+  const result = await chrome.storage.local.get([
+    WPConstants.STORAGE.BACKEND_MODE,
+    WPConstants.STORAGE.ACTIVE_BACKEND,
+  ]);
+  return WPConstants.BACKEND.getBrowseUrl(
+    result[WPConstants.STORAGE.BACKEND_MODE],
+    result[WPConstants.STORAGE.ACTIVE_BACKEND]
+  );
+}
+
+async function openOrFocusWatchParty() {
+  const tabs = await getWatchPartyTabs();
+  if (tabs.length > 0) {
+    await focusTab(tabs[0]);
+    return { opened: false, tab: tabs[0] };
+  }
+  const created = await chrome.tabs.create({ url: await resolveBrowseUrl() });
+  rememberSurfaceTab('watchparty', created?.id ?? null);
+  return { opened: true, tab: created };
+}
+
+async function resumeRoomInStremio() {
+  const stremioTabs = await getStremioTabs();
+  const result = await chrome.storage.local.get([
+    WPConstants.STORAGE.ROOM_STATE,
+    WPConstants.STORAGE.ROOM_SERVICE_ACTIVE,
+  ]);
+  const room = result[WPConstants.STORAGE.ROOM_STATE] ?? null;
+  const roomServiceActive = result[WPConstants.STORAGE.ROOM_SERVICE_ACTIVE] === true;
+  const hasActiveRoom = !!room && (roomServiceActive || stremioTabs.length > 0);
+  if (!hasActiveRoom) return { ok: false, openedStremio: false };
+
+  if (stremioTabs.length > 0) {
+    await openSidebarOnTab(stremioTabs[0]);
+    return { ok: true, openedStremio: false };
+  }
+
+  await chrome.tabs.create({ url: 'https://web.stremio.com' });
+  return { ok: true, openedStremio: true };
+}
+
 const messageHandlers = {
   'get-status': (_m, _s, sendResponse) => respondAsync(sendResponse, async () => {
     const hasStremioTab = await hasStremioTabs();
@@ -254,6 +325,7 @@ const messageHandlers = {
       WPConstants.STORAGE.STREMIO_PROFILE,
       WPConstants.STORAGE.ROOM_STATE,
       WPConstants.STORAGE.USER_ID,
+      WPConstants.STORAGE.USERNAME,
       WPConstants.STORAGE.WS_CONNECTED,
       WPConstants.STORAGE.BACKEND_MODE,
       WPConstants.STORAGE.ACTIVE_BACKEND,
@@ -272,6 +344,7 @@ const messageHandlers = {
       activeBackend: result[WPConstants.STORAGE.ACTIVE_BACKEND] ?? null,
       activeBackendUrl: result[WPConstants.STORAGE.ACTIVE_BACKEND_URL] ?? null,
       userId: result[WPConstants.STORAGE.USER_ID] ?? null,
+      username: result[WPConstants.STORAGE.USERNAME] ?? null,
       room: trustedPersistedRoom ? (result[WPConstants.STORAGE.ROOM_STATE] ?? null) : null,
       hasStremioTab,
       roomServiceActive,
@@ -292,6 +365,9 @@ const messageHandlers = {
   'typing': (m) => relayToPanel('typing', m.payload),
   'bookmark': (m) => relayToPanel('bookmark', m.payload),
   'create-room': (m, _s, sr) => respondAsync(sr, async () => {
+    if (m.username) {
+      await chrome.storage.local.set({ [WPConstants.STORAGE.USERNAME]: m.username });
+    }
     if (await hasStremioTabs()) {
       if (WPBackgroundRoomService.isActive()) await WPBackgroundRoomService.stop();
       await removeStorageKeys([
@@ -434,6 +510,11 @@ const messageHandlers = {
       WPBackgroundRoomService.handoffToTab().catch(() => {});
     }
   },
+  'resume-room': (_m, _s, sendResponse) => respondAsync(sendResponse, () => resumeRoomInStremio()),
+  'open-options': (_m, _s, sendResponse) => respondAsync(sendResponse, async () => {
+    await chrome.runtime.openOptionsPage();
+    return { ok: true };
+  }),
   'save-auth-key': (m) => {
     if (m.authKey) { chrome.storage.session.set({ [WPConstants.STORAGE.SAVED_AUTH_KEY]: m.authKey }); tryProfileSync(); }
   },
@@ -449,6 +530,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 chrome.tabs?.onRemoved?.addListener((tabId) => {
   forgetSurfaceTab(tabId);
+});
+
+chrome.action?.onClicked?.addListener(async (tab) => {
+  try {
+    if (tab?.id != null && tab.url && urlMatchesOrigins(tab.url, STREMIO_WEB_ORIGINS)) {
+      rememberSurfaceTab('stremio', tab.id);
+      if (await openSidebarOnTab(tab)) return;
+      await focusTab(tab);
+      return;
+    }
+
+    const resumed = await resumeRoomInStremio();
+    if (resumed.ok) return;
+
+    await openOrFocusWatchParty();
+  } catch (error) {
+    console.warn('[WP-BG] action click failed:', error?.message || String(error));
+  }
 });
 
 // ── Forward popup commands to the active Stremio content script ──

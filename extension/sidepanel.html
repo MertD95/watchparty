@@ -3,148 +3,532 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>WatchParty</title>
+  <title>WatchParty Companion</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
+
     :root {
       --wp-accent: #6366f1;
       --wp-accent-hover: #5558e6;
       --wp-accent-light: #818cf8;
       --wp-accent-rgb: 99, 102, 241;
+      --wp-bg: #08111d;
+      --wp-card: rgba(15, 23, 42, 0.82);
+      --wp-card-strong: rgba(15, 23, 42, 0.94);
+      --wp-border: rgba(148, 163, 184, 0.16);
+      --wp-border-strong: rgba(148, 163, 184, 0.22);
+      --wp-text: #e5e7eb;
+      --wp-muted: #98a2b3;
+      --wp-shadow: 0 24px 48px rgba(2, 6, 23, 0.42);
     }
+
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      background: #0f0f1e; color: #ccc; font-size: 13px;
-      height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+      background:
+        radial-gradient(circle at top left, rgba(var(--wp-accent-rgb), 0.24), transparent 28%),
+        linear-gradient(180deg, var(--wp-bg) 0%, #050b14 100%);
+      color: var(--wp-text);
+      min-height: 100vh;
     }
 
-    /* Header */
-    .header {
-      display: flex; align-items: center; gap: 8px; padding: 12px 16px;
-      border-bottom: 1px solid rgba(255,255,255,0.1);
-      background: rgba(var(--wp-accent-rgb), 0.08);
+    body.compact-chat .chat-messages {
+      padding: 8px 12px;
+      gap: 6px;
     }
-    .header h1 { font-size: 14px; font-weight: 600; color: #fff; }
+
+    body.compact-chat .chat-msg,
+    body.compact-chat .bookmark-msg {
+      margin-bottom: 0;
+    }
+
+    .shell {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      padding: 14px;
+    }
+
+    .hero,
+    .panel-card {
+      background: var(--wp-card);
+      border: 1px solid var(--wp-border);
+      border-radius: 18px;
+      box-shadow: var(--wp-shadow);
+      backdrop-filter: blur(12px);
+    }
+
+    .hero {
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .hero-top {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .eyebrow {
+      font-size: 11px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: #a5b4fc;
+      font-weight: 700;
+    }
+
+    .hero h1 {
+      font-size: 23px;
+      line-height: 1.05;
+      margin-top: 4px;
+    }
+
+    .hero-copy {
+      color: var(--wp-muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .hero-actions,
+    .action-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
     .room-code {
-      font-family: 'Consolas', monospace; font-size: 11px; color: var(--wp-accent);
-      background: rgba(var(--wp-accent-rgb), 0.15); padding: 2px 6px; border-radius: 4px;
+      appearance: none;
+      border: 1px solid rgba(var(--wp-accent-rgb), 0.28);
+      background: rgba(var(--wp-accent-rgb), 0.12);
+      color: #eef2ff;
+      border-radius: 999px;
+      padding: 7px 10px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
       cursor: pointer;
     }
-    .room-code:hover { background: rgba(var(--wp-accent-rgb), 0.25); }
 
-    /* Status */
-    .status { padding: 10px 16px; font-size: 12px; border-bottom: 1px solid rgba(255,255,255,0.08); }
-    .status-line { display: block; margin-bottom: 2px; }
-    .muted { color: #666; }
+    .room-code:hover {
+      background: rgba(var(--wp-accent-rgb), 0.18);
+    }
 
-    /* Action buttons */
-    .action-row { display: flex; gap: 6px; margin-top: 6px; }
-    .action-btn {
-      background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1);
-      border-radius: 6px; padding: 4px 10px; font-size: 11px; color: #ccc;
-      cursor: pointer; transition: all .12s;
+    .section-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 12px;
     }
-    .action-btn:hover { background: rgba(var(--wp-accent-rgb), 0.15); border-color: rgba(var(--wp-accent-rgb), 0.3); color: var(--wp-accent-light); }
-    .leave-btn { color: #ef4444; border-color: rgba(239,68,68,0.3); }
-    .leave-btn:hover { background: rgba(239,68,68,0.15); color: #f87171; }
 
-    /* Sync indicator */
-    .sync-indicator { padding: 4px 16px; font-size: 11px; }
-    .sync-ok { color: #22c55e; }
-    .sync-drift { color: #f59e0b; }
+    .section-head h2 {
+      font-size: 14px;
+      line-height: 1.2;
+    }
 
-    /* Users */
-    .users {
-      padding: 6px 16px; border-bottom: 1px solid rgba(255,255,255,0.08);
-      max-height: 120px; overflow-y: auto;
+    .section-meta {
+      color: var(--wp-muted);
+      font-size: 11px;
     }
-    .user { display: flex; align-items: center; gap: 6px; font-size: 12px; padding: 2px 0; }
-    .user-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-    .user-away { opacity: 0.4; }
-    .user-status { font-size: 9px; color: #666; margin-left: 2px; }
-    .user-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
-    .user-playhead { color: #98a2b3; font-size: 11px; font-variant-numeric: tabular-nums; flex-shrink: 0; }
 
-    /* Chat */
-    .chat-container { flex: 1; display: flex; flex-direction: column; min-height: 0; }
-    .chat-messages {
-      flex: 1; overflow-y: auto; padding: 8px 16px; font-size: 12px;
-      scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.15) transparent;
+    .panel-card {
+      padding: 16px;
     }
-    .typing-indicator {
-      padding: 0 16px 8px; color: #98a2b3; font-size: 11px; font-style: italic;
+
+    .status-copy {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
     }
-    .chat-msg { margin-bottom: 4px; line-height: 1.5; word-break: break-word; }
-    .chat-name { font-weight: 600; }
-    .chat-text { color: #ccc; }
-    .bookmark-msg {
-      background: rgba(var(--wp-accent-rgb), 0.06); border-left: 2px solid var(--wp-accent);
-      padding: 2px 8px 2px 12px; border-radius: 4px; margin-bottom: 4px; font-size: 11px;
+
+    .status-title {
+      font-size: 18px;
+      line-height: 1.15;
     }
+
+    .status-note {
+      color: var(--wp-muted);
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .pill-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 999px;
+      padding: 6px 10px;
+      background: rgba(148, 163, 184, 0.1);
+      border: 1px solid rgba(148, 163, 184, 0.16);
+      color: #dbe3f0;
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .pill.success {
+      color: #bbf7d0;
+      border-color: rgba(34, 197, 94, 0.24);
+      background: rgba(34, 197, 94, 0.12);
+    }
+
+    .pill.warn {
+      color: #fde68a;
+      border-color: rgba(245, 158, 11, 0.26);
+      background: rgba(245, 158, 11, 0.12);
+    }
+
+    .companion-btn,
+    .action-btn,
     .bookmark-time {
-      background: rgba(var(--wp-accent-rgb), 0.2); border: none; border-radius: 4px;
-      padding: 1px 6px; color: var(--wp-accent-light); font-size: 11px; font-family: monospace;
+      appearance: none;
+      border: 1px solid var(--wp-border-strong);
+      background: rgba(148, 163, 184, 0.08);
+      color: var(--wp-text);
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 700;
+      padding: 9px 12px;
       cursor: pointer;
+      transition: transform 0.12s ease, border-color 0.15s ease, background 0.15s ease;
     }
-    .bookmark-time:hover { background: rgba(var(--wp-accent-rgb), 0.35); }
+
+    .companion-btn:hover,
+    .action-btn:hover,
+    .bookmark-time:hover {
+      transform: translateY(-1px);
+      border-color: rgba(var(--wp-accent-rgb), 0.36);
+      background: rgba(var(--wp-accent-rgb), 0.15);
+    }
+
+    .companion-btn.primary,
+    .action-btn.primary {
+      background: linear-gradient(180deg, var(--wp-accent-light) 0%, var(--wp-accent) 100%);
+      border-color: transparent;
+      color: #ffffff;
+      box-shadow: 0 14px 26px rgba(var(--wp-accent-rgb), 0.26);
+    }
+
+    .action-btn.leave-btn {
+      color: #fecaca;
+      border-color: rgba(239, 68, 68, 0.28);
+      background: rgba(239, 68, 68, 0.12);
+    }
+
+    .action-btn.leave-btn:hover {
+      background: rgba(239, 68, 68, 0.18);
+      border-color: rgba(239, 68, 68, 0.34);
+    }
+
+    .session-links {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-top: 2px;
+    }
+
+    .session-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: #dbeafe;
+      text-decoration: none;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .session-link:hover {
+      color: #ffffff;
+    }
+
+    .sync-indicator {
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--wp-muted);
+    }
+
+    .sync-indicator.sync-ok {
+      color: #bbf7d0;
+    }
+
+    .sync-indicator.sync-drift {
+      color: #fde68a;
+    }
+
+    .users {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-height: 180px;
+      overflow-y: auto;
+    }
+
+    .section-empty {
+      color: var(--wp-muted);
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    .user {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(148, 163, 184, 0.08);
+    }
+
+    .user-away {
+      opacity: 0.58;
+    }
+
+    .user-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      flex-shrink: 0;
+    }
+
+    .user-copy {
+      min-width: 0;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .user-name {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 12px;
+      color: var(--wp-text);
+    }
+
+    .user-subline {
+      color: var(--wp-muted);
+      font-size: 11px;
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .user-playhead {
+      color: #cbd5f5;
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+      flex-shrink: 0;
+    }
+
+    .chat-card {
+      flex: 1;
+      min-height: 280px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .chat-container {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .chat-messages {
+      flex: 1;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 4px 0;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(148, 163, 184, 0.25) transparent;
+    }
+
+    .typing-indicator {
+      color: var(--wp-muted);
+      font-size: 11px;
+      font-style: italic;
+    }
+
+    .chat-msg,
+    .bookmark-msg {
+      padding: 10px 12px;
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(148, 163, 184, 0.08);
+      line-height: 1.55;
+      word-break: break-word;
+      font-size: 12px;
+    }
+
+    .bookmark-msg {
+      background: rgba(var(--wp-accent-rgb), 0.1);
+      border-color: rgba(var(--wp-accent-rgb), 0.2);
+    }
+
+    .chat-name {
+      font-weight: 700;
+    }
+
+    .chat-text {
+      color: var(--wp-text);
+    }
+
     .chat-input-row {
-      display: flex; padding: 8px 12px; gap: 6px;
-      border-top: 1px solid rgba(255,255,255,0.1); background: rgba(0,0,0,0.15);
+      display: flex;
+      gap: 8px;
+      padding-top: 6px;
     }
+
     .chat-input {
-      flex: 1; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15);
-      border-radius: 6px; padding: 6px 10px; color: #fff; font-size: 12px; outline: none;
+      flex: 1;
+      border-radius: 12px;
+      border: 1px solid rgba(148, 163, 184, 0.16);
+      background: rgba(255, 255, 255, 0.06);
+      color: #ffffff;
+      padding: 10px 12px;
+      font-size: 12px;
+      outline: none;
     }
-    .chat-input:focus { border-color: var(--wp-accent); }
-    .chat-input::placeholder { color: #555; }
+
+    .chat-input:focus {
+      border-color: rgba(var(--wp-accent-rgb), 0.42);
+      box-shadow: 0 0 0 3px rgba(var(--wp-accent-rgb), 0.16);
+    }
+
+    .chat-input::placeholder {
+      color: #64748b;
+    }
+
     .chat-send {
-      background: var(--wp-accent); color: #fff; border: none; border-radius: 6px;
-      padding: 6px 12px; font-size: 12px; cursor: pointer;
+      appearance: none;
+      border: none;
+      border-radius: 12px;
+      background: linear-gradient(180deg, var(--wp-accent-light) 0%, var(--wp-accent) 100%);
+      color: #ffffff;
+      font-size: 12px;
+      font-weight: 700;
+      padding: 10px 14px;
+      cursor: pointer;
+      box-shadow: 0 14px 26px rgba(var(--wp-accent-rgb), 0.26);
     }
-    .chat-send:hover { background: var(--wp-accent-hover); }
 
-    /* Empty state */
-    .empty-state { padding: 32px 20px; text-align: center; color: #888; line-height: 1.7; }
+    .chat-send:hover {
+      background: linear-gradient(180deg, #9aa5ff 0%, var(--wp-accent-hover) 100%);
+    }
 
-    /* Toast */
+    .empty-state {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .empty-state p {
+      color: var(--wp-muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
     .toast {
-      position: fixed; top: 8px; left: 50%; transform: translateX(-50%);
-      background: rgba(15,15,30,0.95); color: #fff; font-size: 12px;
-      padding: 6px 16px; border-radius: 6px; border: 1px solid rgba(var(--wp-accent-rgb), 0.3);
-      opacity: 0; transition: opacity .3s; pointer-events: none; z-index: 100;
+      position: fixed;
+      top: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(8, 17, 29, 0.96);
+      color: #fff;
+      border: 1px solid rgba(var(--wp-accent-rgb), 0.26);
+      border-radius: 999px;
+      padding: 8px 14px;
+      font-size: 12px;
+      opacity: 0;
+      transition: opacity 0.25s ease;
+      pointer-events: none;
+      z-index: 20;
     }
-    .toast.visible { opacity: 1; }
 
-    .hidden { display: none !important; }
+    .toast.visible {
+      opacity: 1;
+    }
+
+    .hidden {
+      display: none !important;
+    }
   </style>
 </head>
 <body>
-  <div class="header">
-    <h1>WatchParty</h1>
-    <span id="room-code" class="room-code hidden"></span>
-  </div>
+  <div class="shell">
+    <header class="hero">
+      <div class="hero-top">
+        <div>
+          <div class="eyebrow">Companion Panel</div>
+          <h1>WatchParty</h1>
+        </div>
+        <button id="room-code" class="room-code hidden" type="button"></button>
+      </div>
+      <p id="hero-copy" class="hero-copy">Browser-native room companion for quick chat, people, and bookmarks while Stremio keeps the main session UI.</p>
+      <div class="hero-actions">
+        <button id="sp-open-watchparty-header" class="companion-btn" type="button">Open WatchParty</button>
+        <button id="sp-open-settings-header" class="companion-btn" type="button">Extension Settings</button>
+      </div>
+    </header>
 
-  <div id="status" class="status">
-    <div class="empty-state">Not in a room.<br>Use the extension popup to create or join one.</div>
-  </div>
+    <section id="status" class="panel-card status-card">
+      <div class="empty-state">
+        <div class="eyebrow">No Active Room</div>
+        <h2 class="status-title">Create or join from WatchParty first.</h2>
+        <p>Once a room is active, this companion panel keeps quick room context and chat nearby without replacing the Stremio sidebar.</p>
+        <div class="action-row">
+          <button id="sp-open-watchparty-empty" class="action-btn primary" type="button">Open WatchParty</button>
+          <button id="sp-open-settings-empty" class="action-btn" type="button">Extension Settings</button>
+        </div>
+      </div>
+    </section>
 
-  <div id="sync-indicator" class="sync-indicator hidden"></div>
+    <section id="sync-indicator" class="panel-card sync-indicator hidden"></section>
 
-  <div id="users" class="users hidden"></div>
+    <section class="panel-card">
+      <div class="section-head">
+        <h2>People</h2>
+        <span id="people-count" class="section-meta hidden"></span>
+      </div>
+      <div id="users" class="users hidden"></div>
+      <div id="users-empty" class="section-empty">People in the room will appear here once the session is live.</div>
+    </section>
 
-  <div id="chat-container" class="chat-container hidden">
-    <div id="chat-messages" class="chat-messages"></div>
-    <div id="typing-indicator" class="typing-indicator hidden"></div>
-    <div class="chat-input-row">
-      <input id="chat-input" class="chat-input" type="text" placeholder="Type a message..." maxlength="300" autocomplete="off">
-      <button id="chat-send" class="chat-send">Send</button>
-    </div>
+    <section class="panel-card chat-card">
+      <div class="section-head">
+        <h2>Companion Chat</h2>
+        <span id="typing-indicator" class="typing-indicator hidden"></span>
+      </div>
+      <div id="chat-container" class="chat-container hidden">
+        <div id="chat-messages" class="chat-messages"></div>
+        <div class="chat-input-row">
+          <input id="chat-input" class="chat-input" type="text" placeholder="Type a message..." maxlength="300" autocomplete="off">
+          <button id="chat-send" class="chat-send" type="button">Send</button>
+        </div>
+      </div>
+      <div id="chat-empty" class="section-empty">Chat appears here while the Stremio sidebar stays focused on the live session.</div>
+    </section>
   </div>
 
   <div id="toast" class="toast"></div>
 
   <script src="constants.js"></script>
   <script src="utils.js"></script>
+  <script src="direct-play.js"></script>
   <script src="sidepanel.js"></script>
 </body>
 </html>

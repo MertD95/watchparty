@@ -1,19 +1,91 @@
-// WatchParty - Chrome Side Panel (full-featured alternative to injected overlay)
-// Communicates with the content script via chrome.runtime messaging + chrome.storage.
-// Features: room status, users, chat, bookmarks, ready check, leave room, sync indicator.
+// WatchParty - Chrome Side Panel companion surface
+// Keeps quick room context, chat, and bookmarks nearby without replacing the
+// richer injected session sidebar inside Stremio itself.
 
 (() => {
   'use strict';
 
-  // Shared utilities from utils.js (loaded via sidepanel.html script tag)
   const { getUserColor, escapeHtml } = WPUtils;
 
   let currentUserId = null;
   let currentSessionId = null;
   let currentRoomState = null;
+  let currentWsConnected = false;
   const typingUsers = new Map();
+  const localPreferences = {
+    accentColor: '#6366f1',
+    compactChat: false,
+  };
+  let typingIdleTimer = null;
+  let typingSent = false;
 
-  /** Check if a user ID belongs to the current user (multi-tab: matches by sessionId) */
+  function normalizeHexColor(value, fallback = '#6366f1') {
+    const trimmed = typeof value === 'string' ? value.trim() : '';
+    return /^#[0-9a-fA-F]{6}$/.test(trimmed) ? trimmed.toLowerCase() : fallback;
+  }
+
+  function hexToRgb(hex) {
+    const normalized = normalizeHexColor(hex);
+    return {
+      r: parseInt(normalized.slice(1, 3), 16),
+      g: parseInt(normalized.slice(3, 5), 16),
+      b: parseInt(normalized.slice(5, 7), 16),
+    };
+  }
+
+  function rgbToHex(r, g, b) {
+    const clamp = (value) => Math.max(0, Math.min(255, Math.round(value)));
+    return `#${[clamp(r), clamp(g), clamp(b)].map((value) => value.toString(16).padStart(2, '0')).join('')}`;
+  }
+
+  function mixColor(hex, amount, target) {
+    const { r, g, b } = hexToRgb(hex);
+    const targetChannel = target === 'white' ? 255 : 0;
+    const blend = (channel) => channel + ((targetChannel - channel) * amount);
+    return rgbToHex(blend(r), blend(g), blend(b));
+  }
+
+  function applyLocalPreferences() {
+    const accent = normalizeHexColor(localPreferences.accentColor);
+    const { r, g, b } = hexToRgb(accent);
+    document.documentElement.style.setProperty('--wp-accent', accent);
+    document.documentElement.style.setProperty('--wp-accent-hover', mixColor(accent, 0.12, 'black'));
+    document.documentElement.style.setProperty('--wp-accent-light', mixColor(accent, 0.18, 'white'));
+    document.documentElement.style.setProperty('--wp-accent-rgb', `${r}, ${g}, ${b}`);
+    document.body.classList.toggle('compact-chat', !!localPreferences.compactChat);
+  }
+
+  function loadLocalPreferences(callback) {
+    chrome.storage.local.get([
+      WPConstants.STORAGE.ACCENT_COLOR,
+      WPConstants.STORAGE.COMPACT_CHAT,
+    ], (result) => {
+      localPreferences.accentColor = normalizeHexColor(result[WPConstants.STORAGE.ACCENT_COLOR] || '#6366f1');
+      localPreferences.compactChat = !!result[WPConstants.STORAGE.COMPACT_CHAT];
+      applyLocalPreferences();
+      callback?.();
+    });
+  }
+
+  function setHeroCopy(text) {
+    const heroCopy = document.getElementById('hero-copy');
+    if (heroCopy) heroCopy.textContent = text;
+  }
+
+  function getRoomDisplayName(roomState) {
+    return roomState?.name || roomState?.meta?.name || roomState?.id?.slice(0, 8) || 'Active room';
+  }
+
+  function getDetailUrl(roomState) {
+    if (!roomState?.meta?.id || !roomState?.meta?.type) return null;
+    if (roomState.meta.id === 'pending' || roomState.meta.id === 'unknown') return null;
+    return `https://web.stremio.com/#/detail/${encodeURIComponent(roomState.meta.type)}/${encodeURIComponent(roomState.meta.id)}`;
+  }
+
+  function getDirectStreamUrl(roomState) {
+    return WPDirectPlay.getDirectJoinUrl(roomState?.stream);
+  }
+
   function isMe(uid) {
     if (uid === currentUserId) return true;
     if (!currentSessionId || !currentRoomState?.users) return false;
@@ -21,7 +93,6 @@
     return user?.sessionId === currentSessionId;
   }
 
-  /** Am I the host? Handles orphaned owner IDs after WS reconnect. */
   function amIHost() {
     if (!currentRoomState) return false;
     if (isMe(currentRoomState.owner)) return true;
@@ -54,6 +125,88 @@
     return { label, title };
   }
 
+  function openWatchParty() {
+    chrome.storage.local.get([
+      WPConstants.STORAGE.BACKEND_MODE,
+      WPConstants.STORAGE.ACTIVE_BACKEND,
+    ], (result) => {
+      const browseUrl = WPConstants.BACKEND.getBrowseUrl(
+        result[WPConstants.STORAGE.BACKEND_MODE],
+        result[WPConstants.STORAGE.ACTIVE_BACKEND]
+      );
+      chrome.tabs.create({ url: browseUrl }).catch(() => {});
+    });
+  }
+
+  function openOptions() {
+    chrome.runtime.openOptionsPage().catch(() => {});
+  }
+
+  function bindStaticActions() {
+    document.getElementById('sp-open-watchparty-header')?.addEventListener('click', openWatchParty);
+    document.getElementById('sp-open-settings-header')?.addEventListener('click', openOptions);
+  }
+
+  function showToast(message) {
+    const toast = document.getElementById('toast');
+    if (!toast) return;
+    toast.textContent = message;
+    toast.classList.add('visible');
+    setTimeout(() => toast.classList.remove('visible'), 2000);
+  }
+
+  function getStoredRoomKey(roomId, callback) {
+    if (!roomId) {
+      callback(null);
+      return;
+    }
+    const storageKey = WPConstants.STORAGE.roomKey(roomId);
+    chrome.storage.session.get(storageKey, (result) => {
+      if (result?.[storageKey]) {
+        callback(result[storageKey]);
+        return;
+      }
+      chrome.storage.local.get(storageKey, (fallback) => {
+        const decoded = WPConstants.ROOM_KEYS.decodeFromLocal(fallback?.[storageKey]);
+        if (decoded.expired) chrome.storage.local.remove(storageKey).catch(() => {});
+        callback(decoded.value || null);
+      });
+    });
+  }
+
+  function copyInvite(roomState) {
+    chrome.storage.local.get([
+      WPConstants.STORAGE.BACKEND_MODE,
+      WPConstants.STORAGE.ACTIVE_BACKEND,
+    ], (result) => {
+      const inviteUrl = WPConstants.BACKEND.buildInviteUrl(
+        roomState.id,
+        result[WPConstants.STORAGE.BACKEND_MODE],
+        result[WPConstants.STORAGE.ACTIVE_BACKEND]
+      );
+      getStoredRoomKey(roomState.id, (roomKey) => {
+        const finalUrl = roomKey ? `${inviteUrl}#key=${roomKey}` : inviteUrl;
+        navigator.clipboard.writeText(finalUrl)
+          .then(() => showToast('Invite copied'))
+          .catch(() => showToast('Copy failed'));
+      });
+    });
+  }
+
+  function updateRoomCodeChip(roomState) {
+    const roomCode = document.getElementById('room-code');
+    if (!roomCode) return;
+    if (!roomState?.id) {
+      roomCode.classList.add('hidden');
+      roomCode.textContent = '';
+      roomCode.onclick = null;
+      return;
+    }
+    roomCode.textContent = roomState.id.slice(0, 8);
+    roomCode.classList.remove('hidden');
+    roomCode.onclick = () => copyInvite(roomState);
+  }
+
   function updateTypingIndicator() {
     const indicator = document.getElementById('typing-indicator');
     if (!indicator) return;
@@ -63,10 +216,11 @@
       return;
     }
     const names = [];
-    for (const [uid] of typingUsers) {
+    for (const [uid, typingState] of typingUsers) {
       const entry = currentRoomState.users.find((user) => user.id === uid);
-      if (!entry || isMe(uid)) continue;
-      names.push(entry.name);
+      const name = entry?.name || typingState?.name || '';
+      if (!name || isMe(uid)) continue;
+      names.push(name);
     }
     if (names.length === 0) {
       indicator.classList.add('hidden');
@@ -79,158 +233,70 @@
     indicator.classList.remove('hidden');
   }
 
-  function handleTypingUpdate(userId, typing) {
+  function handleTypingUpdate(userId, typing, userName) {
     if (!userId) return;
     if (typing) {
       const existing = typingUsers.get(userId);
-      if (existing) clearTimeout(existing);
-      typingUsers.set(userId, setTimeout(() => {
+      if (existing?.timeoutId) clearTimeout(existing.timeoutId);
+      typingUsers.set(userId, {
+        name: userName || existing?.name || '',
+        timeoutId: setTimeout(() => {
         typingUsers.delete(userId);
         updateTypingIndicator();
-      }, 3000));
+        }, 3000),
+      });
     } else {
       const existing = typingUsers.get(userId);
-      if (existing) clearTimeout(existing);
+      if (existing?.timeoutId) clearTimeout(existing.timeoutId);
       typingUsers.delete(userId);
     }
     updateTypingIndicator();
   }
 
-  // --- State polling from storage ---
-  function pollState() {
-    chrome.storage.local.get(
-      [
-        WPConstants.STORAGE.ROOM_STATE,
-        WPConstants.STORAGE.USER_ID,
-        WPConstants.STORAGE.SESSION_ID,
-        WPConstants.STORAGE.WS_CONNECTED,
-      ],
-      (result) => {
-        currentUserId = result[WPConstants.STORAGE.USER_ID];
-        currentSessionId = result[WPConstants.STORAGE.SESSION_ID];
-        currentRoomState = result[WPConstants.STORAGE.ROOM_STATE];
-        render(currentRoomState, currentUserId);
-      }
-    );
+  function sendAction(detail) {
+    chrome.storage.local.set({
+      [WPConstants.STORAGE.PENDING_ACTION]: {
+        ...detail,
+        nonce: crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(),
+      },
+    });
   }
 
-  // --- Render ---
-  function render(roomState, userId) {
-    const status = document.getElementById('status');
-    const users = document.getElementById('users');
-    const chatContainer = document.getElementById('chat-container');
-    const roomCode = document.getElementById('room-code');
-    const syncIndicator = document.getElementById('sync-indicator');
+  function stopTypingSignal() {
+    if (typingIdleTimer) {
+      clearTimeout(typingIdleTimer);
+      typingIdleTimer = null;
+    }
+    if (typingSent) {
+      typingSent = false;
+      sendAction({ action: 'send-typing', typing: false });
+    }
+  }
 
-    if (!roomState || !roomState.id) {
-      status.innerHTML = '<div class="empty-state">Not in a room.<br>Use the extension popup to create or join one.</div>';
-      users.classList.add('hidden');
-      chatContainer.classList.add('hidden');
-      roomCode.classList.add('hidden');
-      syncIndicator.classList.add('hidden');
-      typingUsers.clear();
-      updateTypingIndicator();
+  function scheduleTypingStop() {
+    if (typingIdleTimer) clearTimeout(typingIdleTimer);
+    typingIdleTimer = setTimeout(() => {
+      stopTypingSignal();
+    }, 1200);
+  }
+
+  function onChatInput() {
+    const input = document.getElementById('chat-input');
+    const hasText = !!input?.value.trim();
+    if (!hasText) {
+      stopTypingSignal();
       return;
     }
-
-    const isHost = amIHost();
-    const hostLabel = isHost ? 'You are the host' : 'Synced to host';
-
-    let actions = '';
-    if (isHost) {
-      actions += '<button class="action-btn" id="sp-ready-check">&#x270B; Ready?</button>';
+    if (!typingSent) {
+      typingSent = true;
+      sendAction({ action: 'send-typing', typing: true });
     }
-    actions += '<button class="action-btn" id="sp-bookmark">&#x1F4CC; Bookmark</button>';
-    actions += '<button class="action-btn leave-btn" id="sp-leave">Leave</button>';
-    const actionsRow = `<div class="action-row">${actions}</div>`;
-
-    status.innerHTML = `<span class="status-line">${hostLabel}</span><span class="status-line muted">${roomState.users?.length || 0} in room</span>${actionsRow}`;
-
-    document.getElementById('sp-ready-check')?.addEventListener('click', () => {
-      sendAction({ action: 'ready-check', readyAction: 'initiate' });
-      showToast('Ready check started');
-    });
-    document.getElementById('sp-bookmark')?.addEventListener('click', () => {
-      // Let the content script read the active video time from the page.
-      sendAction({ action: 'send-bookmark' });
-      showToast('Bookmark sent');
-    });
-    document.getElementById('sp-leave')?.addEventListener('click', () => {
-      sendAction({ action: 'leave-room' });
-    });
-
-    roomCode.textContent = roomState.id.slice(0, 8);
-    roomCode.classList.remove('hidden');
-    roomCode.onclick = () => {
-      chrome.storage.local.get([WPConstants.STORAGE.BACKEND_MODE, WPConstants.STORAGE.ACTIVE_BACKEND], (result) => {
-        const url = WPConstants.BACKEND.buildInviteUrl(
-          roomState.id,
-          result[WPConstants.STORAGE.BACKEND_MODE],
-          result[WPConstants.STORAGE.ACTIVE_BACKEND]
-        );
-        navigator.clipboard.writeText(url).catch(() => { });
-        roomCode.textContent = 'Copied!';
-        setTimeout(() => { roomCode.textContent = roomState.id.slice(0, 8); }, 1500);
-      });
-    };
-
-    if (!isHost && roomState.player) {
-      syncIndicator.classList.remove('hidden');
-      const playerState = roomState.player.paused ? 'Paused' : roomState.player.buffering ? 'Buffering...' : 'Playing';
-      const mins = Math.floor((roomState.player.time || 0) / 60);
-      const secs = Math.floor((roomState.player.time || 0) % 60).toString().padStart(2, '0');
-      syncIndicator.innerHTML = `<span class="sync-ok">${playerState} at ${mins}:${secs}</span>`;
-    } else {
-      syncIndicator.classList.add('hidden');
-    }
-
-    if (roomState.users?.length > 0) {
-      users.classList.remove('hidden');
-      users.innerHTML = roomState.users.map((entry) => {
-        const color = getUserColor(entry.sessionId || entry.id);
-        const ownerInList = roomState.users.some((user) => user.id === roomState.owner);
-        const isCrown = entry.id === roomState.owner || (!ownerInList && isHost && isMe(entry.id));
-        const crown = isCrown ? '<span style="font-size:12px">&#x1F451;</span>' : '';
-        const you = isMe(entry.id) ? ' <span style="color:#888;font-size:11px">(you)</span>' : '';
-        const awayClass = entry.status === 'away' ? ' user-away' : '';
-        let statusIcon = '';
-        if (entry.playbackStatus === 'buffering') statusIcon = '<span class="user-status" title="Buffering">&#x27F3;</span>';
-        else if (entry.playbackStatus === 'paused') statusIcon = '<span class="user-status" title="Paused">&#x275A;&#x275A;</span>';
-        else if (entry.playbackStatus === 'playing') statusIcon = '<span class="user-status" title="Playing" style="color:#22c55e">&#x25B6;</span>';
-        const playback = getPlaybackSummary(entry);
-        const playhead = playback.label
-          ? ` <span class="user-playhead" title="${escapeHtml(playback.title)}">${escapeHtml(playback.label)}</span>`
-          : '';
-        return `<div class="user${awayClass}"><span class="user-dot" style="background:${color}"></span><span class="user-name">${crown}${escapeHtml(entry.name)}${you}</span>${statusIcon}${playhead}</div>`;
-      }).join('');
-    } else {
-      users.classList.add('hidden');
-    }
-
-    chatContainer.classList.remove('hidden');
-    updateTypingIndicator();
-  }
-
-  // --- Chat ---
-  document.getElementById('chat-send').addEventListener('click', sendChat);
-  document.getElementById('chat-input').addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') {
-      event.preventDefault();
-      sendChat();
-    }
-  });
-
-  function sendChat() {
-    const input = document.getElementById('chat-input');
-    const content = input.value.trim();
-    if (!content) return;
-    sendAction({ action: 'send-chat', content });
-    appendChat(currentSessionId || currentUserId, 'You', content);
-    input.value = '';
+    scheduleTypingStop();
   }
 
   function appendChat(userId, name, content) {
     const container = document.getElementById('chat-messages');
+    if (!container) return;
     const color = getUserColor(userId);
     const div = document.createElement('div');
     div.className = 'chat-msg';
@@ -242,11 +308,12 @@
 
   function appendBookmark(msg) {
     const container = document.getElementById('chat-messages');
+    if (!container) return;
     const mins = Math.floor((msg.time || 0) / 60);
     const secs = Math.floor((msg.time || 0) % 60).toString().padStart(2, '0');
     const div = document.createElement('div');
     div.className = 'bookmark-msg';
-    div.innerHTML = `&#x1F4CC; <span class="chat-name" style="color:${getUserColor(currentSessionId || msg.user)}">${escapeHtml(msg.userName || 'Unknown')}</span> bookmarked <button class="bookmark-time">${mins}:${secs}</button>`;
+    div.innerHTML = `Pinned by <span class="chat-name" style="color:${getUserColor(currentSessionId || msg.user)}">${escapeHtml(msg.userName || 'Unknown')}</span> at <button class="bookmark-time" type="button">${mins}:${secs}</button>`;
     div.querySelector('.bookmark-time')?.addEventListener('click', () => {
       sendAction({ action: 'seek-bookmark', time: msg.time });
       showToast(`Seeking to ${mins}:${secs}`);
@@ -256,25 +323,223 @@
     container.scrollTop = container.scrollHeight;
   }
 
-  // --- Send action to content script via background relay ---
-  function sendAction(detail) {
-    chrome.storage.local.set({
-      [WPConstants.STORAGE.PENDING_ACTION]: {
-        ...detail,
-        nonce: crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(),
-      },
+  function sendChat() {
+    const input = document.getElementById('chat-input');
+    const content = input?.value.trim();
+    if (!content) return;
+    sendAction({ action: 'send-chat', content });
+    appendChat(currentSessionId || currentUserId, 'You', content);
+    input.value = '';
+    stopTypingSignal();
+  }
+
+  function bindChat() {
+    document.getElementById('chat-send')?.addEventListener('click', sendChat);
+    document.getElementById('chat-input')?.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        sendChat();
+      }
     });
+    document.getElementById('chat-input')?.addEventListener('input', onChatInput);
+    document.getElementById('chat-input')?.addEventListener('blur', stopTypingSignal);
   }
 
-  // --- Toast ---
-  function showToast(message) {
-    const toast = document.getElementById('toast');
-    toast.textContent = message;
-    toast.classList.add('visible');
-    setTimeout(() => toast.classList.remove('visible'), 2000);
+  function renderEmptyState() {
+    const status = document.getElementById('status');
+    const users = document.getElementById('users');
+    const usersEmpty = document.getElementById('users-empty');
+    const chatContainer = document.getElementById('chat-container');
+    const chatEmpty = document.getElementById('chat-empty');
+    const syncIndicator = document.getElementById('sync-indicator');
+    const peopleCount = document.getElementById('people-count');
+    const chatMessages = document.getElementById('chat-messages');
+
+    setHeroCopy('Create or join on WatchParty, then use this panel for quick room context while Stremio keeps the main session UI.');
+    updateRoomCodeChip(null);
+    status.innerHTML = `
+      <div class="empty-state">
+        <div class="eyebrow">No Active Room</div>
+        <h2 class="status-title">Create or join from WatchParty first.</h2>
+        <p>The Chrome side panel now acts as a lightweight companion. Use it for quick chat, people, and bookmarks after the room is already live.</p>
+        <div class="action-row">
+          <button id="sp-open-watchparty-empty" class="action-btn primary" type="button">Open WatchParty</button>
+          <button id="sp-open-settings-empty" class="action-btn" type="button">Extension Settings</button>
+        </div>
+      </div>
+    `;
+    document.getElementById('sp-open-watchparty-empty')?.addEventListener('click', openWatchParty);
+    document.getElementById('sp-open-settings-empty')?.addEventListener('click', openOptions);
+
+    users.classList.add('hidden');
+    users.innerHTML = '';
+    usersEmpty.classList.remove('hidden');
+    peopleCount.classList.add('hidden');
+    peopleCount.textContent = '';
+    chatContainer.classList.add('hidden');
+    chatEmpty.classList.remove('hidden');
+    syncIndicator.classList.add('hidden');
+    syncIndicator.textContent = '';
+    if (chatMessages) chatMessages.innerHTML = '';
+    typingUsers.clear();
+    updateTypingIndicator();
   }
 
-  // --- Listen for messages from content script ---
+  function renderUsers(roomState) {
+    const users = document.getElementById('users');
+    const usersEmpty = document.getElementById('users-empty');
+    const peopleCount = document.getElementById('people-count');
+    const entries = Array.isArray(roomState?.users) ? roomState.users : [];
+    if (entries.length === 0) {
+      users.classList.add('hidden');
+      users.innerHTML = '';
+      usersEmpty.classList.remove('hidden');
+      peopleCount.classList.add('hidden');
+      peopleCount.textContent = '';
+      return;
+    }
+
+    users.classList.remove('hidden');
+    usersEmpty.classList.add('hidden');
+    peopleCount.classList.remove('hidden');
+    peopleCount.textContent = `${entries.length} watching`;
+
+    const ownerInList = entries.some((entry) => entry.id === roomState.owner);
+    users.innerHTML = entries.map((entry) => {
+      const color = getUserColor(entry.sessionId || entry.id);
+      const isCrown = entry.id === roomState.owner || (!ownerInList && amIHost() && isMe(entry.id));
+      const crown = isCrown ? 'Host' : 'Guest';
+      const you = isMe(entry.id) ? 'You' : '';
+      let playbackState = 'Waiting';
+      if (entry.playbackStatus === 'buffering') playbackState = 'Buffering';
+      else if (entry.playbackStatus === 'paused') playbackState = 'Paused';
+      else if (entry.playbackStatus === 'playing') playbackState = 'Playing';
+      const playback = getPlaybackSummary(entry);
+      const subline = [crown, playbackState, you].filter(Boolean).map(escapeHtml).join(' | ');
+      return `
+        <div class="user${entry.status === 'away' ? ' user-away' : ''}">
+          <span class="user-dot" style="background:${color}"></span>
+          <div class="user-copy">
+            <span class="user-name">${escapeHtml(entry.name)}</span>
+            <span class="user-subline">${subline}</span>
+          </div>
+          ${playback.label ? `<span class="user-playhead" title="${escapeHtml(playback.title)}">${escapeHtml(playback.label)}</span>` : ''}
+        </div>
+      `;
+    }).join('');
+  }
+
+  function renderStatus(roomState) {
+    const status = document.getElementById('status');
+    const syncIndicator = document.getElementById('sync-indicator');
+    const chatContainer = document.getElementById('chat-container');
+    const chatEmpty = document.getElementById('chat-empty');
+    const roomTitle = getRoomDisplayName(roomState);
+    const userCount = roomState.users?.length || 0;
+    const isHost = amIHost();
+    const detailUrl = getDetailUrl(roomState);
+    const directStreamUrl = getDirectStreamUrl(roomState);
+    const roleLabel = isHost ? 'You are the host' : 'Synced to host';
+    const privacyLabel = roomState.public === false ? 'Private room' : 'Public room';
+    const wsLabel = currentWsConnected ? 'Connected' : 'Background reconnecting';
+    const sessionCopy = roomState.public
+      ? 'This room is listed on WatchParty. Use the Stremio sidebar for the full live session controls.'
+      : 'This room stays invite-only. Use this panel for quick chat and room context while Stremio stays focused.';
+
+    setHeroCopy(isHost
+      ? 'Use the Stremio sidebar for full host controls. Keep this panel nearby for quick chat, bookmarks, and invite copy.'
+      : 'Stay synced from Stremio while this panel keeps quick room context, people, and chat close at hand.');
+    updateRoomCodeChip(roomState);
+
+    const linkHtml = [];
+    if (detailUrl) {
+      linkHtml.push(`<a class="session-link" href="${detailUrl}" target="_blank" rel="noreferrer">Open "${escapeHtml(roomTitle)}" in Stremio</a>`);
+    }
+    if (directStreamUrl) {
+      linkHtml.push(`<a class="session-link" href="${directStreamUrl}" target="_blank" rel="noreferrer">Open host stream</a>`);
+    }
+
+    status.innerHTML = `
+      <div class="status-copy">
+        <div class="eyebrow">Room Companion</div>
+        <h2 class="status-title">${escapeHtml(roomTitle)}</h2>
+        <div class="pill-row">
+          <span class="pill ${isHost ? 'success' : ''}">${escapeHtml(roleLabel)}</span>
+          <span class="pill">${escapeHtml(privacyLabel)}</span>
+          <span class="pill ${currentWsConnected ? 'success' : 'warn'}">${escapeHtml(wsLabel)}</span>
+          <span class="pill">${userCount} watching</span>
+        </div>
+        <p class="status-note">${escapeHtml(sessionCopy)}</p>
+        ${linkHtml.length > 0 ? `<div class="session-links">${linkHtml.join('')}</div>` : ''}
+        <div class="action-row">
+          <button class="action-btn" id="sp-copy-invite" type="button">Copy Invite</button>
+          ${isHost ? '<button class="action-btn" id="sp-ready-check" type="button">Ready Check</button>' : ''}
+          <button class="action-btn" id="sp-bookmark" type="button">Bookmark</button>
+          <button class="action-btn leave-btn" id="sp-leave" type="button">Leave</button>
+        </div>
+      </div>
+    `;
+
+    document.getElementById('sp-copy-invite')?.addEventListener('click', () => copyInvite(roomState));
+    document.getElementById('sp-ready-check')?.addEventListener('click', () => {
+      sendAction({ action: 'ready-check', readyAction: 'initiate' });
+      showToast('Ready check started');
+    });
+    document.getElementById('sp-bookmark')?.addEventListener('click', () => {
+      sendAction({ action: 'send-bookmark' });
+      showToast('Bookmark sent');
+    });
+    document.getElementById('sp-leave')?.addEventListener('click', () => {
+      sendAction({ action: 'leave-room' });
+    });
+
+    if (!isHost && roomState.player) {
+      const playerTime = formatPlaybackClock(roomState.player.time || 0) || '0:00';
+      const playerState = roomState.player.paused
+        ? 'Paused'
+        : roomState.player.buffering
+          ? 'Buffering'
+          : 'Playing';
+      syncIndicator.textContent = `${playerState} at ${playerTime}`;
+      syncIndicator.className = `panel-card sync-indicator ${roomState.player.buffering ? 'sync-drift' : 'sync-ok'}`;
+      syncIndicator.classList.remove('hidden');
+    } else {
+      syncIndicator.classList.add('hidden');
+      syncIndicator.textContent = '';
+    }
+
+    chatContainer.classList.remove('hidden');
+    chatEmpty.classList.add('hidden');
+  }
+
+  function render(roomState) {
+    if (!roomState || !roomState.id) {
+      renderEmptyState();
+      return;
+    }
+    renderStatus(roomState);
+    renderUsers(roomState);
+    updateTypingIndicator();
+  }
+
+  function pollState() {
+    chrome.storage.local.get(
+      [
+        WPConstants.STORAGE.ROOM_STATE,
+        WPConstants.STORAGE.USER_ID,
+        WPConstants.STORAGE.SESSION_ID,
+        WPConstants.STORAGE.WS_CONNECTED,
+      ],
+      (result) => {
+        currentUserId = result[WPConstants.STORAGE.USER_ID] || null;
+        currentSessionId = result[WPConstants.STORAGE.SESSION_ID] || null;
+        currentRoomState = result[WPConstants.STORAGE.ROOM_STATE] || null;
+        currentWsConnected = result[WPConstants.STORAGE.WS_CONNECTED] === true;
+        render(currentRoomState);
+      }
+    );
+  }
+
   chrome.runtime.onMessage.addListener((message) => {
     if (message.type !== 'watchparty-ext') return;
 
@@ -292,25 +557,34 @@
     }
 
     if (message.action === 'typing' && message.payload) {
-      handleTypingUpdate(message.payload.user, message.payload.typing);
+      handleTypingUpdate(message.payload.user, message.payload.typing, message.payload.userName);
     }
   });
 
-  // --- Storage change listener for real-time updates ---
   chrome.storage.onChanged.addListener((changes) => {
+    if (changes[WPConstants.STORAGE.ACCENT_COLOR]) {
+      localPreferences.accentColor = normalizeHexColor(changes[WPConstants.STORAGE.ACCENT_COLOR].newValue || '#6366f1');
+      applyLocalPreferences();
+    }
+    if (changes[WPConstants.STORAGE.COMPACT_CHAT]) {
+      localPreferences.compactChat = !!changes[WPConstants.STORAGE.COMPACT_CHAT].newValue;
+      applyLocalPreferences();
+    }
     if (
       changes[WPConstants.STORAGE.ROOM_STATE] ||
       changes[WPConstants.STORAGE.USER_ID] ||
       changes[WPConstants.STORAGE.SESSION_ID] ||
       changes[WPConstants.STORAGE.WS_CONNECTED]
     ) {
-      if (changes[WPConstants.STORAGE.USER_ID]) currentUserId = changes[WPConstants.STORAGE.USER_ID].newValue;
-      if (changes[WPConstants.STORAGE.SESSION_ID]) currentSessionId = changes[WPConstants.STORAGE.SESSION_ID].newValue;
-      if (changes[WPConstants.STORAGE.ROOM_STATE]) currentRoomState = changes[WPConstants.STORAGE.ROOM_STATE].newValue;
-      render(currentRoomState, currentUserId);
+      if (changes[WPConstants.STORAGE.USER_ID]) currentUserId = changes[WPConstants.STORAGE.USER_ID].newValue || null;
+      if (changes[WPConstants.STORAGE.SESSION_ID]) currentSessionId = changes[WPConstants.STORAGE.SESSION_ID].newValue || null;
+      if (changes[WPConstants.STORAGE.ROOM_STATE]) currentRoomState = changes[WPConstants.STORAGE.ROOM_STATE].newValue || null;
+      if (changes[WPConstants.STORAGE.WS_CONNECTED]) currentWsConnected = changes[WPConstants.STORAGE.WS_CONNECTED].newValue === true;
+      render(currentRoomState);
     }
   });
 
-  // --- Init ---
-  pollState();
+  bindStaticActions();
+  bindChat();
+  loadLocalPreferences(pollState);
 })();
