@@ -110,6 +110,11 @@ function extractSentActions(source, label) {
   while ((m = re3.exec(source)) !== null) {
     actions.add(m[1]);
   }
+  // Pattern 4: sendRuntimeMessage({ action: 'foo' })  (WatchParty page bridge helper)
+  const re4 = /sendRuntimeMessage\s*\(\s*\{[^}]*action:\s*'([^']+)'/g;
+  while ((m = re4.exec(source)) !== null) {
+    actions.add(m[1]);
+  }
   if (actions.size === 0) {
     console.error(`  WARNING: No actions found in ${label} — parser may be broken`);
   }
@@ -120,10 +125,13 @@ function extractSentActions(source, label) {
 
 console.log('\n=== Message Routing Table Test ===\n');
 
-const bgSource      = readSrc('background.js');
-const contentSource = readSrc('stremio-content.js');
-const overlaySource = readSrc('stremio-overlay.js');
-const popupSource   = readSrc('popup.js');
+const bgSource        = readSrc('background.js');
+const contentSource   = readSrc('stremio-content.js');
+const bridgeSource    = readSrc('content.js');
+const overlaySource   = readSrc('stremio-overlay.js');
+const popupSource     = readSrc('popup.js');
+const sidepanelSource = readSrc('sidepanel.js');
+const constantsSource = readSrc('constants.js');
 
 // background.js uses a messageHandlers object map (or switch on message.action)
 let bgCases = extractSwitchCases(bgSource, 'background.js', 'action');
@@ -138,10 +146,12 @@ if (contentCases.size === 0) {
 }
 const overlaySends = extractSentActions(overlaySource, 'stremio-overlay.js');
 const popupSends   = extractSentActions(popupSource, 'popup.js');
+const bridgeSends  = extractSentActions(bridgeSource, 'content.js');
 
 console.log('── Parsed routing table ──');
 console.log(`  background.js cases:       ${[...bgCases].sort().join(', ')}`);
 console.log(`  content.js action cases:   ${[...contentCases].sort().join(', ')}`);
+console.log(`  landing bridge sends:      ${[...bridgeSends].sort().join(', ')}`);
 console.log(`  stremio-overlay.js sends:  ${[...overlaySends].sort().join(', ')}`);
 console.log(`  popup.js sends:            ${[...popupSends].sort().join(', ')}`);
 
@@ -151,6 +161,7 @@ const BG_ONLY_ACTIONS = new Set([
   'get-status',         // Responds with status from storage, no forwarding
   'ws-status-changed',  // Badge update from content→background, no forwarding
   'profile-updated',    // Broadcasts to WatchParty tabs, not Stremio tabs
+  'copy-to-clipboard',  // Shared utility action handled entirely in background/offscreen
   'save-auth-key',      // Stores auth key + triggers profile sync
   'resume-room',        // Website/popup intent handled fully in background
   'open-stremio',       // Focuses or opens the Stremio tab entirely in background
@@ -178,6 +189,12 @@ for (const action of popupSends) {
   ok(bgCases.has(action), `popup sends '${action}' → background.js has case`);
 }
 
+console.log('\n── Test 2b: Landing bridge actions → background.js ──');
+for (const action of ['get-status', 'surface-ready', 'save-auth-key', 'join-room', 'create-room', 'resume-room', 'open-options', 'open-stremio']) {
+  ok(bridgeSends.has(action), `landing bridge sends '${action}' through runtime messaging`);
+  ok(bgCases.has(action) || BG_ONLY_ACTIONS.has(action), `landing bridge action '${action}' resolves in background.js`);
+}
+
 // ── Test 3: Every forwarded action has a case in content.js ──
 // "Forwarded" = handled by background.js AND not in BG_ONLY_ACTIONS
 console.log('\n── Test 3: Forwarded actions → stremio-content.js ──');
@@ -194,6 +211,7 @@ console.log('\n── Test 4: No dead cases in background.js ──');
 const BG_NON_UI_SENDERS = new Set([
   'ws-status-changed',     // content script → background (notifyBackground)
   'profile-updated',       // content.js WPProfile → background
+  'copy-to-clipboard',     // utils.js shared clipboard helper → background/offscreen
   'save-auth-key',         // content.js (landing page) → background
   'resume-room',           // content.js (landing page) → background
   'open-stremio',          // content.js/options/popup → background tab handoff
@@ -209,7 +227,7 @@ const BG_NON_UI_SENDERS = new Set([
   // Overlay actions now use DOM events directly — background.js cases kept for popup relay
   'send-chat', 'send-typing', 'send-reaction', 'send-bookmark', 'seek-bookmark',
   'ready-check', 'transfer-ownership', 'request-sync',
-  // Settings actions now use chrome.storage.local directly (popup → PENDING_ACTION → content script)
+  // Room-control actions now relay directly through runtime messaging/background forwarding.
   'toggle-public', 'update-room-settings',
 ]);
 for (const action of bgCases) {
@@ -223,6 +241,17 @@ ok(bgCases.size >= 10,      `background.js has ${bgCases.size} cases (expected >
 ok(contentCases.size >= 10,  `stremio-content.js has ${contentCases.size} cases (expected >= 10)`);
 ok(overlaySends.size >= 5,   `stremio-overlay.js sends ${overlaySends.size} actions (expected >= 5)`);
 ok(popupSends.size >= 4,     `popup.js sends ${popupSends.size} actions (expected >= 4)`);
+ok(!sidepanelSource.includes('PENDING_ACTION'), 'sidepanel no longer writes transient room actions into chrome.storage.local');
+ok(!bgSource.includes('PENDING_ACTION'), 'background no longer stages transient room actions in chrome.storage.local');
+ok(!contentSource.includes('PENDING_ACTION'), 'stremio-content no longer consumes transient room actions from chrome.storage.onChanged');
+ok(!contentSource.includes('PENDING_ROOM_CREATE'), 'stremio-content no longer stages same-tab create commands in chrome.storage.local');
+ok(!contentSource.includes('PENDING_LEAVE_ROOM'), 'stremio-content no longer depends on dead pending-leave storage state');
+ok(!bgSource.includes("background-room-service.js"), 'background no longer imports the fallback room service runtime');
+ok(constantsSource.includes('BOOTSTRAP_ROOM_INTENT'), 'constants.js defines a bootstrap room-intent contract');
+ok(!constantsSource.includes('ROOM_SERVICE_ACTIVE'), 'constants.js no longer exposes fallback room-service storage flags');
+ok(constantsSource.includes('STORAGE_CONTRACT'), 'constants.js documents the storage contract');
+ok(constantsSource.includes('VIDEO_TAB_LEASE'), 'constants.js defines the active video-tab lease contract');
+ok(!contentSource.includes('[WPConstants.STORAGE.ACTIVE_VIDEO_TAB]: userId'), 'stremio-content no longer stores active video ownership as a raw userId');
 
 // ══════════════════════════════════════════════════
 // Protocol Completeness Tests (wp-protocol.js)
