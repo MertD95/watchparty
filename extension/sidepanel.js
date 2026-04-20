@@ -186,8 +186,8 @@
       );
       getStoredRoomKey(roomState.id, (roomKey) => {
         const finalUrl = roomKey ? `${inviteUrl}#key=${roomKey}` : inviteUrl;
-        navigator.clipboard.writeText(finalUrl)
-          .then(() => showToast('Invite copied'))
+        WPUtils.copyText(finalUrl)
+          .then((copied) => showToast(copied ? 'Invite copied' : 'Copy failed'))
           .catch(() => showToast('Copy failed'));
       });
     });

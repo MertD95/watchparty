@@ -88,9 +88,10 @@ function copyTextWithFeedback(textPromise, target, idleText, successText) {
   Promise.resolve(textPromise)
     .then((value) => {
       if (!value) return;
-      return navigator.clipboard.writeText(value);
+      return WPUtils.copyText(value);
     })
-    .then(() => {
+    .then((copied) => {
+      if (!copied) return;
       if (!target) return;
       target.textContent = successText;
       setTimeout(() => {

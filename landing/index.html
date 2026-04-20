@@ -1099,6 +1099,7 @@
     }
 
     let latestExtensionStatus = null;
+    const pendingPresenceRefreshTimers = new Set();
 
     function normalizeUsername(value) {
       return String(value || '').trim().slice(0, 25);
@@ -1158,8 +1159,27 @@
       return '';
     }
 
-    function updateLandingPresence(status) {
-      latestExtensionStatus = status || null;
+    function clearScheduledPresenceRefreshes() {
+      for (const timerId of pendingPresenceRefreshTimers) {
+        clearTimeout(timerId);
+      }
+      pendingPresenceRefreshTimers.clear();
+    }
+
+    function scheduleLandingPresenceRefresh(delays = [0, 250, 1000, 2500], timeoutMs = 1200) {
+      clearScheduledPresenceRefreshes();
+      delays.forEach((delay) => {
+        const timerId = setTimeout(() => {
+          pendingPresenceRefreshTimers.delete(timerId);
+          void refreshLandingPresence({ timeoutMs });
+        }, delay);
+        pendingPresenceRefreshTimers.add(timerId);
+      });
+    }
+
+    function updateLandingPresence(status, options = {}) {
+      const nextStatus = status || (options.preserveExisting ? latestExtensionStatus : null);
+      latestExtensionStatus = nextStatus;
       const extensionDetected = document.documentElement.hasAttribute('data-watchparty-ext');
       const primaryBtn = document.getElementById('hero-primary-btn');
       const extensionPill = document.getElementById('hero-extension-pill');
@@ -1170,8 +1190,8 @@
       const roomMeta = document.getElementById('hero-room-meta');
       const resumeBtn = document.getElementById('hero-resume-btn');
       const settingsBtn = document.getElementById('hero-settings-btn');
-      const preferredName = normalizeUsername(status?.username)
-        || (Array.isArray(status?.room?.users) ? status.room.users.find((user) => user.id === status.userId)?.name || '' : '')
+      const preferredName = normalizeUsername(nextStatus?.username)
+        || (Array.isArray(nextStatus?.room?.users) ? nextStatus.room.users.find((user) => user.id === nextStatus.userId)?.name || '' : '')
         || localStorage.getItem(WEBSITE_USERNAME_KEY)
         || '';
       if (preferredName) setPreferredUsername(preferredName, { persist: true });
@@ -1186,7 +1206,7 @@
         extensionPill.classList.add(extensionDetected ? 'is-ready' : 'is-warn');
       }
 
-      const room = status?.room || null;
+      const room = nextStatus?.room || null;
       if (room && roomCard && roomTitle && roomMeta && roomPill) {
         roomCard.classList.remove('hidden');
         roomPill.classList.remove('hidden');
@@ -1211,7 +1231,7 @@
           profileNote.textContent = 'Install the extension to create and join rooms from WatchParty.';
         } else if (room) {
           profileNote.textContent = 'You already have an active room. Go to it in Stremio to reopen the WatchParty sidebar.';
-        } else if (status?.hasStremioTab) {
+        } else if (nextStatus?.hasStremioTab) {
           profileNote.textContent = 'Stremio is already open. Create here, then continue there when the room is ready.';
         } else {
           profileNote.textContent = 'Create or join here first. WatchParty will carry the room into Stremio for the live session.';
@@ -1219,8 +1239,10 @@
       }
     }
 
-    async function refreshLandingPresence() {
-      updateLandingPresence(await requestExtensionStatus());
+    async function refreshLandingPresence(options = {}) {
+      const status = await requestExtensionStatus(options.timeoutMs);
+      updateLandingPresence(status, { preserveExisting: options.preserveExisting !== false });
+      return status;
     }
 
     function ensureExtensionInstalled() {
@@ -1341,7 +1363,7 @@
     }
 
     let extStatusRequestSeq = 0;
-    function requestExtensionStatus(timeoutMs = 350) {
+    function requestExtensionStatus(timeoutMs = 1200) {
       if (!document.documentElement.hasAttribute('data-watchparty-ext')) {
         return Promise.resolve(null);
       }
@@ -1514,7 +1536,7 @@
 
       syncRoomPoster(posterSlot, room);
       card.classList.toggle('room-card-reconnecting', isReconnectListing);
-      title.textContent = room.meta?.name || 'Untitled';
+      title.textContent = room.name || room.meta?.name || 'Untitled';
       metaLine1.innerHTML = `Hosted by ${escapeHtml(room.owner)}${room.meta?.year ? ` &middot; ${room.meta.year}` : ''}${isPublic ? '' : ' &middot; Invite required'}`;
       metaLine2.innerHTML = `<span style="color:${statusColor}">${statusIcon}</span> ${mins}:${secs}${room.bookmarks ? ` &middot; \uD83D\uDCCC ${room.bookmarks}` : ''}`;
       badge.className = isPublic ? 'room-badge room-badge-public' : 'room-badge room-badge-private';
@@ -1686,6 +1708,7 @@
     });
     window.addEventListener('pagehide', () => {
       stopRoomsStream();
+      clearScheduledPresenceRefreshes();
     });
 
     // Show a subtle "Live" badge next to the section title
@@ -1713,6 +1736,7 @@
         cryptoKey: roomKey || undefined,
         preferDirectJoin: options.preferDirectJoin === true,
       }, location.origin);
+      scheduleLandingPresenceRefresh();
       if (options.preferDirectJoin === true) {
         handoffToStremio('https://web.stremio.com');
         return;
@@ -1762,6 +1786,7 @@
         public: document.getElementById('create-room-public').checked,
       }, location.origin);
       closeCreateModal();
+      scheduleLandingPresenceRefresh();
       handoffToStremio('https://web.stremio.com');
     }
 

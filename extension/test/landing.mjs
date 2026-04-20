@@ -282,6 +282,34 @@ async function main() {
     ok(createAction.openMessage?.url === 'https://web.stremio.com', 'Create Room asks the extension background to open or focus Stremio');
     ok(createAction.navTarget == null, 'Create Room keeps the landing page in place while the extension hands off to Stremio');
 
+    await page.evaluate(() => {
+      window.__watchpartyExtStatus = {
+        hasStremioTab: true,
+        username: 'Tester',
+        userId: 'user-1',
+        room: {
+          id: 'created-room',
+          name: 'team-room',
+          public: true,
+          users: [{ id: 'user-1', name: 'Tester' }],
+        },
+      };
+    });
+    const heroRoomVisible = await page.waitForFunction(
+      () => {
+        const card = document.getElementById('hero-room-card');
+        const title = document.getElementById('hero-room-title')?.textContent?.trim();
+        const resume = document.getElementById('hero-resume-btn');
+        return card
+          && !card.classList.contains('hidden')
+          && title === 'team-room'
+          && resume
+          && !resume.classList.contains('hidden');
+      },
+      { timeout: 4000 }
+    ).then(() => true).catch(() => false);
+    ok(heroRoomVisible, 'landing shows the active-room hero card after website-first room creation');
+
     const initialRoomNodeToken = await page.evaluate(() => {
       const card = document.querySelector('.room-card[data-room-id="room-1"]') || document.querySelector('.room-card');
       card.__nodeToken = card.__nodeToken || 'room-1-stable-node';
@@ -314,6 +342,28 @@ async function main() {
       { timeout: 5000 }
     ).then(() => true).catch(() => false);
     ok(cardPatchedInPlace, 'landing patches an existing room card in place when the same room updates');
+
+    servers.setRooms([
+      {
+        id: 'room-1',
+        name: 'custom-room-name',
+        meta: { id: 'tt1375666', type: 'movie', name: 'Inception' },
+        hasDirectJoin: true,
+        directJoinType: 'direct-url',
+        users: 2,
+        owner: 'Alice',
+        paused: false,
+        time: 130,
+        bookmarks: 2,
+        public: true,
+      },
+    ]);
+    servers.broadcastRooms();
+    const customRoomNameVisible = await page.waitForFunction(
+      () => document.querySelector('.room-card[data-room-id="room-1"] .room-title')?.textContent?.trim() === 'custom-room-name',
+      { timeout: 5000 }
+    ).then(() => true).catch(() => false);
+    ok(customRoomNameVisible, 'landing room cards prefer the custom room name when it exists');
 
     const sseRevisionObserved = await page.waitForFunction(
       () => window.__sseEvents.some((event) => event.type === 'message' && !!event.lastEventId),

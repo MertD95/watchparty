@@ -443,6 +443,12 @@ async function testCreateRoomFlow() {
       assert(popupSummary.count.includes('1 watching'), `Popup summary shows host count: "${popupSummary.count}"`);
       assert(popupSummary.hasShare, 'Popup summary keeps Copy Invite action');
       assert(popupSummary.hasBrowse, 'Popup summary keeps Browse Rooms action');
+      await popup.click('#btn-share');
+      const popupCopyWorked = await popup.waitForFunction(
+        () => document.getElementById('btn-share')?.textContent === 'Link Copied!',
+        { timeout: TIMEOUT }
+      ).then(() => true).catch(() => false);
+      assert(popupCopyWorked, 'Popup Copy Invite action succeeds');
       // Stremio sidebar should now show the room
       await stremio.bringToFront();
       await stremio.waitForTimeout(1000);
@@ -467,6 +473,29 @@ async function testCreateRoomFlow() {
       }));
       assert(sessionControlsReady.publicToggle, 'Room tab shows host privacy control');
       assert(sessionControlsReady.autoPauseToggle, 'Room tab shows auto-pause safeguard');
+      const roomCodeCopyWorked = await stremio.evaluate(async () => {
+        const roomCode = document.getElementById('wp-room-code');
+        if (!roomCode) return false;
+        roomCode.click();
+        for (let i = 0; i < 20; i++) {
+          if ((roomCode.textContent || '') === 'Link copied!') return true;
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        return false;
+      });
+      assert(roomCodeCopyWorked, 'Room code chip copies the invite link successfully');
+      const roomButtonCopyWorked = await stremio.evaluate(async () => {
+        const copyBtn = document.getElementById('wp-copy-invite-btn');
+        if (!copyBtn) return false;
+        copyBtn.click();
+        for (let i = 0; i < 20; i++) {
+          const toast = document.getElementById('wp-toast');
+          if ((toast?.textContent || '').includes('Invite copied')) return true;
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        return false;
+      });
+      assert(roomButtonCopyWorked, 'Room panel Copy Invite action succeeds');
       const roomKeyHelpStable = await stremio.evaluate(async () => {
         const help = document.getElementById('wp-room-key-help');
         const row = document.querySelector('label[for="wp-session-autopause"]');
@@ -641,7 +670,15 @@ async function testPopupReloadReadsWrappedLocalRoomKeyFallback() {
       roomState,
       { timeout: TIMEOUT }
     );
-    const rebuiltInvite = await popup.evaluate(async (expected) => buildInviteUrlWithKey(expected.roomId), roomState);
+    const rebuiltInviteHandle = await popup.waitForFunction(
+      async (expected) => {
+        const value = await buildInviteUrlWithKey(expected.roomId);
+        return value.endsWith(`#key=${expected.roomKey}`) ? value : null;
+      },
+      roomState,
+      { timeout: TIMEOUT }
+    );
+    const rebuiltInvite = await rebuiltInviteHandle.jsonValue();
     assert(
       rebuiltInvite.endsWith(`#key=${roomState.roomKey}`),
       `Popup rebuilds the invite link from wrapped local-storage fallback (${rebuiltInvite})`

@@ -1741,8 +1741,7 @@ const WPOverlay = (() => {
       const roomId = roomState?.id;
       if (!roomId) return false;
       const inviteUrl = await buildInviteUrl(roomId);
-      await navigator.clipboard.writeText(inviteUrl);
-      return true;
+      return await WPUtils.copyText(inviteUrl);
     } catch {
       return false;
     }
