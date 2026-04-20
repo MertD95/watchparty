@@ -38,8 +38,13 @@
   let reconnectNoticeTimer = null;
   let reconnectNoticeShown = false;
   let surfaceTabId = null;
+  let activeVideoLeaseInterval = null;
   const activeVideoLeaseId = crypto.randomUUID();
   const cinemetaTitleCache = new Map();
+  const SESSION_RUNTIME_KEYS = new Set([
+    ...WPConstants.STORAGE_CONTRACT.SESSION_RUNTIME,
+    ...WPConstants.STORAGE_CONTRACT.BOOTSTRAP_SESSION,
+  ]);
 
   const PLACEHOLDER_ROOM_NAME = 'WatchParty Session';
   const PLACEHOLDER_STREAM_URL = 'https://watchparty.mertd.me/sync';
@@ -72,22 +77,114 @@
       sessionId,
     });
     if (!lease) return;
-    chrome.storage.local.set({ [WPConstants.STORAGE.ACTIVE_VIDEO_TAB]: lease });
+    setExtensionState({ [WPConstants.STORAGE.ACTIVE_VIDEO_TAB]: lease }).catch(() => {});
   }
 
   function releaseActiveTab() {
     if (!extOk()) return;
     isActiveVideoTab = false;
     // Only clear if we currently own it
-    chrome.storage.local.get(WPConstants.STORAGE.ACTIVE_VIDEO_TAB, (result) => {
+    getExtensionState(WPConstants.STORAGE.ACTIVE_VIDEO_TAB).then((result) => {
       if (WPConstants.VIDEO_TAB_LEASE.isOwner(result[WPConstants.STORAGE.ACTIVE_VIDEO_TAB], activeVideoLeaseId)) {
-        chrome.storage.local.remove(WPConstants.STORAGE.ACTIVE_VIDEO_TAB);
+        removeExtensionState(WPConstants.STORAGE.ACTIVE_VIDEO_TAB).catch(() => {});
       }
     });
   }
 
+  function refreshActiveVideoLease(options = {}) {
+    if (!extOk() || !video || !inRoom) return Promise.resolve(false);
+    const force = options.force === true;
+    return getExtensionState(WPConstants.STORAGE.ACTIVE_VIDEO_TAB).then((result) => {
+      const currentLease = result[WPConstants.STORAGE.ACTIVE_VIDEO_TAB];
+      const ownsLease = WPConstants.VIDEO_TAB_LEASE.isOwner(currentLease, activeVideoLeaseId);
+      const leaseIsExpired = WPConstants.VIDEO_TAB_LEASE.isExpired(currentLease);
+      const shouldClaim = force || ownsLease || leaseIsExpired || !currentLease;
+      if (!shouldClaim) {
+        isActiveVideoTab = false;
+        return false;
+      }
+      if (!force && ownsLease && !WPConstants.VIDEO_TAB_LEASE.shouldRenew(currentLease)) return true;
+      claimActiveTab();
+      return true;
+    }).catch(() => false);
+  }
+
+  function startActiveVideoLeaseHeartbeat() {
+    if (activeVideoLeaseInterval) return;
+    activeVideoLeaseInterval = setInterval(() => {
+      if (!extOk()) {
+        clearInterval(activeVideoLeaseInterval);
+        activeVideoLeaseInterval = null;
+        return;
+      }
+      refreshActiveVideoLease().then((claimed) => {
+        if (!claimed || !video || !inRoom) return;
+        if (!WPSync.isAttached()) attachSync();
+      }).catch(() => {});
+    }, WPConstants.VIDEO_TAB_LEASE.RENEW_INTERVAL_MS);
+  }
+
   // --- Extension context guard (WS survives extension reloads, but chrome APIs don't) ---
   function extOk() { return !!chrome.runtime?.id; }
+
+  function normalizeStorageKeyList(keys) {
+    return Array.isArray(keys) ? keys.filter(Boolean) : [keys].filter(Boolean);
+  }
+
+  function getExtensionState(keys) {
+    const keyList = normalizeStorageKeyList(keys);
+    if (!extOk() || keyList.length === 0) return Promise.resolve({});
+
+    const sessionKeys = keyList.filter((key) => SESSION_RUNTIME_KEYS.has(key));
+    const localKeys = keyList.filter((key) => !SESSION_RUNTIME_KEYS.has(key));
+
+    return Promise.all([
+      sessionKeys.length > 0 ? chrome.storage.session.get(sessionKeys).catch(() => ({})) : Promise.resolve({}),
+      localKeys.length > 0 ? chrome.storage.local.get(localKeys).catch(() => ({})) : Promise.resolve({}),
+      sessionKeys.length > 0 ? chrome.storage.local.get(sessionKeys).catch(() => ({})) : Promise.resolve({}),
+    ]).then(([sessionValues, localValues, fallbackValues]) => {
+      const migratedValues = {};
+      for (const key of sessionKeys) {
+        if (sessionValues[key] !== undefined || fallbackValues[key] === undefined) continue;
+        migratedValues[key] = fallbackValues[key];
+      }
+
+      if (Object.keys(migratedValues).length > 0) {
+        chrome.storage.session.set(migratedValues).catch(() => {});
+        chrome.storage.local.remove(Object.keys(migratedValues)).catch(() => {});
+      }
+
+      return { ...localValues, ...fallbackValues, ...sessionValues };
+    });
+  }
+
+  function setExtensionState(values) {
+    if (!extOk() || !values || typeof values !== 'object') return Promise.resolve();
+    const sessionValues = {};
+    const localValues = {};
+    for (const [key, value] of Object.entries(values)) {
+      if (SESSION_RUNTIME_KEYS.has(key)) sessionValues[key] = value;
+      else localValues[key] = value;
+    }
+    return Promise.all([
+      Object.keys(localValues).length > 0 ? chrome.storage.local.set(localValues).catch(() => {}) : Promise.resolve(),
+      Object.keys(sessionValues).length > 0 ? chrome.storage.session.set(sessionValues).catch(() => {}) : Promise.resolve(),
+    ]).then(() => {
+      if (Object.keys(sessionValues).length > 0) {
+        chrome.storage.local.remove(Object.keys(sessionValues)).catch(() => {});
+      }
+    });
+  }
+
+  function removeExtensionState(keys) {
+    const keyList = normalizeStorageKeyList(keys);
+    if (!extOk() || keyList.length === 0) return Promise.resolve();
+    const sessionKeys = keyList.filter((key) => SESSION_RUNTIME_KEYS.has(key));
+    return Promise.all([
+      chrome.storage.local.remove(keyList).catch(() => {}),
+      sessionKeys.length > 0 ? chrome.storage.session.remove(sessionKeys).catch(() => {}) : Promise.resolve(),
+    ]).then(() => undefined);
+  }
 
   function isPlaceholderMeta(meta) {
     return !meta || meta.id === 'pending' || meta.id === 'unknown' || meta.name === PLACEHOLDER_ROOM_NAME;
@@ -128,7 +225,7 @@
 
   function clearBootstrapRoomIntent() {
     if (!extOk()) return Promise.resolve();
-    return chrome.storage.local.remove(WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT).catch(() => { });
+    return removeExtensionState(WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT).catch(() => { });
   }
 
   function stagePendingRoomCreateCommand(command) {
@@ -213,7 +310,7 @@
     };
     deferredLeaveIntent = nextIntent;
     if (extOk()) {
-      chrome.storage.local.set({ [WPConstants.STORAGE.DEFERRED_LEAVE_ROOM]: nextIntent }).catch(() => { });
+      setExtensionState({ [WPConstants.STORAGE.DEFERRED_LEAVE_ROOM]: nextIntent }).catch(() => { });
     }
     return nextIntent;
   }
@@ -222,7 +319,7 @@
     if (roomId && deferredLeaveIntent?.roomId && deferredLeaveIntent.roomId !== roomId) return;
     deferredLeaveIntent = null;
     if (!extOk()) return;
-    chrome.storage.local.remove(WPConstants.STORAGE.DEFERRED_LEAVE_ROOM).catch(() => { });
+    removeExtensionState(WPConstants.STORAGE.DEFERRED_LEAVE_ROOM).catch(() => { });
   }
 
   function applyLocalLeaveState(leavingRoomId) {
@@ -238,7 +335,7 @@
     refreshOverlay();
     persistState();
     if (!extOk()) return;
-    chrome.storage.local.remove([
+    removeExtensionState([
       WPConstants.STORAGE.CURRENT_ROOM,
       WPConstants.STORAGE.ROOM_STATE,
       WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT,
@@ -468,7 +565,7 @@
   // --- Persist state to storage for popup queries ---
   function persistState() {
     if (!extOk()) return;
-    chrome.storage.local.set({
+    setExtensionState({
       [WPConstants.STORAGE.ROOM_STATE]: roomState,
       [WPConstants.STORAGE.USER_ID]: userId,
       [WPConstants.STORAGE.WS_CONNECTED]: WPWS.isConnected(),
@@ -479,7 +576,7 @@
 
   function persistConnectionState() {
     if (!extOk()) return;
-    chrome.storage.local.set({
+    setExtensionState({
       [WPConstants.STORAGE.WS_CONNECTED]: WPWS.isConnected(),
       [WPConstants.STORAGE.ACTIVE_BACKEND]: WPWS.getActiveBackend(),
       [WPConstants.STORAGE.ACTIVE_BACKEND_URL]: WPWS.getActiveWsUrl(),
@@ -491,6 +588,57 @@
     try {
       chrome.runtime.sendMessage({ type: 'watchparty-ext', ...data }).catch(() => { });
     } catch { /* context invalidated */ }
+  }
+
+  function cloneRoomSnapshot(room) {
+    if (!room) return null;
+    return {
+      ...room,
+      meta: room.meta ? { ...room.meta } : room.meta,
+      stream: room.stream ? { ...room.stream } : room.stream,
+      player: room.player ? { ...room.player } : room.player,
+      settings: room.settings ? { ...room.settings } : room.settings,
+      readyCheck: room.readyCheck ? { ...room.readyCheck, confirmed: Array.isArray(room.readyCheck.confirmed) ? [...room.readyCheck.confirmed] : [] } : room.readyCheck,
+      users: Array.isArray(room.users) ? room.users.map((user) => ({ ...user })) : [],
+      bookmarks: Array.isArray(room.bookmarks) ? room.bookmarks.map((bookmark) => ({ ...bookmark })) : [],
+      messages: Array.isArray(room.messages) ? room.messages.map((message) => ({ ...message })) : [],
+    };
+  }
+
+  function commitRoomState(nextRoom, options = {}) {
+    if (!nextRoom?.id) return false;
+    roomState = nextRoom;
+    lastJoinAttemptRoomId = null;
+    if (pendingCreatedRoomKey && roomState.id) {
+      cacheRoomKeyForRoom(roomState.id, pendingCreatedRoomKey);
+      pendingCreatedRoomKey = null;
+    }
+    if (extOk()) {
+      setExtensionState({ [WPConstants.STORAGE.CURRENT_ROOM]: roomState.id }).catch(() => {});
+    }
+    persistState();
+    if (options.lifecycle === 'joined') {
+      onRoomJoined();
+    } else if (options.lifecycle === 'sync') {
+      onRoomSync();
+    } else if (options.refreshOverlay !== false) {
+      refreshOverlay();
+    }
+    return true;
+  }
+
+  function adoptRoomSnapshot(nextRoom, options = {}) {
+    if (!nextRoom?.id) return false;
+    prevPlayerTime = roomState?.player?.time || 0;
+    return commitRoomState(nextRoom, { lifecycle: options.lifecycle || 'sync' });
+  }
+
+  function applyRoomStateDelta(mutator, options = {}) {
+    if (!roomState) return false;
+    const nextRoom = cloneRoomSnapshot(roomState);
+    if (!nextRoom) return false;
+    mutator(nextRoom);
+    return commitRoomState(nextRoom, options);
   }
 
   // --- WS callbacks ---
@@ -509,11 +657,11 @@
     if (shouldAnnounceReconnect && inRoom) {
       WPOverlay.showToast('WatchParty reconnected', 1800);
     }
-    chrome.storage.local.get([
+    getExtensionState([
       WPConstants.STORAGE.DEFERRED_LEAVE_ROOM,
       WPConstants.STORAGE.USERNAME,
       WPConstants.STORAGE.CURRENT_ROOM,
-    ], (stored) => {
+    ]).then((stored) => {
       syncDeferredLeaveIntent(stored[WPConstants.STORAGE.DEFERRED_LEAVE_ROOM]);
       if (deferredLeaveIntent?.roomId) {
         drainDeferredLeaveIntent().catch(() => { });
@@ -577,15 +725,7 @@
           applyLocalLeaveState(p.id);
           return;
         }
-        prevPlayerTime = roomState?.player?.time || 0;
-        roomState = p;
-        lastJoinAttemptRoomId = null;
-        if (pendingCreatedRoomKey && roomState?.id) {
-          cacheRoomKeyForRoom(roomState.id, pendingCreatedRoomKey);
-          pendingCreatedRoomKey = null;
-        }
-        persistState();
-        onRoomSync();
+        adoptRoomSnapshot(p, { lifecycle: 'sync' });
         break;
 
       case WPProtocol.S2C.ROOM:
@@ -597,15 +737,7 @@
           applyLocalLeaveState(p.id);
           return;
         }
-        roomState = p;
-        lastJoinAttemptRoomId = null;
-        if (pendingCreatedRoomKey && roomState?.id) {
-          cacheRoomKeyForRoom(roomState.id, pendingCreatedRoomKey);
-          pendingCreatedRoomKey = null;
-        }
-        if (extOk()) chrome.storage.local.set({ [WPConstants.STORAGE.CURRENT_ROOM]: roomState.id });
-        persistState();
-        onRoomJoined();
+        adoptRoomSnapshot(p, { lifecycle: 'joined' });
         break;
 
       case WPProtocol.S2C.MESSAGE:
@@ -636,7 +768,7 @@
           clearPendingJoinOptions();
           inRoom = false; roomState = null;
           WPSync.detach();
-        if (extOk()) chrome.storage.local.remove([WPConstants.STORAGE.CURRENT_ROOM, WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT]);
+        if (extOk()) removeExtensionState([WPConstants.STORAGE.CURRENT_ROOM, WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT]).catch(() => {});
           refreshOverlay();
           persistState();
           if (wasInRoom || p?.code === WPProtocol.ERROR_CODE.ROOM_NOT_FOUND) {
@@ -695,35 +827,34 @@
       case WPProtocol.S2C.PLAYER_SYNC:
         if (!p?.player || !roomState) return;
         prevPlayerTime = roomState.player?.time || 0;
-        roomState.player = p.player;
-        persistState();
-        onRoomSync();
+        applyRoomStateDelta((nextRoom) => {
+          nextRoom.player = p.player;
+        }, { lifecycle: 'sync' });
         break;
 
       case WPProtocol.S2C.PRESENCE_UPDATE:
         if (!p?.userId || !roomState?.users) return;
-        const presUser = roomState.users.find(u => u.id === p.userId);
-        if (presUser) presUser.status = p.status;
-        persistState();
-        refreshOverlay();
+        applyRoomStateDelta((nextRoom) => {
+          const user = nextRoom.users.find((entry) => entry.id === p.userId);
+          if (user) user.status = p.status;
+        });
         break;
 
       case WPProtocol.S2C.PLAYBACK_STATUS_UPDATE:
         if (!p?.userId || !roomState?.users) return;
-        const pbUser = roomState.users.find(u => u.id === p.userId);
-        if (pbUser) {
-          pbUser.playbackStatus = p.status;
-          if (Number.isFinite(p.time)) pbUser.playbackTime = p.time;
-        }
-        persistState();
-        refreshOverlay();
+        applyRoomStateDelta((nextRoom) => {
+          const user = nextRoom.users.find((entry) => entry.id === p.userId);
+          if (!user) return;
+          user.playbackStatus = p.status;
+          if (Number.isFinite(p.time)) user.playbackTime = p.time;
+        });
         break;
 
       case WPProtocol.S2C.SETTINGS_UPDATE:
         if (!p?.settings || !roomState) return;
-        roomState.settings = p.settings;
-        persistState();
-        refreshOverlay();
+        applyRoomStateDelta((nextRoom) => {
+          nextRoom.settings = p.settings;
+        });
         break;
     }
   }
@@ -740,7 +871,7 @@
       WPWS.send({ type: WPProtocol.C2S.ROOM_LEAVE, payload: {} });
       inRoom = false; roomState = null; isHost = false;
     }
-    chrome.storage.local.remove(WPConstants.STORAGE.CURRENT_ROOM);
+    removeExtensionState(WPConstants.STORAGE.CURRENT_ROOM).catch(() => {});
     if (command?.username) {
       WPWS.send({ type: WPProtocol.C2S.USER_UPDATE, payload: { username: command.username, sessionId } });
     }
@@ -788,12 +919,12 @@
     if (!WPWS.isReady() || !extOk()) return;
     // sessionId MUST be loaded before sending any room messages — otherwise server can't dedup
     if (!sessionId) return;
-    chrome.storage.local.get([
+    getExtensionState([
       WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT,
       WPConstants.STORAGE.DEFERRED_LEAVE_ROOM,
       WPConstants.STORAGE.CURRENT_ROOM,
       WPConstants.STORAGE.USERNAME,
-    ], async (stored) => {
+    ]).then(async (stored) => {
       syncDeferredLeaveIntent(stored[WPConstants.STORAGE.DEFERRED_LEAVE_ROOM]);
       if (deferredLeaveIntent?.roomId) {
         await drainDeferredLeaveIntent().catch(() => { });
@@ -817,6 +948,9 @@
       }
 
       const bootstrapIntent = normalizeBootstrapRoomIntent(stored[WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT]);
+      if (!bootstrapIntent && stored[WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT] !== undefined) {
+        await clearBootstrapRoomIntent();
+      }
       if (bootstrapIntent) {
         await clearBootstrapRoomIntent();
         if (bootstrapIntent.action === 'create-room') {
@@ -869,9 +1003,8 @@
 
   function isMe(uid) {
     if (uid === userId) return true;
-    if (!sessionId || !roomState?.users) return false;
-    const user = roomState.users.find(u => u.id === uid);
-    if (user) return user.sessionId === sessionId;
+    const user = WPUtils.getMatchingRoomUser(roomState, uid, null);
+    if (sessionId && user) return user.sessionId === sessionId;
     // uid not in users list (orphaned owner after reconnect/dedup) —
     // check if WE are in the users list (if so, and owner is orphaned, we're likely the owner)
     return false;
@@ -879,18 +1012,16 @@
 
   /** Am I the room host? Handles orphaned owner IDs after WS reconnect. */
   function amIHost() {
-    if (!roomState) return false;
-    if (isMe(roomState.owner)) return true;
-    // Owner ID not in users list (stale) — if we're in the room, we're the host
-    const ownerInList = roomState.users?.some(u => u.id === roomState.owner);
-    if (!ownerInList && roomState.users?.some(u => u.id === userId || (sessionId && u.sessionId === sessionId))) return true;
-    return false;
+    return WPUtils.isCurrentSessionOwner(roomState, userId, sessionId);
   }
 
   async function onRoomJoined() {
     inRoom = true;
     isHost = amIHost();
-    if (video) { claimActiveTab(); attachSync(); }
+    if (video) {
+      refreshActiveVideoLease({ force: true }).catch(() => {});
+      attachSync();
+    }
     refreshOverlay();
     const directJoinResult = !isHost ? maybeHandlePendingDirectJoin(roomState) : null;
     // E2E encryption is opt-in: only enabled when a key is provided via invite URL.
@@ -925,7 +1056,6 @@
     const wasHost = isHost;
     isHost = amIHost();
     inRoom = true;
-    if (roomState?.id && extOk()) chrome.storage.local.set({ [WPConstants.STORAGE.CURRENT_ROOM]: roomState.id });
     WPSync.setHost(isHost);
     if (video && shouldShareHostContent()) {
       attachSync();
@@ -1063,7 +1193,7 @@
           if (WPSync.isAttached()) WPSync.detach();
           video = v;
           if (inRoom) {
-            claimActiveTab(); // This tab now owns sync
+            refreshActiveVideoLease({ force: true }).catch(() => {}); // This tab now owns sync
             attachSync();
             if (!isHost) schedulePeerVideoResync(v);
             if (shouldShareHostContent()) shareContentLink();
@@ -1082,7 +1212,7 @@
     if (v) {
       video = v;
       if (inRoom) {
-        claimActiveTab();
+        refreshActiveVideoLease({ force: true }).catch(() => {});
         attachSync();
         if (!isHost) schedulePeerVideoResync(v);
       }
@@ -1398,16 +1528,16 @@
 
   // --- Storage change listener for pending actions ---
   if (extOk()) {
-    chrome.storage.onChanged.addListener((changes) => {
-      if (changes[WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT]) {
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+      if (areaName === 'session' && changes[WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT]) {
         if (!sessionId) return;
         if (WPWS.isReady()) { processPendingActions(); }
         else { WPWS.connect(); }
       }
-      if (changes[WPConstants.STORAGE.DEFERRED_LEAVE_ROOM]) {
+      if (areaName === 'session' && changes[WPConstants.STORAGE.DEFERRED_LEAVE_ROOM]) {
         syncDeferredLeaveIntent(changes[WPConstants.STORAGE.DEFERRED_LEAVE_ROOM].newValue);
       }
-      if (changes[WPConstants.STORAGE.BACKEND_MODE]) {
+      if (areaName === 'local' && changes[WPConstants.STORAGE.BACKEND_MODE]) {
         const nextMode = WPConstants.BACKEND.normalizeMode(changes[WPConstants.STORAGE.BACKEND_MODE].newValue);
         if (WPWS.setBackendMode(nextMode)) {
           WPWS.disconnect({ resetReplay: true });
@@ -1416,11 +1546,12 @@
         }
       }
       // Active video tab election — another tab claimed active status
-      if (changes[WPConstants.STORAGE.ACTIVE_VIDEO_TAB]) {
-        isActiveVideoTab = WPConstants.VIDEO_TAB_LEASE.isOwner(
-          changes[WPConstants.STORAGE.ACTIVE_VIDEO_TAB].newValue,
-          activeVideoLeaseId
-        );
+      if (areaName === 'session' && changes[WPConstants.STORAGE.ACTIVE_VIDEO_TAB]) {
+        const nextLease = changes[WPConstants.STORAGE.ACTIVE_VIDEO_TAB].newValue;
+        isActiveVideoTab = WPConstants.VIDEO_TAB_LEASE.isOwner(nextLease, activeVideoLeaseId);
+        if (!isActiveVideoTab && video && inRoom && WPConstants.VIDEO_TAB_LEASE.isExpired(nextLease)) {
+          refreshActiveVideoLease({ force: true }).catch(() => {});
+        }
       }
     });
   }
@@ -1429,6 +1560,7 @@
   window.addEventListener('beforeunload', () => {
     clearInterval(playbackInterval);
     clearInterval(hostShareInterval);
+    if (activeVideoLeaseInterval) clearInterval(activeVideoLeaseInterval);
     releaseActiveTab();
     WPProfile.stop();
   });
@@ -1443,7 +1575,7 @@
       if (nextTabId == null || nextTabId === surfaceTabId) return;
       surfaceTabId = nextTabId;
       if (isActiveVideoTab || (inRoom && video)) {
-        claimActiveTab();
+        refreshActiveVideoLease({ force: true }).catch(() => {});
       }
     }).catch(() => {});
     chrome.runtime.sendMessage({
@@ -1457,19 +1589,20 @@
       () => { WPWS.send({ type: WPProtocol.C2S.ROOM_TYPING, payload: { typing: false } }); }
     );
     startVideoObserver();
+    startActiveVideoLeaseHeartbeat();
     updateKnownContentMeta();
     WPProfile.start();
 
     // Generate or load persistent session ID (shared across all tabs via chrome.storage).
     // This lets the server identify all tabs as the same user — Twitch-style multi-tab.
-    chrome.storage.local.get([
+    getExtensionState([
       WPConstants.STORAGE.SESSION_ID,
       WPConstants.STORAGE.BACKEND_MODE,
       WPConstants.STORAGE.ACTIVE_BACKEND,
       WPConstants.STORAGE.CURRENT_ROOM,
       WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT,
       WPConstants.STORAGE.DEFERRED_LEAVE_ROOM,
-    ], (result) => {
+    ]).then((result) => {
       const storedSessionId = result[WPConstants.STORAGE.SESSION_ID];
       if (storedSessionId) {
         sessionId = storedSessionId;
@@ -1482,8 +1615,12 @@
       const activeBackend = WPConstants.BACKEND.isKnownKey(result[WPConstants.STORAGE.ACTIVE_BACKEND])
         ? result[WPConstants.STORAGE.ACTIVE_BACKEND]
         : null;
+      const bootstrapIntent = normalizeBootstrapRoomIntent(result[WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT]);
+      if (!bootstrapIntent && result[WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT] !== undefined) {
+        clearBootstrapRoomIntent().catch(() => {});
+      }
       const hasRoomBootstrap = !!result[WPConstants.STORAGE.CURRENT_ROOM]
-        || !!normalizeBootstrapRoomIntent(result[WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT]);
+        || !!bootstrapIntent;
       WPWS.setBackendMode(
         backendMode === WPConstants.BACKEND.MODES.AUTO && hasRoomBootstrap && activeBackend
           ? activeBackend

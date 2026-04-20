@@ -1480,14 +1480,19 @@ const WPOverlay = (() => {
   }
 
   function renderUsersList(usersDiv, roomState, userId, isHost) {
-    const usersKey = roomState.users.map(u => `${u.id}:${u.status}:${u.playbackStatus}:${u.playbackTime ?? ''}`).join(',') + `:${roomState.owner}:${isHost}`;
+    const usersKey = roomState.users.map(u => `${u.id}:${u.status}:${u.playbackStatus}:${u.playbackTime ?? ''}:${u.sessionId ?? ''}`).join(',') + `:${roomState.owner}:${roomState.ownerSessionId ?? ''}:${isHost}`;
     if (renderCache.lastUsersKey === usersKey) return;
     renderCache.lastUsersKey = usersKey;
-    const ownerInList = roomState.users.some(u => u.id === roomState.owner);
+    const canonicalOwner = WPUtils.getCanonicalOwnerUser(roomState);
+    const canonicalOwnerId = canonicalOwner?.id || roomState.owner || null;
+    const canonicalOwnerSessionId = canonicalOwner?.sessionId || roomState.ownerSessionId || null;
     usersDiv.innerHTML = roomState.users.map(u => {
-      const isMe = u.id === userId || (cachedSessionId && u.sessionId === cachedSessionId);
-      // Crown: actual owner, or if owner ID is orphaned (stale after reconnect), the host
-      const isOwner = u.id === roomState.owner || (!ownerInList && isHost && isMe);
+      const isMe = WPUtils.isCurrentSessionUser(u, userId, cachedSessionId);
+      const isOwner = (
+        (!!canonicalOwnerSessionId && !!u.sessionId && u.sessionId === canonicalOwnerSessionId)
+        || (!!canonicalOwnerId && u.id === canonicalOwnerId)
+        || (!canonicalOwner && isHost && isMe)
+      );
       const color = getUserColor(u.sessionId || u.id);
       const crown = isOwner ? '<span class="wp-crown">👑</span>' : '';
       const you = isMe ? ' <span class="wp-you">(you)</span>' : '';
@@ -1719,12 +1724,17 @@ const WPOverlay = (() => {
 
   async function buildInviteUrl(roomId) {
     let inviteUrl = await new Promise((resolve) => {
-      chrome.storage.local.get([WPConstants.STORAGE.BACKEND_MODE, WPConstants.STORAGE.ACTIVE_BACKEND], (result) => {
-        resolve(WPConstants.BACKEND.buildInviteUrl(
-          roomId,
-          result[WPConstants.STORAGE.BACKEND_MODE],
-          result[WPConstants.STORAGE.ACTIVE_BACKEND]
-        ));
+      chrome.storage.session.get(WPConstants.STORAGE.ACTIVE_BACKEND, (sessionResult) => {
+        const sessionActiveBackend = !chrome.runtime?.id || chrome.runtime.lastError
+          ? undefined
+          : sessionResult?.[WPConstants.STORAGE.ACTIVE_BACKEND];
+        chrome.storage.local.get([WPConstants.STORAGE.BACKEND_MODE, WPConstants.STORAGE.ACTIVE_BACKEND], (result) => {
+          resolve(WPConstants.BACKEND.buildInviteUrl(
+            roomId,
+            result[WPConstants.STORAGE.BACKEND_MODE],
+            sessionActiveBackend ?? result[WPConstants.STORAGE.ACTIVE_BACKEND]
+          ));
+        });
       });
     });
     let roomKey = null;

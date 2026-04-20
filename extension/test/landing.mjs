@@ -310,6 +310,16 @@ async function main() {
     ).then(() => true).catch(() => false);
     ok(heroRoomVisible, 'landing shows the active-room hero card after website-first room creation');
 
+    await page.evaluate(() => {
+      window.__bridgeMessages = [];
+    });
+    await page.click('#hero-settings-btn');
+    const heroSettingsBridge = await page.waitForFunction(
+      () => window.__bridgeMessages.some((entry) => entry.type === 'watchparty-open-options'),
+      { timeout: 3000 }
+    ).then(() => true).catch(() => false);
+    ok(heroSettingsBridge, 'landing keeps the active-room Extension Settings bridge action');
+
     const initialRoomNodeToken = await page.evaluate(() => {
       const card = document.querySelector('.room-card[data-room-id="room-1"]') || document.querySelector('.room-card');
       card.__nodeToken = card.__nodeToken || 'room-1-stable-node';

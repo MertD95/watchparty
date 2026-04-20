@@ -9,6 +9,10 @@ let currentUserId = null;
 let currentSessionId = null;
 let currentLobbyMode = 'create';
 let suppressedRoomId = null;
+const SESSION_RUNTIME_KEYS = new Set([
+  ...WPConstants.STORAGE_CONTRACT.SESSION_RUNTIME,
+  ...WPConstants.STORAGE_CONTRACT.BOOTSTRAP_SESSION,
+]);
 
 function getErrorMessage(errorLike, fallback) {
   if (!errorLike) return fallback;
@@ -35,6 +39,56 @@ function getDirectStreamUrl(room) {
 
 function getBrowseUrl() {
   return WPConstants.BACKEND.getBrowseUrl(currentBackendMode, currentActiveBackend);
+}
+
+function normalizeStorageKeyList(keys) {
+  return Array.isArray(keys) ? keys.filter(Boolean) : [keys].filter(Boolean);
+}
+
+function getExtensionState(keys, callback) {
+  const keyList = normalizeStorageKeyList(keys);
+  if (keyList.length === 0) {
+    callback?.({});
+    return Promise.resolve({});
+  }
+  const sessionKeys = keyList.filter((key) => SESSION_RUNTIME_KEYS.has(key));
+  const localKeys = keyList.filter((key) => !SESSION_RUNTIME_KEYS.has(key));
+  const work = Promise.all([
+    sessionKeys.length > 0 ? chrome.storage.session.get(sessionKeys).catch(() => ({})) : Promise.resolve({}),
+    localKeys.length > 0 ? chrome.storage.local.get(localKeys).catch(() => ({})) : Promise.resolve({}),
+    sessionKeys.length > 0 ? chrome.storage.local.get(sessionKeys).catch(() => ({})) : Promise.resolve({}),
+  ]).then(([sessionValues, localValues, fallbackValues]) => {
+    const migratedValues = {};
+    for (const key of sessionKeys) {
+      if (sessionValues[key] !== undefined || fallbackValues[key] === undefined) continue;
+      migratedValues[key] = fallbackValues[key];
+    }
+    if (Object.keys(migratedValues).length > 0) {
+      chrome.storage.session.set(migratedValues).catch(() => {});
+      chrome.storage.local.remove(Object.keys(migratedValues)).catch(() => {});
+    }
+    return { ...localValues, ...fallbackValues, ...sessionValues };
+  });
+  if (typeof callback === 'function') work.then(callback);
+  return work;
+}
+
+function setExtensionState(values) {
+  if (!values || typeof values !== 'object') return Promise.resolve();
+  const sessionValues = {};
+  const localValues = {};
+  for (const [key, value] of Object.entries(values)) {
+    if (SESSION_RUNTIME_KEYS.has(key)) sessionValues[key] = value;
+    else localValues[key] = value;
+  }
+  return Promise.all([
+    Object.keys(localValues).length > 0 ? chrome.storage.local.set(localValues).catch(() => {}) : Promise.resolve(),
+    Object.keys(sessionValues).length > 0 ? chrome.storage.session.set(sessionValues).catch(() => {}) : Promise.resolve(),
+  ]).then(() => {
+    if (Object.keys(sessionValues).length > 0) {
+      chrome.storage.local.remove(Object.keys(sessionValues)).catch(() => {});
+    }
+  });
 }
 
 function openWatchPartyTab() {
@@ -281,14 +335,16 @@ function setBackendMode(mode) {
   setWsStatus(false);
   chrome.storage.local.set({
     [WPConstants.STORAGE.BACKEND_MODE]: normalizedMode,
+  });
+  setExtensionState({
     [WPConstants.STORAGE.WS_CONNECTED]: false,
     [WPConstants.STORAGE.ACTIVE_BACKEND]: null,
     [WPConstants.STORAGE.ACTIVE_BACKEND_URL]: null,
-  });
+  }).catch(() => {});
 }
 
 function loadIdentity(callback) {
-  chrome.storage.local.get([
+  getExtensionState([
     WPConstants.STORAGE.USER_ID,
     WPConstants.STORAGE.SESSION_ID,
   ], (result) => {
@@ -316,11 +372,12 @@ function waitForRoomState({ onRoom, onError, onTimeout }) {
     callback?.();
   }
 
-  function listener(changes) {
+  function listener(changes, areaName) {
     if (resolved) return;
+    if (areaName !== 'session') return;
     if (changes[WPConstants.STORAGE.ROOM_STATE]?.newValue) {
       finish(() => {
-        chrome.storage.local.get(WPConstants.STORAGE.USER_ID, (result) => {
+        getExtensionState(WPConstants.STORAGE.USER_ID, (result) => {
           onRoom(changes[WPConstants.STORAGE.ROOM_STATE].newValue, result[WPConstants.STORAGE.USER_ID]);
         });
       });
@@ -396,12 +453,9 @@ chrome.runtime.sendMessage(
 );
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
-  if (areaName === 'local') {
+  if (areaName === 'session') {
     if (changes[WPConstants.STORAGE.USER_ID]) {
       currentUserId = changes[WPConstants.STORAGE.USER_ID].newValue || null;
-    }
-    if (changes[WPConstants.STORAGE.SESSION_ID]) {
-      currentSessionId = changes[WPConstants.STORAGE.SESSION_ID].newValue || null;
     }
     if (changes[WPConstants.STORAGE.ROOM_STATE]) {
       const nextRoom = changes[WPConstants.STORAGE.ROOM_STATE].newValue || null;
@@ -413,12 +467,8 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
         showLobbyView();
       }
     }
-
     if (changes[WPConstants.STORAGE.WS_CONNECTED]) {
       currentWsConnected = !!changes[WPConstants.STORAGE.WS_CONNECTED].newValue;
-    }
-    if (changes[WPConstants.STORAGE.BACKEND_MODE]) {
-      currentBackendMode = WPConstants.BACKEND.normalizeMode(changes[WPConstants.STORAGE.BACKEND_MODE].newValue);
     }
     if (changes[WPConstants.STORAGE.ACTIVE_BACKEND]) {
       currentActiveBackend = getKnownBackendKey(changes[WPConstants.STORAGE.ACTIVE_BACKEND].newValue);
@@ -428,8 +478,19 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     }
     renderBackendControls();
     setWsStatus(currentWsConnected);
+    return;
   }
 
+  if (areaName === 'local') {
+    if (changes[WPConstants.STORAGE.SESSION_ID]) {
+      currentSessionId = changes[WPConstants.STORAGE.SESSION_ID].newValue || null;
+    }
+    if (changes[WPConstants.STORAGE.BACKEND_MODE]) {
+      currentBackendMode = WPConstants.BACKEND.normalizeMode(changes[WPConstants.STORAGE.BACKEND_MODE].newValue);
+      renderBackendControls();
+      setWsStatus(currentWsConnected);
+    }
+  }
 });
 
 document.querySelectorAll('#backend-toggle .backend-btn').forEach((btn) => {
@@ -463,23 +524,17 @@ function showRoomView(room, myUserId) {
   });
 }
 
-function renderRoomDetails(room, myUserId, mySessionId) {
-  // Match identity by userId OR sessionId (multi-tab: client IDs differ but sessionId is shared)
-  function isMe(uid) {
-    if (uid === myUserId) return true;
-    if (!mySessionId || !room.users) return false;
-    const u = room.users.find(u => u.id === uid);
-    return u?.sessionId === mySessionId;
-  }
+  function renderRoomDetails(room, myUserId, mySessionId) {
+    // Match identity by userId OR sessionId (multi-tab: client IDs differ but sessionId is shared)
+    function isMe(uid) {
+      const user = WPUtils.getMatchingRoomUser(room, uid, null);
+      return WPUtils.isCurrentSessionUser(user || { id: uid }, myUserId, mySessionId);
+    }
 
   // Resolve host status: owner ID may be orphaned after WS reconnect/dedup.
   // If the owner ID isn't in the users list, check if we're the only matching session.
   function amIHost() {
-    if (isMe(room.owner)) return true;
-    // Owner ID is stale (not in users list) — check if any user with our session exists
-    const ownerInList = room.users?.some(u => u.id === room.owner);
-    if (!ownerInList && room.users?.some(u => isMe(u.id))) return true;
-    return false;
+    return WPUtils.isCurrentSessionOwner(room, myUserId, mySessionId);
   }
 
   $('room-id-display').textContent = room.id;

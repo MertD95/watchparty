@@ -22,6 +22,68 @@ const stats = { bytesProxied: 0, requestsProxied: 0, lastLatencyMs: 0 };
 const knownStremioTabIds = new Set();
 const knownWatchPartyTabIds = new Set();
 let offscreenDocumentPromise = null;
+const SESSION_RUNTIME_KEYS = new Set([
+  ...WPConstants.STORAGE_CONTRACT.SESSION_RUNTIME,
+  ...WPConstants.STORAGE_CONTRACT.BOOTSTRAP_SESSION,
+]);
+
+function normalizeStorageKeyList(keys) {
+  return Array.isArray(keys) ? keys.filter(Boolean) : [keys].filter(Boolean);
+}
+
+async function getExtensionState(keys) {
+  const keyList = normalizeStorageKeyList(keys);
+  if (keyList.length === 0) return {};
+
+  const sessionKeys = keyList.filter((key) => SESSION_RUNTIME_KEYS.has(key));
+  const localKeys = keyList.filter((key) => !SESSION_RUNTIME_KEYS.has(key));
+
+  const [sessionValues, localValues, fallbackValues] = await Promise.all([
+    sessionKeys.length > 0 ? chrome.storage.session.get(sessionKeys).catch(() => ({})) : Promise.resolve({}),
+    localKeys.length > 0 ? chrome.storage.local.get(localKeys).catch(() => ({})) : Promise.resolve({}),
+    sessionKeys.length > 0 ? chrome.storage.local.get(sessionKeys).catch(() => ({})) : Promise.resolve({}),
+  ]);
+
+  const migratedValues = {};
+  for (const key of sessionKeys) {
+    if (sessionValues[key] !== undefined || fallbackValues[key] === undefined) continue;
+    migratedValues[key] = fallbackValues[key];
+  }
+
+  if (Object.keys(migratedValues).length > 0) {
+    chrome.storage.session.set(migratedValues).catch(() => {});
+    chrome.storage.local.remove(Object.keys(migratedValues)).catch(() => {});
+  }
+
+  return { ...localValues, ...fallbackValues, ...sessionValues };
+}
+
+async function setExtensionState(values) {
+  if (!values || typeof values !== 'object') return;
+  const sessionValues = {};
+  const localValues = {};
+  for (const [key, value] of Object.entries(values)) {
+    if (SESSION_RUNTIME_KEYS.has(key)) sessionValues[key] = value;
+    else localValues[key] = value;
+  }
+  await Promise.all([
+    Object.keys(localValues).length > 0 ? chrome.storage.local.set(localValues).catch(() => {}) : Promise.resolve(),
+    Object.keys(sessionValues).length > 0 ? chrome.storage.session.set(sessionValues).catch(() => {}) : Promise.resolve(),
+  ]);
+  if (Object.keys(sessionValues).length > 0) {
+    chrome.storage.local.remove(Object.keys(sessionValues)).catch(() => {});
+  }
+}
+
+async function removeExtensionState(keys) {
+  const keyList = normalizeStorageKeyList(keys);
+  if (keyList.length === 0) return;
+  const sessionKeys = keyList.filter((key) => SESSION_RUNTIME_KEYS.has(key));
+  await Promise.all([
+    chrome.storage.local.remove(keyList).catch(() => {}),
+    sessionKeys.length > 0 ? chrome.storage.session.remove(sessionKeys).catch(() => {}) : Promise.resolve(),
+  ]);
+}
 
 // ── Stremio server detection ──
 
@@ -214,18 +276,22 @@ async function hasStremioTabs() {
 }
 
 async function clearBootstrapRoomIntent() {
-  await chrome.storage.local.remove(WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT);
+  await removeExtensionState(WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT);
 }
 
 async function stageBootstrapRoomIntent(intent) {
   const normalizedIntent = WPConstants.BOOTSTRAP_ROOM_INTENT.normalize(intent);
   if (!normalizedIntent) throw new Error('Invalid bootstrap room intent');
-  await chrome.storage.local.set({ [WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT]: normalizedIntent });
+  await setExtensionState({ [WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT]: normalizedIntent });
 }
 
 async function getBootstrapRoomIntent() {
-  const result = await chrome.storage.local.get(WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT);
-  return WPConstants.BOOTSTRAP_ROOM_INTENT.normalize(result[WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT]);
+  const result = await getExtensionState(WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT);
+  const normalized = WPConstants.BOOTSTRAP_ROOM_INTENT.normalize(result[WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT]);
+  if (!normalized && result[WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT] !== undefined) {
+    await clearBootstrapRoomIntent();
+  }
+  return normalized;
 }
 
 async function relayLiveRoomAction(message) {
@@ -238,7 +304,7 @@ async function relayLiveRoomAction(message) {
 }
 
 async function removeStorageKeys(keys) {
-  await chrome.storage.local.remove(keys);
+  await removeExtensionState(keys);
 }
 
 async function cacheRoomKey(roomId, roomKey) {
@@ -283,7 +349,7 @@ async function openSidebarOnTab(tab, panel) {
 }
 
 async function resolveBrowseUrl() {
-  const result = await chrome.storage.local.get([
+  const result = await getExtensionState([
     WPConstants.STORAGE.BACKEND_MODE,
     WPConstants.STORAGE.ACTIVE_BACKEND,
   ]);
@@ -369,7 +435,7 @@ async function copyToClipboard(text) {
 
 async function resumeRoomInStremio() {
   const stremioTabs = await getStremioTabs();
-  const result = await chrome.storage.local.get([
+  const result = await getExtensionState([
     WPConstants.STORAGE.ROOM_STATE,
     WPConstants.STORAGE.CURRENT_ROOM,
   ]);
@@ -393,7 +459,7 @@ const messageHandlers = {
   'get-status': (_m, _s, sendResponse) => respondAsync(sendResponse, async () => {
     const stremioTabs = await getStremioTabs();
     const hasStremioTab = stremioTabs.length > 0;
-    const result = await chrome.storage.local.get([
+    const result = await getExtensionState([
       WPConstants.STORAGE.STREMIO_PROFILE,
       WPConstants.STORAGE.ROOM_STATE,
       WPConstants.STORAGE.USER_ID,
@@ -428,7 +494,7 @@ const messageHandlers = {
     };
     if ('activeBackend' in m) connectionState[WPConstants.STORAGE.ACTIVE_BACKEND] = m.activeBackend || null;
     if ('activeBackendUrl' in m) connectionState[WPConstants.STORAGE.ACTIVE_BACKEND_URL] = m.activeBackendUrl || null;
-    chrome.storage.local.set(connectionState).catch(() => {});
+    setExtensionState(connectionState).catch(() => {});
     updateBadge();
   },
   'chat-message': (m) => relayToPanel('chat-message', m.payload),
@@ -459,7 +525,7 @@ const messageHandlers = {
       if (m.roomKey) {
         await cacheRoomKey(m.roomId, m.roomKey);
       }
-      await chrome.storage.local.set(updates);
+      await setExtensionState(updates);
       await clearBootstrapRoomIntent();
       await forwardToStremioTab(m);
       return { ok: true, openedStremio: false };
@@ -475,7 +541,7 @@ const messageHandlers = {
       WPConstants.STORAGE.ROOM_STATE,
       WPConstants.STORAGE.DEFERRED_LEAVE_ROOM,
     ]);
-    await chrome.storage.local.set(updates);
+    await setExtensionState(updates);
     await stageBootstrapRoomIntent(WPConstants.BOOTSTRAP_ROOM_INTENT.buildJoin(m));
     return { ok: true, openedStremio: false, staged: true, needsStremio: true };
   }),
@@ -731,6 +797,7 @@ chrome.runtime.onInstalled.addListener(async (details) => {
 
 checkStremio();
 fetchStremioSettings();
+chrome.storage.session?.setAccessLevel?.({ accessLevel: 'TRUSTED_AND_UNTRUSTED_CONTEXTS' }).catch(() => {});
 setInterval(checkStremio, POLL_INTERVAL_MS);
 // Dev-only: auto-reload on file changes (no update_url = unpacked/dev extension)
 if (!('update_url' in chrome.runtime.getManifest())) connectDevReload();

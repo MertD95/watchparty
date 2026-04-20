@@ -5,7 +5,24 @@ const $ = (id) => document.getElementById(id);
 let lastStatus = null;
 let refreshTimer = null;
 let backendMutationInFlight = false;
+let recoveryMutationInFlight = false;
 let didInit = false;
+const SESSION_RUNTIME_KEYS = new Set([
+  ...WPConstants.STORAGE_CONTRACT.SESSION_RUNTIME,
+  ...WPConstants.STORAGE_CONTRACT.BOOTSTRAP_SESSION,
+  ...WPConstants.STORAGE_CONTRACT.SENSITIVE_SESSION,
+]);
+const ROOM_KEY_PREFIX = 'wpRoomKey:';
+const RECOVERY_RESET_LOCAL_KEYS = [
+  WPConstants.STORAGE.USERNAME,
+  WPConstants.STORAGE.SESSION_ID,
+  WPConstants.STORAGE.STREMIO_PROFILE,
+];
+const RECOVERY_RESET_SESSION_KEYS = [
+  ...WPConstants.STORAGE_CONTRACT.SESSION_RUNTIME,
+  ...WPConstants.STORAGE_CONTRACT.BOOTSTRAP_SESSION,
+  ...WPConstants.STORAGE_CONTRACT.SENSITIVE_SESSION,
+];
 
 function setText(id, value) {
   const el = $(id);
@@ -26,6 +43,81 @@ function setBackendFeedback(message = '', tone = '') {
   el.textContent = message;
   el.className = 'backend-feedback';
   if (tone) el.classList.add(tone);
+}
+
+function setRecoveryFeedback(message = '', tone = '') {
+  const el = $('recovery-feedback');
+  if (!el) return;
+  el.textContent = message;
+  el.className = 'backend-feedback';
+  if (tone) el.classList.add(tone);
+}
+
+function normalizeStorageKeyList(keys) {
+  return Array.isArray(keys) ? keys.filter(Boolean) : [keys].filter(Boolean);
+}
+
+function getExtensionState(keys) {
+  const keyList = normalizeStorageKeyList(keys);
+  if (keyList.length === 0) return Promise.resolve({});
+
+  const sessionKeys = keyList.filter((key) => SESSION_RUNTIME_KEYS.has(key));
+  const localKeys = keyList.filter((key) => !SESSION_RUNTIME_KEYS.has(key));
+
+  return Promise.all([
+    sessionKeys.length > 0 ? chrome.storage.session.get(sessionKeys).catch(() => ({})) : Promise.resolve({}),
+    localKeys.length > 0 ? chrome.storage.local.get(localKeys).catch(() => ({})) : Promise.resolve({}),
+    sessionKeys.length > 0 ? chrome.storage.local.get(sessionKeys).catch(() => ({})) : Promise.resolve({}),
+  ]).then(([sessionValues, localValues, fallbackValues]) => {
+    const migratedValues = {};
+    for (const key of sessionKeys) {
+      if (sessionValues[key] !== undefined || fallbackValues[key] === undefined) continue;
+      migratedValues[key] = fallbackValues[key];
+    }
+    if (Object.keys(migratedValues).length > 0) {
+      chrome.storage.session.set(migratedValues).catch(() => {});
+      chrome.storage.local.remove(Object.keys(migratedValues)).catch(() => {});
+    }
+    return { ...localValues, ...fallbackValues, ...sessionValues };
+  });
+}
+
+function removeExtensionState(keys) {
+  const keyList = normalizeStorageKeyList(keys);
+  if (keyList.length === 0) return Promise.resolve();
+  const sessionKeys = keyList.filter((key) => SESSION_RUNTIME_KEYS.has(key));
+  return Promise.all([
+    chrome.storage.local.remove(keyList).catch(() => {}),
+    sessionKeys.length > 0 ? chrome.storage.session.remove(sessionKeys).catch(() => {}) : Promise.resolve(),
+  ]).then(() => undefined);
+}
+
+function collectRoomKeyStorageKeys() {
+  return Promise.all([
+    chrome.storage.local.get(null).catch(() => ({})),
+    chrome.storage.session.get(null).catch(() => ({})),
+  ]).then(([localValues, sessionValues]) => {
+    const localKeys = Object.keys(localValues).filter((key) => key.startsWith(ROOM_KEY_PREFIX));
+    const sessionKeys = Object.keys(sessionValues).filter((key) => key.startsWith(ROOM_KEY_PREFIX));
+    return { localKeys, sessionKeys };
+  });
+}
+
+function copyTextToClipboard(text) {
+  const value = String(text || '');
+  if (!value) return Promise.resolve(false);
+  return chrome.runtime.sendMessage({
+    type: 'watchparty-ext',
+    action: 'copy-to-clipboard',
+    text: value,
+  }).then((response) => response?.ok === true).catch(async () => {
+    try {
+      await navigator.clipboard.writeText(value);
+      return true;
+    } catch {
+      return false;
+    }
+  });
 }
 
 function setBackendButtonsState(selectedMode, options = {}) {
@@ -137,6 +229,148 @@ async function refreshStatus() {
   }
 }
 
+function buildDiagnosticsText(status) {
+  const room = status?.room || null;
+  const lines = [
+    `WatchParty Diagnostics`,
+    `Generated: ${new Date().toISOString()}`,
+    `Extension version: ${chrome.runtime.getManifest().version}`,
+    `Background build: ${status?.bgVersion || '-'}`,
+    `Backend mode: ${WPConstants.BACKEND.normalizeMode(status?.backendMode)}`,
+    `Active backend: ${status?.activeBackend || '-'}`,
+    `Backend URL: ${status?.activeBackendUrl || '-'}`,
+    `WebSocket connected: ${status?.wsConnected ? 'yes' : 'no'}`,
+    `Stremio detected: ${status?.stremioRunning ? 'yes' : 'no'}`,
+    `Stremio tab available: ${status?.hasStremioTab ? 'yes' : 'no'}`,
+    `Bootstrap pending: ${status?.bootstrapPending ? 'yes' : 'no'}`,
+    `Room active: ${room ? 'yes' : 'no'}`,
+  ];
+  if (room) {
+    lines.push(
+      `Room id: ${room.id}`,
+      `Room name: ${getRoomDisplayName(status)}`,
+      `Room visibility: ${room.public === false ? 'private' : 'public'}`,
+      `Room users: ${Array.isArray(room.users) ? room.users.length : 0}`
+    );
+  }
+  return lines.join('\n');
+}
+
+async function runRecoveryAction(buttonId, work, messages) {
+  if (recoveryMutationInFlight) return;
+  const button = $(buttonId);
+  const originalLabel = button?.textContent || '';
+  recoveryMutationInFlight = true;
+  if (button) {
+    button.disabled = true;
+    button.textContent = messages.pendingLabel || originalLabel;
+  }
+  setRecoveryFeedback(messages.pendingMessage || 'Applying recovery action...', 'warn');
+  try {
+    const count = await work();
+    setRecoveryFeedback(
+      typeof count === 'number' && messages.successWithCount
+        ? messages.successWithCount(count)
+        : (messages.successMessage || 'Recovery action complete.'),
+      'success'
+    );
+    await refreshStatus();
+  } catch {
+    setRecoveryFeedback(messages.errorMessage || 'Recovery action failed.', 'warn');
+  } finally {
+    recoveryMutationInFlight = false;
+    if (button) {
+      button.disabled = false;
+      button.textContent = originalLabel;
+    }
+  }
+}
+
+async function clearBootstrapHandoff() {
+  await removeExtensionState([
+    WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT,
+    WPConstants.STORAGE.DEFERRED_LEAVE_ROOM,
+    WPConstants.STORAGE.CURRENT_ROOM,
+    WPConstants.STORAGE.ROOM_STATE,
+    WPConstants.STORAGE.USER_ID,
+    WPConstants.STORAGE.WS_CONNECTED,
+    WPConstants.STORAGE.ACTIVE_BACKEND,
+    WPConstants.STORAGE.ACTIVE_BACKEND_URL,
+    WPConstants.STORAGE.ACTIVE_VIDEO_TAB,
+  ]);
+  return 1;
+}
+
+async function clearRoomKeys() {
+  const { localKeys, sessionKeys } = await collectRoomKeyStorageKeys();
+  await Promise.all([
+    localKeys.length > 0 ? chrome.storage.local.remove(localKeys).catch(() => {}) : Promise.resolve(),
+    sessionKeys.length > 0 ? chrome.storage.session.remove(sessionKeys).catch(() => {}) : Promise.resolve(),
+  ]);
+  return new Set([...localKeys, ...sessionKeys]).size;
+}
+
+async function resetWatchPartyState() {
+  const { localKeys, sessionKeys } = await collectRoomKeyStorageKeys();
+  await removeExtensionState([...RECOVERY_RESET_LOCAL_KEYS, ...RECOVERY_RESET_SESSION_KEYS, ...localKeys]);
+  if (sessionKeys.length > 0) {
+    await chrome.storage.session.remove(sessionKeys).catch(() => {});
+  }
+  return RECOVERY_RESET_LOCAL_KEYS.length + RECOVERY_RESET_SESSION_KEYS.length + new Set([...localKeys, ...sessionKeys]).size;
+}
+
+function bindRecoveryButtons() {
+  $('btn-clear-bootstrap')?.addEventListener('click', () => {
+    runRecoveryAction('btn-clear-bootstrap', clearBootstrapHandoff, {
+      pendingLabel: 'Clearing...',
+      pendingMessage: 'Clearing staged handoff and room runtime state...',
+      successMessage: 'Cleared staged handoff and runtime room state.',
+      errorMessage: 'Could not clear staged handoff state.',
+    }).catch(() => {});
+  });
+
+  $('btn-clear-room-keys')?.addEventListener('click', () => {
+    runRecoveryAction('btn-clear-room-keys', clearRoomKeys, {
+      pendingLabel: 'Clearing...',
+      pendingMessage: 'Removing cached room keys from local and session storage...',
+      successWithCount: (count) => count > 0
+        ? `Cleared ${count} cached room key${count === 1 ? '' : 's'}.`
+        : 'No cached room keys were stored.',
+      errorMessage: 'Could not clear cached room keys.',
+    }).catch(() => {});
+  });
+
+  $('btn-reset-runtime')?.addEventListener('click', () => {
+    runRecoveryAction('btn-reset-runtime', resetWatchPartyState, {
+      pendingLabel: 'Resetting...',
+      pendingMessage: 'Resetting WatchParty session identity, runtime state, auth, and invite caches...',
+      successMessage: 'Reset WatchParty local and session state while keeping backend mode and appearance preferences.',
+      errorMessage: 'Could not reset WatchParty state.',
+    }).catch(() => {});
+  });
+
+  $('btn-copy-diagnostics')?.addEventListener('click', async () => {
+    if (recoveryMutationInFlight) return;
+    const button = $('btn-copy-diagnostics');
+    const originalLabel = button?.textContent || '';
+    if (button) {
+      button.disabled = true;
+      button.textContent = 'Copying...';
+    }
+    setRecoveryFeedback('Collecting extension diagnostics...', 'warn');
+    try {
+      if (!lastStatus) await refreshStatus();
+      const copied = await copyTextToClipboard(buildDiagnosticsText(lastStatus));
+      setRecoveryFeedback(copied ? 'Diagnostics copied to the clipboard.' : 'Could not copy diagnostics right now.', copied ? 'success' : 'warn');
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.textContent = originalLabel;
+      }
+    }
+  });
+}
+
 function openWatchParty() {
   const browseUrl = WPConstants.BACKEND.getBrowseUrl(lastStatus?.backendMode, lastStatus?.activeBackend);
   chrome.tabs.create({ url: browseUrl });
@@ -201,6 +435,7 @@ function init() {
   if (didInit) return;
   didInit = true;
   bindBackendButtons();
+  bindRecoveryButtons();
   $('btn-open-watchparty').addEventListener('click', openWatchParty);
   $('btn-open-stremio').addEventListener('click', openStremio);
   $('btn-resume-room').addEventListener('click', () => { resumeRoom().catch(() => {}); });
@@ -220,16 +455,23 @@ function init() {
     }
   });
 
-  chrome.storage.onChanged.addListener((changes) => {
-    if (
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    const localKeysChanged = areaName === 'local' && (
       changes[WPConstants.STORAGE.BACKEND_MODE]
-      || changes[WPConstants.STORAGE.ACTIVE_BACKEND]
+      || changes[WPConstants.STORAGE.USERNAME]
+      || changes[WPConstants.STORAGE.SESSION_ID]
+    );
+    const sessionKeysChanged = areaName === 'session' && (
+      changes[WPConstants.STORAGE.ACTIVE_BACKEND]
       || changes[WPConstants.STORAGE.ACTIVE_BACKEND_URL]
       || changes[WPConstants.STORAGE.WS_CONNECTED]
       || changes[WPConstants.STORAGE.ROOM_STATE]
       || changes[WPConstants.STORAGE.CURRENT_ROOM]
       || changes[WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT]
-    ) {
+      || changes[WPConstants.STORAGE.DEFERRED_LEAVE_ROOM]
+      || changes[WPConstants.STORAGE.ACTIVE_VIDEO_TAB]
+    );
+    if (localKeysChanged || sessionKeysChanged) {
       refreshStatus().catch(() => {});
     }
   });

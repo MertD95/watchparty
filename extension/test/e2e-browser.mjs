@@ -281,6 +281,141 @@ async function testOptionsSurfaceShowsBackendFeedback() {
   }
 }
 
+async function testOptionsRecoveryToolsClearOnlyRuntimeState() {
+  console.log('\n── Test: Options recovery tools clear staged runtime state without wiping durable prefs ──');
+  const context = await launchWithExtension();
+  try {
+    const extId = await getExtensionId(context);
+    const options = await openOptions(context, extId);
+
+    await options.evaluate(async () => {
+      const roomKeyLocal = 'wpRoomKey:recovery-local-room';
+      const roomKeySession = 'wpRoomKey:recovery-session-room';
+      await chrome.storage.local.set({
+        wpBackendMode: 'live',
+        wpAccentColor: '#112233',
+        wpUsername: 'RecoveryHost',
+        wpSessionId: '11111111-1111-4111-8111-111111111111',
+        [roomKeyLocal]: { value: 'local-room-key-123456', storedAt: Date.now() },
+      });
+      await chrome.storage.session.set({
+        wpBootstrapRoomIntent: {
+          action: 'join-room',
+          roomId: 'recovery-room',
+          username: 'RecoveryHost',
+          requestedAt: Date.now(),
+        },
+        currentRoom: 'recovery-room',
+        wpRoomState: {
+          id: 'recovery-room',
+          name: 'Recovery Room',
+          public: false,
+          users: [{ id: 'me', name: 'RecoveryHost', sessionId: '11111111-1111-4111-8111-111111111111' }],
+          owner: 'me',
+          ownerSessionId: '11111111-1111-4111-8111-111111111111',
+          player: { paused: true, buffering: true, time: 0 },
+          settings: { autoPauseOnDisconnect: true },
+        },
+        wpDeferredLeaveRoom: {
+          roomId: 'recovery-room',
+          requestedAt: Date.now(),
+        },
+        wpActiveVideoTab: {
+          leaseId: 'lease-recovery',
+          tabId: 7,
+          sessionId: '11111111-1111-4111-8111-111111111111',
+          claimedAt: Date.now(),
+        },
+        savedAuthKey: 'auth-key-fixture',
+        [roomKeySession]: 'session-room-key-654321',
+      });
+    });
+
+    await options.click('#btn-clear-bootstrap');
+    const bootstrapCleared = await options.waitForFunction(() => {
+      const feedback = document.getElementById('recovery-feedback')?.textContent || '';
+      return feedback.includes('Cleared staged handoff');
+    }, { timeout: TIMEOUT }).then(() => true).catch(() => false);
+    assert(bootstrapCleared, 'Options recovery clears staged handoff/runtime state');
+
+    const postBootstrapState = await options.evaluate(async () => {
+      const localValues = await chrome.storage.local.get([
+        'wpBackendMode',
+        'wpAccentColor',
+      ]);
+      const sessionValues = await chrome.storage.session.get([
+        'wpBootstrapRoomIntent',
+        'currentRoom',
+        'wpRoomState',
+        'wpDeferredLeaveRoom',
+        'wpActiveVideoTab',
+      ]);
+      return { localValues, sessionValues };
+    });
+    assert(postBootstrapState.localValues.wpBackendMode === 'live', 'Clear Staged Handoff keeps backend mode');
+    assert(postBootstrapState.localValues.wpAccentColor === '#112233', 'Clear Staged Handoff keeps appearance prefs');
+    assert(Object.values(postBootstrapState.sessionValues).every((value) => value === undefined), 'Clear Staged Handoff removes staged/session runtime markers');
+
+    await options.click('#btn-clear-room-keys');
+    const roomKeysCleared = await options.waitForFunction(() => {
+      const feedback = document.getElementById('recovery-feedback')?.textContent || '';
+      return feedback.includes('room key') || feedback.includes('No cached room keys');
+    }, { timeout: TIMEOUT }).then(() => true).catch(() => false);
+    assert(roomKeysCleared, 'Options recovery clears cached room keys');
+
+    const keyState = await options.evaluate(async () => {
+      const local = await chrome.storage.local.get(null);
+      const session = await chrome.storage.session.get(null);
+      return {
+        localKeys: Object.keys(local).filter((key) => key.startsWith('wpRoomKey:')),
+        sessionKeys: Object.keys(session).filter((key) => key.startsWith('wpRoomKey:')),
+      };
+    });
+    assert(keyState.localKeys.length === 0 && keyState.sessionKeys.length === 0, 'Cached room keys are removed from both storage areas');
+
+    await options.click('#btn-reset-runtime');
+    const runtimeReset = await options.waitForFunction(() => {
+      const feedback = document.getElementById('recovery-feedback')?.textContent || '';
+      return feedback.includes('Reset WatchParty');
+    }, { timeout: TIMEOUT }).then(() => true).catch(() => false);
+    assert(runtimeReset, 'Options reset action reports success');
+
+    const resetState = await options.evaluate(async () => {
+      const local = await chrome.storage.local.get([
+        'wpBackendMode',
+        'wpAccentColor',
+        'wpUsername',
+        'wpSessionId',
+      ]);
+      const session = await chrome.storage.session.get([
+        'savedAuthKey',
+        'wpRoomState',
+        'wpBootstrapRoomIntent',
+      ]);
+      return { local, session };
+    });
+    assert(resetState.local.wpBackendMode === 'live', 'Reset WatchParty State preserves backend mode');
+    assert(resetState.local.wpAccentColor === '#112233', 'Reset WatchParty State preserves appearance prefs');
+    assert(resetState.local.wpUsername === undefined, 'Reset WatchParty State clears stored username');
+    assert(resetState.local.wpSessionId === undefined, 'Reset WatchParty State clears stored session identity');
+    assert(resetState.session.savedAuthKey === undefined, 'Reset WatchParty State clears saved auth');
+
+    const diagnosticsCopied = await options.evaluate(async () => {
+      document.getElementById('btn-copy-diagnostics')?.click();
+      await new Promise((resolve) => setTimeout(resolve, 450));
+      return document.getElementById('recovery-feedback')?.textContent || '';
+    });
+    assert(
+      diagnosticsCopied.includes('Diagnostics copied') || diagnosticsCopied.includes('Could not copy diagnostics'),
+      `Options diagnostics action responds with visible feedback: "${diagnosticsCopied}"`
+    );
+
+    await options.close();
+  } finally {
+    await context.close();
+  }
+}
+
 async function testCreateRoomWithoutStremioTabAttachesLater() {
   console.log('\nâ”€â”€ Test: Create room auto-opens Stremio when no tab exists â”€â”€');
   const context = await launchWithExtension();
@@ -358,9 +493,9 @@ async function testPopupHidesStaleInactiveBackgroundRoomState() {
     const extId = await getExtensionId(context);
     let popup = await openPopup(context, extId);
 
-    await popup.evaluate(() => chrome.storage.local.set({
-      [WPConstants.STORAGE.CURRENT_ROOM]: 'stale-room-id',
-      [WPConstants.STORAGE.ROOM_STATE]: {
+    await popup.evaluate(() => chrome.storage.session.set({
+      currentRoom: 'stale-room-id',
+      wpRoomState: {
         id: 'stale-room-id',
         owner: 'stale-owner',
         public: false,
@@ -651,7 +786,7 @@ async function testPopupReloadReadsWrappedLocalRoomKeyFallback() {
       async () => {
         const roomId = document.getElementById('room-id-display')?.textContent;
         if (!roomId) return false;
-        const storageKey = WPConstants.STORAGE.roomKey(roomId);
+        const storageKey = `wpRoomKey:${roomId}`;
         const stored = await chrome.storage.local.get(storageKey);
         return typeof stored?.[storageKey]?.value === 'string' && stored?.[storageKey]?.value.length >= 16
           && typeof stored?.[storageKey]?.storedAt === 'number';
@@ -661,7 +796,7 @@ async function testPopupReloadReadsWrappedLocalRoomKeyFallback() {
 
     const roomState = await popup.evaluate(async () => {
       const roomId = document.getElementById('room-id-display').textContent;
-      const storageKey = WPConstants.STORAGE.roomKey(roomId);
+      const storageKey = `wpRoomKey:${roomId}`;
       const stored = await chrome.storage.local.get(storageKey);
       const roomKey = stored?.[storageKey]?.value || '';
       await chrome.storage.session.remove(storageKey);
@@ -1613,15 +1748,17 @@ async function testPreferDirectJoinOpensPrivatePlayerLocally() {
     const stremio2 = await openStremio(ctx2);
     const extId2 = await getExtensionId(ctx2);
     const popup2 = await openPopup(ctx2, extId2);
-    await popup2.evaluate((pendingRoomId) => chrome.storage.local.set({
-      [WPConstants.STORAGE.USERNAME]: 'Bob',
-      [WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT]: {
-        action: 'join-room',
-        roomId: pendingRoomId,
-        preferDirectJoin: true,
-        requestedAt: Date.now(),
-      },
-    }), roomId);
+    await popup2.evaluate((pendingRoomId) => Promise.all([
+      chrome.storage.local.set({ wpUsername: 'Bob' }),
+      chrome.storage.session.set({
+        wpBootstrapRoomIntent: {
+          action: 'join-room',
+          roomId: pendingRoomId,
+          preferDirectJoin: true,
+          requestedAt: Date.now(),
+        },
+      }),
+    ]), roomId);
 
     const joined = await popup2.waitForFunction(
       () => !document.getElementById('view-room').classList.contains('hidden'),
@@ -1880,6 +2017,7 @@ async function main() {
   const tests = [
     testPopupLoadsWithStatus,
     testOptionsSurfaceShowsBackendFeedback,
+    testOptionsRecoveryToolsClearOnlyRuntimeState,
     testEmptyUsernameValidation,
     testCreateRoomWithoutStremioTabAttachesLater,
     testPopupFirstJoinMissingRoomShowsImmediateError,

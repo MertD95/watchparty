@@ -386,6 +386,20 @@
           <button class="btn-secondary" id="btn-refresh" type="button">Refresh Status</button>
         </div>
       </section>
+
+      <section class="card section">
+        <div class="kicker">Recovery</div>
+        <h2>Repair Local Extension State</h2>
+        <p class="card-copy">These actions only reset browser-side WatchParty state. They do not delete rooms on the server, but they can clear stuck handoffs, cached invite keys, and stale room/runtime state after development or interrupted sessions.</p>
+        <div class="actions">
+          <button class="btn-secondary" id="btn-clear-bootstrap" type="button">Clear Staged Handoff</button>
+          <button class="btn-secondary" id="btn-clear-room-keys" type="button">Clear Room Keys</button>
+          <button class="btn-secondary" id="btn-reset-runtime" type="button">Reset WatchParty State</button>
+          <button class="btn-secondary" id="btn-copy-diagnostics" type="button">Copy Diagnostics</button>
+        </div>
+        <p class="backend-feedback" id="recovery-feedback" aria-live="polite"></p>
+        <p class="card-copy">Reset WatchParty State keeps backend mode and sidebar appearance preferences, but clears session identity, staged room handoffs, cached room snapshots, saved auth, and invite-key caches.</p>
+      </section>
     </div>
   </div>
 

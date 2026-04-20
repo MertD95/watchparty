@@ -24,6 +24,49 @@ const WPUtils = (() => {
     return d.innerHTML;
   }
 
+  function getMatchingRoomUser(room, userId, sessionId) {
+    if (!room?.users?.length) return null;
+    if (userId) {
+      const directMatch = room.users.find((user) => user.id === userId);
+      if (directMatch) return directMatch;
+    }
+    if (sessionId) {
+      return room.users.find((user) => user.sessionId && user.sessionId === sessionId) || null;
+    }
+    return null;
+  }
+
+  function isCurrentSessionUser(user, userId, sessionId) {
+    if (!user) return false;
+    if (userId && user.id === userId) return true;
+    return !!sessionId && !!user.sessionId && user.sessionId === sessionId;
+  }
+
+  function getCanonicalOwnerUser(room) {
+    if (!room?.users?.length) return null;
+    if (room.ownerSessionId) {
+      const ownerBySession = room.users.find((user) => user.sessionId && user.sessionId === room.ownerSessionId);
+      if (ownerBySession) return ownerBySession;
+    }
+    if (room.owner) {
+      const ownerById = room.users.find((user) => user.id === room.owner);
+      if (ownerById) return ownerById;
+    }
+    return null;
+  }
+
+  function isCurrentSessionOwner(room, userId, sessionId) {
+    if (!room) return false;
+    if (room.ownerSessionId && sessionId) return room.ownerSessionId === sessionId;
+    if (room.owner && userId && room.owner === userId) return true;
+    const ownerUser = getCanonicalOwnerUser(room);
+    if (ownerUser?.sessionId && sessionId) return ownerUser.sessionId === sessionId;
+    if (!ownerUser) {
+      return !!getMatchingRoomUser(room, userId, sessionId);
+    }
+    return false;
+  }
+
   async function copyText(text) {
     const value = String(text || '');
     if (!value) return false;
@@ -106,5 +149,16 @@ const WPUtils = (() => {
     }
   }
 
-  return { USER_COLORS, getUserColor, escapeHtml, copyText, copyTextDeferred, copyTextViaExtension };
+  return {
+    USER_COLORS,
+    getUserColor,
+    escapeHtml,
+    getMatchingRoomUser,
+    isCurrentSessionUser,
+    getCanonicalOwnerUser,
+    isCurrentSessionOwner,
+    copyText,
+    copyTextDeferred,
+    copyTextViaExtension,
+  };
 })();

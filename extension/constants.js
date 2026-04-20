@@ -55,9 +55,16 @@ const WPConstants = (() => {
   }
 
   const ROOM_KEY_LOCAL_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+  const BOOTSTRAP_ROOM_INTENT_TTL_MS = 3 * 60 * 1000;
+  const VIDEO_TAB_LEASE_TTL_MS = 15 * 1000;
+  const VIDEO_TAB_LEASE_RENEW_INTERVAL_MS = 5 * 1000;
 
   function normalizeTabId(value) {
     return Number.isInteger(value) && value >= 0 ? value : null;
+  }
+
+  function normalizeRequestedAt(value) {
+    return Number.isFinite(value) && value > 0 ? value : Date.now();
   }
 
   // Chrome storage keys — single source of truth across all extension files
@@ -84,30 +91,34 @@ const WPConstants = (() => {
     roomKey(roomId) { return `wpRoomKey:${roomId}`; },
   });
 
-  // Storage contract — keep durable state and cross-context bootstrap state in storage.
-  // Same-tab "do this right now" commands should stay in memory.
+  // Storage contract — keep long-lived preferences in local storage, runtime room
+  // state in session storage, and same-tab imperative commands in memory.
   const STORAGE_CONTRACT = Object.freeze({
     DURABLE: Object.freeze([
-      STORAGE.ROOM_STATE,
-      STORAGE.USER_ID,
-      STORAGE.WS_CONNECTED,
       STORAGE.BACKEND_MODE,
-      STORAGE.ACTIVE_BACKEND,
-      STORAGE.ACTIVE_BACKEND_URL,
       STORAGE.USERNAME,
       STORAGE.SESSION_ID,
-      STORAGE.CURRENT_ROOM,
       STORAGE.ACCENT_COLOR,
       STORAGE.COMPACT_CHAT,
       STORAGE.REACTION_SOUND,
       STORAGE.FLOATING_REACTIONS,
       STORAGE.STREMIO_PROFILE,
-      STORAGE.SAVED_AUTH_KEY,
+    ]),
+    SESSION_RUNTIME: Object.freeze([
+      STORAGE.ROOM_STATE,
+      STORAGE.USER_ID,
+      STORAGE.WS_CONNECTED,
+      STORAGE.ACTIVE_BACKEND,
+      STORAGE.ACTIVE_BACKEND_URL,
+      STORAGE.CURRENT_ROOM,
       STORAGE.ACTIVE_VIDEO_TAB,
     ]),
-    BOOTSTRAP: Object.freeze([
+    BOOTSTRAP_SESSION: Object.freeze([
       STORAGE.BOOTSTRAP_ROOM_INTENT,
       STORAGE.DEFERRED_LEAVE_ROOM,
+    ]),
+    SENSITIVE_SESSION: Object.freeze([
+      STORAGE.SAVED_AUTH_KEY,
     ]),
     IN_MEMORY_ONLY: Object.freeze([
       'pendingRoomCreateCommand',
@@ -119,6 +130,7 @@ const WPConstants = (() => {
   });
 
   const BOOTSTRAP_ROOM_INTENT = Object.freeze({
+    TTL_MS: BOOTSTRAP_ROOM_INTENT_TTL_MS,
     buildCreate(command = {}) {
       return {
         action: 'create-room',
@@ -128,7 +140,7 @@ const WPConstants = (() => {
         public: command.public === true,
         roomName: typeof command.roomName === 'string' && command.roomName.trim() ? command.roomName.trim() : undefined,
         roomKey: typeof command.roomKey === 'string' && command.roomKey.trim() ? command.roomKey.trim() : undefined,
-        requestedAt: Date.now(),
+        requestedAt: normalizeRequestedAt(command.requestedAt),
       };
     },
     buildJoin(command = {}) {
@@ -140,22 +152,29 @@ const WPConstants = (() => {
         username: typeof command.username === 'string' ? command.username.trim() : '',
         roomKey: typeof command.roomKey === 'string' && command.roomKey.trim() ? command.roomKey.trim() : undefined,
         preferDirectJoin: command.preferDirectJoin === true,
-        requestedAt: Date.now(),
+        requestedAt: normalizeRequestedAt(command.requestedAt),
       };
     },
-    normalize(value) {
+    isExpired(requestedAt, now = Date.now()) {
+      return !Number.isFinite(requestedAt) || requestedAt <= 0 || (now - requestedAt) > BOOTSTRAP_ROOM_INTENT_TTL_MS;
+    },
+    normalize(value, now = Date.now()) {
       if (!value || typeof value !== 'object') return null;
       if (value.action === 'create-room') {
-        return this.buildCreate(value);
+        const normalized = this.buildCreate(value);
+        return this.isExpired(normalized.requestedAt, now) ? null : normalized;
       }
       if (value.action === 'join-room') {
-        return this.buildJoin(value);
+        const normalized = this.buildJoin(value);
+        return this.isExpired(normalized.requestedAt, now) ? null : normalized;
       }
       return null;
     },
   });
 
   const VIDEO_TAB_LEASE = Object.freeze({
+    TTL_MS: VIDEO_TAB_LEASE_TTL_MS,
+    RENEW_INTERVAL_MS: VIDEO_TAB_LEASE_RENEW_INTERVAL_MS,
     build({ leaseId, tabId, sessionId, claimedAt = Date.now() }) {
       if (typeof leaseId !== 'string' || !leaseId.trim()) return null;
       return {
@@ -178,6 +197,14 @@ const WPConstants = (() => {
     isOwner(value, leaseId) {
       const normalized = this.normalize(value);
       return !!normalized && normalized.leaseId === leaseId;
+    },
+    isExpired(value, now = Date.now()) {
+      const normalized = this.normalize(value);
+      return !normalized || (now - normalized.claimedAt) > VIDEO_TAB_LEASE_TTL_MS;
+    },
+    shouldRenew(value, now = Date.now()) {
+      const normalized = this.normalize(value);
+      return !normalized || (now - normalized.claimedAt) >= VIDEO_TAB_LEASE_RENEW_INTERVAL_MS;
     },
   });
 

@@ -147,6 +147,7 @@ if (contentCases.size === 0) {
 const overlaySends = extractSentActions(overlaySource, 'stremio-overlay.js');
 const popupSends   = extractSentActions(popupSource, 'popup.js');
 const bridgeSends  = extractSentActions(bridgeSource, 'content.js');
+const optionsSource = readSrc('options.js');
 
 console.log('── Parsed routing table ──');
 console.log(`  background.js cases:       ${[...bgCases].sort().join(', ')}`);
@@ -250,8 +251,16 @@ ok(!bgSource.includes("background-room-service.js"), 'background no longer impor
 ok(constantsSource.includes('BOOTSTRAP_ROOM_INTENT'), 'constants.js defines a bootstrap room-intent contract');
 ok(!constantsSource.includes('ROOM_SERVICE_ACTIVE'), 'constants.js no longer exposes fallback room-service storage flags');
 ok(constantsSource.includes('STORAGE_CONTRACT'), 'constants.js documents the storage contract');
+ok(constantsSource.includes('SESSION_RUNTIME'), 'constants.js defines session-backed runtime storage keys');
+ok(constantsSource.includes('BOOTSTRAP_SESSION'), 'constants.js defines session-backed bootstrap storage keys');
+ok(constantsSource.includes('BOOTSTRAP_ROOM_INTENT_TTL_MS'), 'constants.js defines a bootstrap intent expiry');
 ok(constantsSource.includes('VIDEO_TAB_LEASE'), 'constants.js defines the active video-tab lease contract');
+ok(constantsSource.includes('VIDEO_TAB_LEASE_TTL_MS'), 'constants.js defines an active video-tab lease expiry');
+ok(constantsSource.includes('RENEW_INTERVAL_MS'), 'constants.js defines active video-tab lease renewal timing');
 ok(!contentSource.includes('[WPConstants.STORAGE.ACTIVE_VIDEO_TAB]: userId'), 'stremio-content no longer stores active video ownership as a raw userId');
+ok(bgSource.includes('setAccessLevel'), 'background exposes session storage to untrusted contexts for content scripts');
+ok(optionsSource.includes('btn-clear-bootstrap'), 'options.js wires staged handoff recovery controls');
+ok(optionsSource.includes('btn-copy-diagnostics'), 'options.js wires diagnostics copy recovery controls');
 
 // ══════════════════════════════════════════════════
 // Protocol Completeness Tests (wp-protocol.js)
