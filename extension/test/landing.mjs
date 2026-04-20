@@ -168,6 +168,7 @@ async function main() {
 
   await page.addInitScript(() => {
     window.__joinMessages = [];
+    window.__bridgeMessages = [];
     window.__navTargets = [];
     window.__alerts = [];
     window.__sseEvents = [];
@@ -192,6 +193,14 @@ async function main() {
     window.addEventListener('message', (event) => {
       if (event.data?.type === 'watchparty-join-room') {
         window.__joinMessages.push(event.data);
+      }
+      if ([
+        'watchparty-create-room',
+        'watchparty-open-stremio',
+        'watchparty-resume-room',
+        'watchparty-open-options',
+      ].includes(event.data?.type)) {
+        window.__bridgeMessages.push(event.data);
       }
       if (event.data?.type === 'watchparty-ext-request' && event.data.action === 'get-status') {
         window.postMessage({
@@ -248,6 +257,31 @@ async function main() {
 
     await page.fill('#profile-name-input', 'Tester');
 
+    await page.evaluate(() => {
+      window.__bridgeMessages = [];
+      window.__navTargets = [];
+    });
+    await page.click('#hero-primary-btn');
+    const createModalOpened = await page.waitForFunction(
+      () => getComputedStyle(document.getElementById('create-modal')).display !== 'none',
+      { timeout: 3000 }
+    ).then(() => true).catch(() => false);
+    ok(createModalOpened, 'landing opens the create-room modal from the hero action');
+    await page.fill('#create-room-name', 'team-room');
+    await page.click('#create-room-public');
+    await page.click('#create-submit-btn');
+    await page.waitForFunction(() => window.__bridgeMessages.length >= 2, { timeout: 3000 });
+    const createAction = await page.evaluate(() => ({
+      createMessage: window.__bridgeMessages.find((entry) => entry.type === 'watchparty-create-room') || null,
+      openMessage: window.__bridgeMessages.find((entry) => entry.type === 'watchparty-open-stremio') || null,
+      navTarget: window.__navTargets[0] || null,
+    }));
+    ok(createAction.createMessage?.username === 'Tester', 'Create Room carries the website display name into the extension bridge');
+    ok(createAction.createMessage?.roomName === 'team-room', 'Create Room forwards the chosen room name');
+    ok(createAction.createMessage?.public === true, 'Create Room forwards the selected privacy mode');
+    ok(createAction.openMessage?.url === 'https://web.stremio.com', 'Create Room asks the extension background to open or focus Stremio');
+    ok(createAction.navTarget == null, 'Create Room keeps the landing page in place while the extension hands off to Stremio');
+
     const initialRoomNodeToken = await page.evaluate(() => {
       const card = document.querySelector('.room-card[data-room-id="room-1"]') || document.querySelector('.room-card');
       card.__nodeToken = card.__nodeToken || 'room-1-stable-node';
@@ -289,22 +323,26 @@ async function main() {
 
     await page.evaluate(() => {
       window.__joinMessages = [];
+      window.__bridgeMessages = [];
       window.__navTargets = [];
       window.__alerts = [];
     });
     await page.click('.room-card .room-join-btn');
-    await page.waitForFunction(() => window.__joinMessages.length > 0 && window.__navTargets.length > 0, { timeout: 3000 });
+    await page.waitForFunction(() => window.__joinMessages.length > 0 && window.__bridgeMessages.some((entry) => entry.type === 'watchparty-open-stremio'), { timeout: 3000 });
     const roomJoinAction = await page.evaluate(() => ({
       joinMessage: window.__joinMessages[0] || null,
+      openMessage: window.__bridgeMessages.find((entry) => entry.type === 'watchparty-open-stremio') || null,
       navTarget: window.__navTargets[0] || null,
     }));
     ok(roomJoinAction.joinMessage?.roomId === 'room-1', 'Join Room posts the room ID to the extension bridge');
     ok(roomJoinAction.joinMessage?.username === 'Tester', 'Join Room carries the website display name into the extension bridge');
     ok(roomJoinAction.joinMessage?.preferDirectJoin === false, 'Join Room keeps direct-join preference off');
-    ok(roomJoinAction.navTarget === 'https://web.stremio.com/#/detail/movie/tt1375666', 'Join Room navigates to the Stremio title page');
+    ok(roomJoinAction.openMessage?.url === 'https://web.stremio.com/#/detail/movie/tt1375666', 'Join Room asks the extension background to open or focus the Stremio title page');
+    ok(roomJoinAction.navTarget == null, 'Join Room keeps the landing page in place while the extension handles the Stremio tab');
 
     await page.evaluate(() => {
       window.__joinMessages = [];
+      window.__bridgeMessages = [];
       window.__navTargets = [];
       window.__alerts = [];
       window.__watchpartyExtStatus = { hasStremioTab: true };
@@ -313,28 +351,33 @@ async function main() {
     await page.waitForFunction(() => window.__joinMessages.length > 0, { timeout: 3000 });
     const directJoinAction = await page.evaluate(() => ({
       joinMessage: window.__joinMessages[0] || null,
+      openMessage: window.__bridgeMessages.find((entry) => entry.type === 'watchparty-open-stremio') || null,
       navTarget: window.__navTargets[0] || null,
     }));
     ok(directJoinAction.joinMessage?.roomId === 'room-1', 'Direct Join also posts the room ID to the extension bridge');
     ok(directJoinAction.joinMessage?.preferDirectJoin === true, 'Direct Join sets the prefer-direct intent for the extension');
-    ok(directJoinAction.navTarget == null, 'Direct Join keeps the landing page in place when the extension already has a Stremio tab to retarget');
+    ok(directJoinAction.openMessage?.url === 'https://web.stremio.com', 'Direct Join asks the extension background to open or focus Stremio Web');
+    ok(directJoinAction.navTarget == null, 'Direct Join keeps the landing page in place when the extension handles the Stremio tab');
     ok((await page.evaluate(() => window.__alerts.length)) === 0, 'portable Direct Join does not show a warning');
 
     await page.evaluate(() => {
       window.__joinMessages = [];
+      window.__bridgeMessages = [];
       window.__navTargets = [];
       window.__alerts = [];
       window.__watchpartyExtStatus = { hasStremioTab: false };
     });
     await page.click('.room-card .room-direct-btn');
-    await page.waitForFunction(() => window.__joinMessages.length > 0 && window.__navTargets.length > 0, { timeout: 3000 });
+    await page.waitForFunction(() => window.__joinMessages.length > 0 && window.__bridgeMessages.some((entry) => entry.type === 'watchparty-open-stremio'), { timeout: 3000 });
     const directJoinNoTabAction = await page.evaluate(() => ({
       joinMessage: window.__joinMessages[0] || null,
+      openMessage: window.__bridgeMessages.find((entry) => entry.type === 'watchparty-open-stremio') || null,
       navTarget: window.__navTargets[0] || null,
     }));
     ok(directJoinNoTabAction.joinMessage?.roomId === 'room-1', 'Direct Join still posts the room ID when no Stremio tab is open');
     ok(directJoinNoTabAction.joinMessage?.preferDirectJoin === true, 'Direct Join keeps the prefer-direct intent when it needs to bootstrap Stremio');
-    ok(directJoinNoTabAction.navTarget === 'https://web.stremio.com', 'Direct Join falls back to opening Stremio Web when no Stremio tab is available');
+    ok(directJoinNoTabAction.openMessage?.url === 'https://web.stremio.com', 'Direct Join asks the extension background to open Stremio Web when no Stremio tab is available');
+    ok(directJoinNoTabAction.navTarget == null, 'Direct Join no longer navigates the landing page directly');
 
     servers.setRooms([
       {
@@ -417,19 +460,22 @@ async function main() {
 
     await page.evaluate(() => {
       window.__joinMessages = [];
+      window.__bridgeMessages = [];
       window.__navTargets = [];
       window.__alerts = [];
     });
     await page.click('.room-card .room-direct-btn');
-    await page.waitForFunction(() => window.__joinMessages.length > 0 && window.__navTargets.length > 0 && window.__alerts.length > 0, { timeout: 3000 });
+    await page.waitForFunction(() => window.__joinMessages.length > 0 && window.__bridgeMessages.some((entry) => entry.type === 'watchparty-open-stremio') && window.__alerts.length > 0, { timeout: 3000 });
     const debridJoinAction = await page.evaluate(() => ({
       joinMessage: window.__joinMessages[0] || null,
+      openMessage: window.__bridgeMessages.find((entry) => entry.type === 'watchparty-open-stremio') || null,
       navTarget: window.__navTargets[0] || null,
       alertMessage: window.__alerts[0] || null,
     }));
     ok(debridJoinAction.joinMessage?.roomId === 'room-debrid', 'debrid fallback still joins the selected room');
     ok(debridJoinAction.joinMessage?.preferDirectJoin === false, 'debrid fallback does not request direct-play intent');
-    ok(debridJoinAction.navTarget === 'https://web.stremio.com/#/detail/movie/tt0468569', 'debrid fallback navigates to the Stremio title page');
+    ok(debridJoinAction.openMessage?.url === 'https://web.stremio.com/#/detail/movie/tt0468569', 'debrid fallback asks the extension background to open or focus the Stremio title page');
+    ok(debridJoinAction.navTarget == null, 'debrid fallback keeps the landing page in place while the extension handles the tab handoff');
     ok((debridJoinAction.alertMessage || '').includes('choose your own stream'), 'debrid fallback shows a warning before navigating');
 
     servers.setRooms([
@@ -509,6 +555,7 @@ async function main() {
 
     await page.evaluate(() => {
       window.__joinMessages = [];
+      window.__bridgeMessages = [];
       window.__navTargets = [];
       window.__alerts = [];
       window.__watchpartyExtStatus = { hasStremioTab: true };
@@ -521,17 +568,20 @@ async function main() {
     ok(privateJoinModalReady, 'private room Join Room opens the key modal before posting a join');
     await page.fill('#uuid-input', 'invite-private-room-key');
     await page.click('#uuid-submit-btn');
-    await page.waitForFunction(() => window.__joinMessages.length > 0 && window.__navTargets.length > 0, { timeout: 3000 });
+    await page.waitForFunction(() => window.__joinMessages.length > 0 && window.__bridgeMessages.some((entry) => entry.type === 'watchparty-open-stremio'), { timeout: 3000 });
     const privateJoinAction = await page.evaluate(() => ({
       joinMessage: window.__joinMessages[0] || null,
+      openMessage: window.__bridgeMessages.find((entry) => entry.type === 'watchparty-open-stremio') || null,
       navTarget: window.__navTargets[0] || null,
     }));
     ok(privateJoinAction.joinMessage?.roomId === 'room-private', 'private room Join Room posts the listed room ID after key entry');
     ok(privateJoinAction.joinMessage?.roomKey === 'invite-private-room-key', 'private room Join Room forwards the entered room key');
-    ok(privateJoinAction.navTarget === 'https://web.stremio.com/#/detail/movie/tt0133093', 'private room Join Room navigates to the Stremio title page');
+    ok(privateJoinAction.openMessage?.url === 'https://web.stremio.com/#/detail/movie/tt0133093', 'private room Join Room asks the extension background to open or focus the Stremio title page');
+    ok(privateJoinAction.navTarget == null, 'private room Join Room keeps the landing page in place during the handoff');
 
     await page.evaluate(() => {
       window.__joinMessages = [];
+      window.__bridgeMessages = [];
       window.__navTargets = [];
       window.__alerts = [];
       window.__watchpartyExtStatus = { hasStremioTab: true };
@@ -547,11 +597,13 @@ async function main() {
     await page.waitForFunction(() => window.__joinMessages.length > 0, { timeout: 3000 });
     const privateDirectJoinAction = await page.evaluate(() => ({
       joinMessage: window.__joinMessages[0] || null,
+      openMessage: window.__bridgeMessages.find((entry) => entry.type === 'watchparty-open-stremio') || null,
       navTarget: window.__navTargets[0] || null,
     }));
     ok(privateDirectJoinAction.joinMessage?.roomId === 'room-private', 'private room Direct Join posts the listed room ID after key entry');
     ok(privateDirectJoinAction.joinMessage?.roomKey === 'invite-private-room-key', 'private room Direct Join forwards the entered room key');
     ok(privateDirectJoinAction.joinMessage?.preferDirectJoin === true, 'private room Direct Join keeps the direct-play preference');
+    ok(privateDirectJoinAction.openMessage?.url === 'https://web.stremio.com', 'private room Direct Join asks the extension background to open or focus Stremio Web');
     ok(privateDirectJoinAction.navTarget == null, 'private room Direct Join stays on the landing page when the extension has a Stremio tab');
 
     const sseReady = await page.waitForFunction(

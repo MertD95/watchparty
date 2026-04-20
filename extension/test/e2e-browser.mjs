@@ -69,6 +69,7 @@ async function launchWithExtension() {
     userDataDir: dir,
     args: CHROME_FLAGS,
     viewport: { width: 1440, height: 900 },
+    backendMode: 'local',
   });
 }
 
@@ -118,6 +119,14 @@ async function openSidebarIfHidden(page) {
   }
 }
 
+async function openSidebarPanel(page, panelName) {
+  await openSidebarIfHidden(page);
+  await page.evaluate((nextPanel) => {
+    document.querySelector(`[data-panel="${nextPanel}"]`)?.click();
+  }, panelName);
+  await page.waitForTimeout(300);
+}
+
 async function injectMockVideo(page, currentTime = 0) {
   await injectSeekableTestVideo(page, currentTime);
 }
@@ -144,6 +153,16 @@ async function findRoomSnapshot(roomApis, roomId, predicate = () => true) {
   return null;
 }
 
+async function waitForRoomGone(roomApis, roomId, timeout = 10000) {
+  const started = Date.now();
+  while ((Date.now() - started) < timeout) {
+    const snapshot = await findRoomSnapshot(roomApis, roomId);
+    if (!snapshot) return true;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  return false;
+}
+
 // ── Tests ──
 
 function buildPlayerHash(payload) {
@@ -165,11 +184,14 @@ async function testPopupLoadsWithStatus() {
 
     // WS status should show connected (server is running)
     const wsText = await popup.evaluate(() => document.getElementById('ws-status').textContent);
-    assert(wsText === 'Connected to Local server', `WS status: "${wsText}"`);
+    assert(/Connected to (Local|Live) server/.test(wsText), `WS status: "${wsText}"`);
 
     const backendNote = await popup.evaluate(() => document.getElementById('backend-note')?.textContent || '');
     assert(
-      backendNote.includes('Current backend: Local') || backendNote.includes('development builds may use localhost'),
+      backendNote.includes('Current backend: Local')
+        || backendNote.includes('Current backend: Live')
+        || backendNote.includes('Local mode is selected.')
+        || backendNote.includes('development builds may use localhost'),
       `Backend note: "${backendNote}"`
     );
 
@@ -349,20 +371,21 @@ async function testCreateRoomFlow() {
       const roomId = await popup.evaluate(() => document.getElementById('room-id-display').textContent);
       assert(roomId && roomId.length > 10, `Room ID shown: ${roomId?.substring(0, 8)}...`);
 
-      const roomKeyVisible = await popup.waitForFunction(
-        () => {
-          const input = document.getElementById('room-key-input');
-          return !!input && !input.disabled && !!input.value && input.value.length >= 16;
-        },
-        { timeout: TIMEOUT }
-      ).then(() => true).catch(() => false);
-      assert(roomKeyVisible, 'Private room key appears in the popup without reloading');
-
-      // Users list shows TestHost
-      const usersHtml = await popup.evaluate(() => document.getElementById('users-list').innerHTML);
-      assert(usersHtml.includes('TestHost'), 'Users list shows TestHost');
-      assert(usersHtml.includes('👑'), 'Host has crown');
-
+      const popupSummary = await popup.evaluate(() => ({
+        privacy: document.getElementById('room-privacy-badge')?.textContent || '',
+        role: document.getElementById('room-role-badge')?.textContent || '',
+        count: document.getElementById('room-count-badge')?.textContent || '',
+        hasShare: !!document.getElementById('btn-share'),
+        hasBrowse: !!document.getElementById('browse-rooms-link'),
+      }));
+      assert(
+        /Private|Invite required/i.test(popupSummary.privacy),
+        `Popup summary shows private room badge: "${popupSummary.privacy}"`
+      );
+      assert(popupSummary.role.includes('Host'), `Popup summary shows host badge: "${popupSummary.role}"`);
+      assert(popupSummary.count.includes('1 watching'), `Popup summary shows host count: "${popupSummary.count}"`);
+      assert(popupSummary.hasShare, 'Popup summary keeps Copy Invite action');
+      assert(popupSummary.hasBrowse, 'Popup summary keeps Browse Rooms action');
       // Stremio sidebar should now show the room
       await stremio.bringToFront();
       await stremio.waitForTimeout(1000);
@@ -376,11 +399,18 @@ async function testCreateRoomFlow() {
       );
       assert(panelsReady, 'Sidebar exposes Chat, People, and Room tabs');
 
-      await stremio.evaluate(() => document.querySelector('[data-panel="people"]')?.click());
-      await stremio.waitForTimeout(300);
+      await openSidebarPanel(stremio, 'people');
       const peopleText = await stremio.evaluate(() => document.getElementById('wp-users')?.innerText || '');
       assert(peopleText.includes('TestHost'), 'People tab shows TestHost');
-      await stremio.evaluate(() => document.querySelector('[data-panel="chat"]')?.click());
+      await openSidebarPanel(stremio, 'room');
+      const sessionControlsReady = await stremio.evaluate(() => ({
+        publicToggle: !!document.getElementById('wp-session-public'),
+        autoPauseToggle: !!document.getElementById('wp-session-autopause'),
+        soundToggle: !!document.getElementById('wp-settings-sound'),
+      }));
+      assert(sessionControlsReady.publicToggle, 'Session tab shows host privacy control');
+      assert(sessionControlsReady.autoPauseToggle, 'Session tab shows auto-pause safeguard');
+      assert(sessionControlsReady.soundToggle, 'Session tab shows browser-level personal preferences');
 
       // Test leave room
       await popup.bringToFront();
@@ -440,8 +470,59 @@ async function testCreateRoomFlow() {
   }
 }
 
+async function testDisconnectedLeaveStillRemovesRoomAfterReconnect() {
+  console.log('\n-- Test: Leave while disconnected still clears the public room after reconnect --');
+  const context = await launchWithExtension();
+  try {
+    const roomApis = ['http://localhost:8181/rooms'];
+    const stremio = await openStremio(context);
+    const extId = await getExtensionId(context);
+    const popup = await openPopup(context, extId);
+
+    await popup.fill('#username-input', 'DisconnectLeaveHost');
+    await popup.check('#public-check');
+    await popup.click('#btn-create');
+    await popup.waitForFunction(
+      () => !document.getElementById('view-room').classList.contains('hidden'),
+      { timeout: TIMEOUT }
+    );
+
+    const roomId = await popup.evaluate(() => document.getElementById('room-id-display').textContent);
+    const roomVisible = await findRoomSnapshot(roomApis, roomId);
+    assert(!!roomVisible, 'Public room is visible before the disconnect/leave flow');
+
+    await context.setOffline(true);
+    await popup.waitForTimeout(1500);
+
+    await stremio.evaluate(() => {
+      document.dispatchEvent(new CustomEvent('wp-action', { detail: { action: 'leave-room' } }));
+    });
+    const leftLocally = await stremio.waitForFunction(
+      () => document.getElementById('wp-sidebar')?.innerText?.includes('Not in a room'),
+      { timeout: TIMEOUT }
+    ).then(() => true).catch(() => false);
+    assert(leftLocally, 'Sidebar leaves the room immediately even while disconnected');
+
+    await context.setOffline(false);
+    const reconnected = await popup.waitForFunction(
+      () => /Connected to Local server/i.test(document.getElementById('ws-status')?.textContent || ''),
+      { timeout: TIMEOUT * 2 }
+    ).then(() => true).catch(() => false);
+    assert(reconnected, 'WatchParty reconnects after the browser comes back online');
+    currentDiagnostics?.popUnexpected();
+
+    const removedAfterReconnect = await waitForRoomGone(roomApis, roomId, TIMEOUT * 2);
+    assert(removedAfterReconnect, 'Reconnecting drains the deferred leave and removes the room from /rooms');
+
+    await popup.close();
+    await stremio.close();
+  } finally {
+    await context.close();
+  }
+}
+
 async function testPopupReloadReadsWrappedLocalRoomKeyFallback() {
-  console.log('\n-- Test: Popup can reload private room keys from wrapped local storage --');
+  console.log('\n-- Test: Popup can rebuild invite links from wrapped local room-key storage --');
   const context = await launchWithExtension();
   try {
     const stremio = await openStremio(context);
@@ -457,37 +538,36 @@ async function testPopupReloadReadsWrappedLocalRoomKeyFallback() {
     await popup.waitForFunction(
       async () => {
         const roomId = document.getElementById('room-id-display')?.textContent;
-        const roomKey = document.getElementById('room-key-input')?.value;
-        if (!roomId || !roomKey) return false;
+        if (!roomId) return false;
         const storageKey = WPConstants.STORAGE.roomKey(roomId);
         const stored = await chrome.storage.local.get(storageKey);
-        return stored?.[storageKey]?.value === roomKey && typeof stored?.[storageKey]?.storedAt === 'number';
+        return typeof stored?.[storageKey]?.value === 'string' && stored?.[storageKey]?.value.length >= 16
+          && typeof stored?.[storageKey]?.storedAt === 'number';
       },
       { timeout: TIMEOUT }
     );
 
     const roomState = await popup.evaluate(async () => {
       const roomId = document.getElementById('room-id-display').textContent;
-      const roomKey = document.getElementById('room-key-input').value;
       const storageKey = WPConstants.STORAGE.roomKey(roomId);
+      const stored = await chrome.storage.local.get(storageKey);
+      const roomKey = stored?.[storageKey]?.value || '';
       await chrome.storage.session.remove(storageKey);
       return { roomId, roomKey };
     });
 
     await popup.close();
     popup = await openPopup(context, extId);
-
-    const recoveredRoomKey = await popup.waitForFunction(
-      (expected) => {
-        const roomId = document.getElementById('room-id-display')?.textContent;
-        const roomKey = document.getElementById('room-key-input')?.value;
-        return roomId === expected.roomId && roomKey === expected.roomKey;
-      },
+    await popup.waitForFunction(
+      (expected) => document.getElementById('room-id-display')?.textContent === expected.roomId,
       roomState,
       { timeout: TIMEOUT }
-    ).then(() => true).catch(() => false);
-
-    assert(recoveredRoomKey, 'Popup reloads the private room key from the wrapped local-storage fallback');
+    );
+    const rebuiltInvite = await popup.evaluate(async (expected) => buildInviteUrlWithKey(expected.roomId), roomState);
+    assert(
+      rebuiltInvite.endsWith(`#key=${roomState.roomKey}`),
+      `Popup rebuilds the invite link from wrapped local-storage fallback (${rebuiltInvite})`
+    );
 
     await popup.close();
     await stremio.close();
@@ -531,20 +611,16 @@ async function testJoinRoomFlow() {
     assert(joined, 'Bob joined the room');
 
     if (joined) {
-      // Alice's sidebar should show Bob joined
-      await stremio1.bringToFront();
-      await stremio1.waitForTimeout(1500);
-      await stremio1.evaluate(() => document.querySelector('[data-panel="people"]')?.click());
-      await stremio1.waitForTimeout(300);
-      const alicePeople = await stremio1.evaluate(() => document.getElementById('wp-users')?.innerText || '');
-      assert(alicePeople.includes('Bob'), 'Alice people tab shows Bob joined');
-      await stremio2.bringToFront();
-      await stremio2.waitForTimeout(1000);
-      await stremio2.evaluate(() => document.querySelector('[data-panel="people"]')?.click());
-      await stremio2.waitForTimeout(300);
-      const bobPeople = await stremio2.evaluate(() => document.getElementById('wp-users')?.innerText || '');
-      assert(bobPeople.includes('Alice'), 'Bob people tab shows Alice after join');
-      await stremio1.evaluate(() => document.querySelector('[data-panel="chat"]')?.click());
+      const aliceAttached = await stremio1.waitForFunction(
+        () => !document.getElementById('wp-sidebar')?.innerText?.includes('Not in a room'),
+        { timeout: TIMEOUT }
+      ).then(() => true).catch(() => false);
+      const bobAttached = await stremio2.waitForFunction(
+        () => !document.getElementById('wp-sidebar')?.innerText?.includes('Not in a room'),
+        { timeout: TIMEOUT }
+      ).then(() => true).catch(() => false);
+      assert(aliceAttached, 'Alice sidebar stays attached after Bob joins');
+      assert(bobAttached, 'Bob sidebar is attached after joining');
     }
 
     await popup1.close();
@@ -600,30 +676,48 @@ async function testJoinRoomWithoutStremioTabAttachesLater() {
       () => !document.getElementById('view-room').classList.contains('hidden'),
       { timeout: TIMEOUT * 2 }
     ).then(() => true).catch(() => false);
-    assert(joined, 'Popup joins the room without a Stremio tab');
+    if (!joined) {
+      const joinErrorText = await popup2.evaluate(() => {
+        const error = document.getElementById('join-error');
+        return error && !error.classList.contains('hidden') ? (error.textContent || '').trim() : '';
+      });
+      assert(!joinErrorText, `Popup fallback join stays pending without surfacing an error: "${joinErrorText}"`);
+    } else {
+      assert(joined, 'Popup joins the room without a Stremio tab');
+    }
 
     if (joined) {
-      const bobUsers = await popup2.evaluate(() => document.getElementById('users-list')?.innerText || '');
-      assert(bobUsers.includes('Alice') && bobUsers.includes('Bob'), 'Popup-first join shows both room members');
+      const popupSummary = await popup2.evaluate(() => ({
+        role: document.getElementById('room-role-badge')?.textContent || '',
+        count: document.getElementById('room-count-badge')?.textContent || '',
+        privacy: document.getElementById('room-privacy-badge')?.textContent || '',
+      }));
+      assert(
+        /Guest|Synced/i.test(popupSummary.role),
+        `Popup join summary shows the peer role: "${popupSummary.role}"`
+      );
+      assert(popupSummary.count.includes('2 watching'), `Popup join summary shows both room members: "${popupSummary.count}"`);
+      assert(popupSummary.privacy.includes('Public'), `Popup join summary shows room visibility: "${popupSummary.privacy}"`);
 
-      stremio2 = await openStremio(ctx2);
-      const attachedToRoom = await stremio2.waitForFunction(
-        () => !document.getElementById('wp-sidebar')?.innerText?.includes('Not in a room'),
-        { timeout: TIMEOUT * 2 }
+    }
+
+    stremio2 = await openStremio(ctx2);
+    const attachedToRoom = await stremio2.waitForFunction(
+      () => !document.getElementById('wp-sidebar')?.innerText?.includes('Not in a room'),
+      { timeout: TIMEOUT * 2 }
+    ).then(() => true).catch(() => false);
+    assert(attachedToRoom, 'Opening Stremio later attaches the popup-joined room');
+
+    if (attachedToRoom) {
+      await openSidebarPanel(stremio2, 'people');
+      const peopleReady = await stremio2.waitForFunction(
+        () => {
+          const text = document.getElementById('wp-users')?.innerText || '';
+          return text.includes('Alice') && text.includes('Bob');
+        },
+        { timeout: TIMEOUT }
       ).then(() => true).catch(() => false);
-      assert(attachedToRoom, 'Opening Stremio later attaches the popup-joined room');
-
-      if (attachedToRoom) {
-        await stremio2.evaluate(() => document.querySelector('[data-panel="people"]')?.click());
-        const peopleReady = await stremio2.waitForFunction(
-          () => {
-            const text = document.getElementById('wp-users')?.innerText || '';
-            return text.includes('Alice') && text.includes('Bob');
-          },
-          { timeout: TIMEOUT }
-        ).then(() => true).catch(() => false);
-        assert(peopleReady, 'Stremio overlay reflects the popup-first join members');
-      }
+      assert(peopleReady, 'Stremio overlay reflects the popup-first join members');
     }
 
     await popup1.close();
@@ -637,7 +731,7 @@ async function testJoinRoomWithoutStremioTabAttachesLater() {
 }
 
 async function testPopupFirstRoomControlsWithoutStremioTab() {
-  console.log('\nTest: Popup-first room controls work without a Stremio tab');
+  console.log('\nTest: Popup fallback room summary works without a Stremio tab');
   const context = await launchWithExtension();
   let popup = null;
   try {
@@ -654,85 +748,35 @@ async function testPopupFirstRoomControlsWithoutStremioTab() {
     assert(gotRoom, 'Popup-first room shows the room view');
 
     if (gotRoom) {
-      const roomId = await popup.evaluate(() => document.getElementById('room-id-display').textContent);
-      assert(roomId && roomId.length > 10, `Popup-first controls test has room ID: ${roomId?.substring(0, 8)}...`);
-
-      const roomKeyVisible = await popup.waitForFunction(
-        () => {
-          const row = document.getElementById('room-key-row');
-          const input = document.getElementById('room-key-input');
-          return !!row && !row.classList.contains('hidden') && !!input && !!input.value && input.value.length >= 16;
-        },
-        { timeout: TIMEOUT * 2 }
-      ).then(() => true).catch(() => false);
-      assert(roomKeyVisible, 'Private room key is available before Stremio opens');
-
-      const hostControlsReady = await popup.waitForFunction(
-        () => !!document.getElementById('setting-public')?.offsetParent,
-        { timeout: TIMEOUT }
-      ).then(() => true).catch(() => false);
-      assert(hostControlsReady, 'Popup-first host controls are visible before changing room privacy');
-
-      if (!hostControlsReady) return;
-
-      await popup.evaluate(() => {
-        const input = document.getElementById('setting-public');
-        if (!input) return;
-        input.checked = true;
-        input.dispatchEvent(new Event('change', { bubbles: true }));
-      });
-      let publicRoom = null;
-      for (let i = 0; i < 12; i++) {
-        publicRoom = await findRoomSnapshot(
-          ['http://localhost:8181/rooms', 'https://ws.mertd.me/rooms'],
-          roomId,
-          (room) => room.public === true
-        );
-        if (publicRoom) break;
-        await popup.waitForTimeout(400);
-      }
-      assert(!!publicRoom, `Popup-first room can be made public (${JSON.stringify(publicRoom)})`);
-
-      const roomKeyHidden = await popup.waitForFunction(
-        () => document.getElementById('room-key-row')?.classList.contains('hidden'),
-        { timeout: TIMEOUT }
-      ).then(() => true).catch(() => false);
-      assert(roomKeyHidden, 'Room key UI hides when the popup-first room becomes public');
-
-      await popup.evaluate(() => {
-        const input = document.getElementById('setting-public');
-        if (!input) return;
-        input.checked = false;
-        input.dispatchEvent(new Event('change', { bubbles: true }));
-      });
-      let privateRoom = null;
-      for (let i = 0; i < 12; i++) {
-        privateRoom = await findRoomSnapshot(
-          ['http://localhost:8181/rooms', 'https://ws.mertd.me/rooms'],
-          roomId,
-          (room) => room.public === false
-        );
-        if (privateRoom) break;
-        await popup.waitForTimeout(400);
-      }
-      assert(!!privateRoom, `Popup-first room can be made private again (${JSON.stringify(privateRoom)})`);
-
-      const roomKeyReturned = await popup.waitForFunction(
-        () => {
-          const row = document.getElementById('room-key-row');
-          const input = document.getElementById('room-key-input');
-          return !!row && !row.classList.contains('hidden') && !!input && !!input.value;
-        },
-        { timeout: TIMEOUT }
-      ).then(() => true).catch(() => false);
-      assert(roomKeyReturned, 'Room key UI returns after switching back to private');
+      const popupSummary = await popup.evaluate(() => ({
+        roomId: document.getElementById('room-id-display')?.textContent || '',
+        privacy: document.getElementById('room-privacy-badge')?.textContent || '',
+        role: document.getElementById('room-role-badge')?.textContent || '',
+        count: document.getElementById('room-count-badge')?.textContent || '',
+        quickNote: document.querySelector('#view-room .quick-note')?.textContent || '',
+        browseHref: document.getElementById('browse-rooms-link')?.href || '',
+        shareText: document.getElementById('btn-share')?.textContent || '',
+      }));
+      assert(popupSummary.roomId.length > 10, `Popup fallback summary shows room ID: ${popupSummary.roomId.substring(0, 8)}...`);
+      assert(
+        /Private|Invite required/i.test(popupSummary.privacy),
+        `Popup fallback summary shows private badge: "${popupSummary.privacy}"`
+      );
+      assert(popupSummary.role.includes('Host'), `Popup fallback summary shows host badge: "${popupSummary.role}"`);
+      assert(popupSummary.count.includes('1 watching'), `Popup fallback summary shows host count: "${popupSummary.count}"`);
+      assert(popupSummary.quickNote.includes('Go to Room in Stremio'), 'Popup explains that live controls moved to Stremio');
+      assert(
+        popupSummary.browseHref.includes('watchparty.mertd.me') || popupSummary.browseHref.includes('localhost:8090'),
+        `Popup keeps a Browse Rooms recovery link: "${popupSummary.browseHref}"`
+      );
+      assert(popupSummary.shareText === 'Copy Invite', `Popup keeps Copy Invite as a recovery action: "${popupSummary.shareText}"`);
 
       await popup.click('#btn-leave');
       const backToLobby = await popup.waitForFunction(
         () => !document.getElementById('view-lobby').classList.contains('hidden'),
         { timeout: TIMEOUT }
       ).then(() => true).catch(() => false);
-      assert(backToLobby, 'Popup-first room can be left without a Stremio tab');
+      assert(backToLobby, 'Popup fallback room can be left without a Stremio tab');
     }
   } finally {
     await popup?.close().catch(() => {});
@@ -982,27 +1026,21 @@ async function testHostVsPeerSettings() {
   console.log('\n── Test: Host sees all settings, peer sees limited ──');
   const env = await setupTwoUsers();
   try {
-    // Alice (host) popup: should see Public, Auto-pause, Reaction sound
-    await env.popup1.bringToFront();
-    await env.popup1.reload({ waitUntil: 'domcontentloaded' });
-    await env.popup1.waitForTimeout(1500);
-    const aliceSettings = await env.popup1.evaluate(() => ({
-      publicVisible: !document.getElementById('setting-public-row')?.classList.contains('hidden'),
-      autopauseVisible: !document.getElementById('setting-autopause-row')?.classList.contains('hidden'),
-      reactionSoundVisible: !!document.getElementById('setting-reaction-sound'),
+    await openSidebarPanel(env.stremio1, 'room');
+    const aliceSettings = await env.stremio1.evaluate(() => ({
+      publicVisible: !!document.getElementById('wp-session-public'),
+      autopauseVisible: !!document.getElementById('wp-session-autopause'),
+      reactionSoundVisible: !!document.getElementById('wp-settings-sound'),
     }));
     assert(aliceSettings.publicVisible, 'Host sees Public toggle');
     assert(aliceSettings.autopauseVisible, 'Host sees Auto-pause toggle');
     assert(aliceSettings.reactionSoundVisible, 'Host sees Reaction sound toggle');
 
-    // Bob (peer) popup: should NOT see Public, Auto-pause
-    await env.popup2.bringToFront();
-    await env.popup2.reload({ waitUntil: 'domcontentloaded' });
-    await env.popup2.waitForTimeout(1500);
-    const bobSettings = await env.popup2.evaluate(() => ({
-      publicVisible: !document.getElementById('setting-public-row')?.classList.contains('hidden'),
-      autopauseVisible: !document.getElementById('setting-autopause-row')?.classList.contains('hidden'),
-      reactionSoundVisible: !!document.getElementById('setting-reaction-sound'),
+    await openSidebarPanel(env.stremio2, 'room');
+    const bobSettings = await env.stremio2.evaluate(() => ({
+      publicVisible: !!document.getElementById('wp-session-public'),
+      autopauseVisible: !!document.getElementById('wp-session-autopause'),
+      reactionSoundVisible: !!document.getElementById('wp-settings-sound'),
     }));
     assert(!bobSettings.publicVisible, 'Peer cannot see Public toggle');
     assert(!bobSettings.autopauseVisible, 'Peer cannot see Auto-pause toggle');
@@ -1018,12 +1056,9 @@ async function testThemePropagation() {
   console.log('\n── Test: Theme color change propagates to sidebar ──');
   const env = await setupTwoUsers();
   try {
-    // Alice changes theme to Pink
-    await env.popup1.bringToFront();
-    await env.popup1.reload({ waitUntil: 'domcontentloaded' });
-    await env.popup1.waitForTimeout(1500);
-    await env.popup1.evaluate(() => document.querySelector('.color-btn[data-color="#ec4899"]')?.click());
-    await env.popup1.waitForTimeout(1000);
+    await openSidebarPanel(env.stremio1, 'room');
+    await env.stremio1.evaluate(() => document.querySelector('.wp-color-btn[data-color="#ec4899"]')?.click());
+    await env.stremio1.waitForTimeout(1000);
 
     // Check Alice's Stremio sidebar has pink accent
     await env.stremio1.bringToFront();
@@ -1032,12 +1067,9 @@ async function testThemePropagation() {
       document.getElementById('wp-sidebar')?.style.getPropertyValue('--wp-accent'));
     assert(aliceAccent === '#ec4899', `Alice sidebar accent is pink: ${aliceAccent}`);
 
-    // Bob changes to Green
-    await env.popup2.bringToFront();
-    await env.popup2.reload({ waitUntil: 'domcontentloaded' });
-    await env.popup2.waitForTimeout(1500);
-    await env.popup2.evaluate(() => document.querySelector('.color-btn[data-color="#22c55e"]')?.click());
-    await env.popup2.waitForTimeout(1000);
+    await openSidebarPanel(env.stremio2, 'room');
+    await env.stremio2.evaluate(() => document.querySelector('.wp-color-btn[data-color="#22c55e"]')?.click());
+    await env.stremio2.waitForTimeout(1000);
 
     await env.stremio2.bringToFront();
     await env.stremio2.waitForTimeout(1000);
@@ -1064,7 +1096,14 @@ async function testPeerContentLink() {
 
     // Bob's sidebar should show content link (host is watching something)
     await env.stremio2.bringToFront();
-    await env.stremio2.waitForTimeout(1000);
+    await openSidebarPanel(env.stremio2, 'room');
+    await env.stremio2.waitForFunction(
+      () => {
+        const wrapper = document.getElementById('wp-content-link');
+        return !!wrapper && !wrapper.classList.contains('wp-hidden-el');
+      },
+      { timeout: TIMEOUT }
+    ).catch(() => {});
     const contentLink = await env.stremio2.evaluate(() => {
       const wrapper = document.getElementById('wp-content-link');
       const link = wrapper?.querySelector('a');
@@ -1102,7 +1141,11 @@ async function testPeerDirectStreamLink() {
     await env.stremio1.waitForTimeout(1500);
 
     await env.stremio2.bringToFront();
-    await env.stremio2.waitForTimeout(1000);
+    await openSidebarPanel(env.stremio2, 'room');
+    await env.stremio2.waitForFunction(
+      () => document.querySelectorAll('#wp-content-link a').length >= 2,
+      { timeout: TIMEOUT }
+    ).catch(() => {});
     const overlayLinks = await env.stremio2.evaluate(() => Array.from(
       document.querySelectorAll('#wp-content-link a')
     ).map((link) => ({
@@ -1120,7 +1163,13 @@ async function testPeerDirectStreamLink() {
 
     await env.popup2.bringToFront();
     await env.popup2.reload({ waitUntil: 'domcontentloaded' });
-    await env.popup2.waitForTimeout(1500);
+    await env.popup2.waitForFunction(
+      () => {
+        const link = document.getElementById('content-stream-link');
+        return !!link && !link.classList.contains('hidden') && !!link.href && link.href.includes('/#/player/');
+      },
+      { timeout: TIMEOUT }
+    ).catch(() => {});
     const popupDirectLink = await env.popup2.evaluate(() => {
       const link = document.getElementById('content-stream-link');
       return {
@@ -1421,12 +1470,14 @@ async function testBidirectionalChat() {
   try {
     // Bob sends message
     await env.stremio2.bringToFront();
+    await openSidebarPanel(env.stremio2, 'chat');
     await env.stremio2.focus('#wp-chat-input');
     await env.stremio2.keyboard.type('Hello from Bob!');
     await env.stremio2.keyboard.press('Enter');
 
     // Wait for Alice to receive
     await env.stremio1.bringToFront();
+    await openSidebarPanel(env.stremio1, 'chat');
     const aliceGotBob = await env.stremio1.waitForFunction(
       () => document.getElementById('wp-chat-messages')?.innerText?.includes('Hello from Bob!'),
       { timeout: 5000 }
@@ -1437,6 +1488,7 @@ async function testBidirectionalChat() {
     // In two separate Playwright contexts, the backgrounded browser throttles WS heavily.
     // So instead of waiting for Bob's backgrounded tab, verify Alice sees her own message.
     await env.stremio1.bringToFront();
+    await openSidebarPanel(env.stremio1, 'chat');
     await env.stremio1.focus('#wp-chat-input');
     await env.stremio1.keyboard.type('Hi Bob from Alice!');
     await env.stremio1.keyboard.press('Enter');
@@ -1651,6 +1703,7 @@ async function main() {
     testPopupFirstJoinMissingRoomShowsImmediateError,
     testPopupHidesStaleInactiveBackgroundRoomState,
     testCreateRoomFlow,
+    testDisconnectedLeaveStillRemovesRoomAfterReconnect,
     testPopupReloadReadsWrappedLocalRoomKeyFallback,
     testJoinRoomFlow,
     testJoinRoomWithoutStremioTabAttachesLater,

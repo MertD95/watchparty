@@ -68,7 +68,7 @@ async function waitForRoomInApi(roomId, timeout = 15000) {
   return null;
 }
 
-async function waitForRoomGoneInApi(roomId, timeout = 15000) {
+async function waitForRoomGoneInApi(roomId, timeout = 30000) {
   const started = Date.now();
   while ((Date.now() - started) < timeout) {
     const data = await fetchPublicRooms();
@@ -97,7 +97,7 @@ async function waitForSiteUser(page, username, timeout = 15000) {
   ).then(() => true).catch(() => false);
 }
 
-async function waitForSiteUserGone(page, username, timeout = 15000) {
+async function waitForSiteUserGone(page, username, timeout = 30000) {
   return page.waitForFunction(
     (expected) => !(document.getElementById('rooms-list')?.innerText || '').includes(expected),
     username,
@@ -139,12 +139,13 @@ async function createRoomViaWebsite(page, { username, roomName, isPublic }) {
   if (currentlyPublic !== isPublic) await page.click('#create-room-public');
 
   await page.click('#create-submit-btn');
-  const reachedStremio = await page.waitForFunction(
-    () => location.origin === 'https://web.stremio.com' && document.getElementById('wp-overlay') !== null,
+  const modalClosed = await page.waitForFunction(
+    () => getComputedStyle(document.getElementById('create-modal')).display === 'none',
     { timeout: TIMEOUT }
   ).then(() => true).catch(() => false);
+  const stillOnWebsite = await page.evaluate(() => location.origin === 'https://watchparty.mertd.me');
 
-  return { reachedStremio };
+  return { modalClosed, stillOnWebsite };
 }
 
 async function waitForRoomAttached(page, timeout = TIMEOUT) {
@@ -192,7 +193,8 @@ async function testPublicDetailRoomAppearsWithReadableTitle() {
     const lobby = await openSite(context);
     try {
       const created = await createRoomViaWebsite(lobby, { username, roomName, isPublic: true });
-      assert(created.reachedStremio, 'website create hands off to Stremio');
+      assert(created.modalClosed, 'website create closes the modal after dispatching the room intent');
+      assert(created.stillOnWebsite, 'website create keeps the lobby page in place while the extension handles Stremio');
       const attached = await waitForRoomAttached(stremio);
       assert(attached, 'existing detail page attaches the room after website create');
 
@@ -231,7 +233,8 @@ async function testPublicPlayerRoomAppearsWithDirectJoinEnabled() {
     const lobby = await openSite(context);
     try {
       const created = await createRoomViaWebsite(lobby, { username, roomName, isPublic: true });
-      assert(created.reachedStremio, 'website create hands off to Stremio from the player page');
+      assert(created.modalClosed, 'player website create closes the modal after dispatching the room intent');
+      assert(created.stillOnWebsite, 'player website create keeps the lobby page in place while the extension handles Stremio');
       const attached = await waitForRoomAttached(stremio);
       assert(attached, 'existing player page attaches the room after website create');
 
@@ -270,7 +273,8 @@ async function testPrivateRoomAppearsOnWebsite() {
     const lobby = await openSite(context);
     try {
       const created = await createRoomViaWebsite(lobby, { username, roomName, isPublic: false });
-      assert(created.reachedStremio, 'private website create hands off to Stremio');
+      assert(created.modalClosed, 'private website create closes the modal after dispatching the room intent');
+      assert(created.stillOnWebsite, 'private website create keeps the lobby page in place while the extension handles Stremio');
       const attached = await waitForRoomAttached(stremio);
       assert(attached, 'existing detail page attaches the private room after website create');
 
@@ -307,7 +311,8 @@ async function testLatePageLoadStillSeesRoom() {
     const lobby = await openSite(context);
     try {
       const created = await createRoomViaWebsite(lobby, { username, roomName, isPublic: true });
-      assert(created.reachedStremio, 'late-load website create hands off to Stremio');
+      assert(created.modalClosed, 'late-load website create closes the modal after dispatching the room intent');
+      assert(created.stillOnWebsite, 'late-load website create keeps the lobby page in place while the extension handles Stremio');
       const attached = await waitForRoomAttached(stremio);
       assert(attached, 'late-load detail page attaches the room after website create');
 

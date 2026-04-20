@@ -20,7 +20,7 @@ const SNAP_DIR = path.resolve(__dirname, '__snapshots__');
 const STREMIO = 'https://web.stremio.com';
 const TIMEOUT = 15000;
 const UPDATE = process.argv.includes('--update');
-const MAX_DIFF_RATIO = 0.03; // 3% pixel diff threshold (accounts for dynamic content like GIF thumbnails)
+const MAX_DIFF_RATIO = 0.05; // 5% pixel diff threshold (accounts for dynamic room codes and minor rendering variance)
 
 let passed = 0, failed = 0;
 
@@ -164,7 +164,7 @@ async function main() {
     // ── Screenshot 4: Popup in room view ──
     console.log('── Popup room view ──');
     const popupShot = await popup.screenshot({ type: 'png' });
-    ok(await compareScreenshots('popup-room-view', popupShot, popup), 'Popup room view');
+    ok(await compareScreenshots('popup-fallback-room-view', popupShot, popup), 'Popup fallback room view');
     await popup.close();
 
     // Back to Stremio
@@ -175,14 +175,12 @@ async function main() {
 
     // ── Screenshot 5: Minimized sidebar ──
     console.log('── Minimized sidebar ──');
-    await page.evaluate(() => document.getElementById('wp-minimize-btn')?.click());
-    await page.waitForTimeout(500);
-    const minBar = await page.$('#wp-minimized-bar') || await page.$('#wp-sidebar');
-    const shot5 = await (minBar ? minBar.screenshot({ type: 'png' }) : page.screenshot({ type: 'png' }));
-    ok(await compareScreenshots('sidebar-minimized', shot5, page), 'Minimized sidebar bar');
-    // Restore
-    await page.evaluate(() => document.getElementById('wp-minimized-bar')?.click());
-    await page.waitForTimeout(500);
+    await page.evaluate(() => document.querySelector('[data-panel="people"]')?.click());
+    await page.waitForTimeout(400);
+    const shot5 = await sidebarShot();
+    ok(await compareScreenshots('sidebar-people-panel', shot5, page), 'People panel');
+    await page.evaluate(() => document.querySelector('[data-panel="chat"]')?.click());
+    await page.waitForTimeout(300);
 
     // ── Screenshot 6: Emoji picker open ──
     console.log('── Emoji picker open ──');
@@ -339,6 +337,8 @@ async function main() {
     await page.evaluate(() => document.getElementById('wp-typing-indicator')?.classList.add('wp-hidden-el'));
 
     // 3. Sync indicator positioning
+    await page.evaluate(() => document.querySelector('[data-panel="room"]')?.click());
+    await page.waitForTimeout(200);
     await page.evaluate(() => {
       const ind = document.getElementById('wp-sync-indicator');
       if (ind) { ind.textContent = 'Synced'; ind.classList.remove('wp-hidden-el'); }
@@ -358,6 +358,8 @@ async function main() {
     });
     ok(syncInd?.visible, 'Sync indicator visible');
     ok(syncInd?.withinSidebar, 'Sync indicator within sidebar');
+    await page.evaluate(() => document.querySelector('[data-panel="chat"]')?.click());
+    await page.waitForTimeout(200);
 
     // 4. Unread badge positioning (close sidebar, check badge)
     await page.evaluate(() => document.getElementById('wp-close-sidebar')?.click());
@@ -506,9 +508,10 @@ async function main() {
       checks.push({ name: 'Close button has × text', pass: closeBtn?.textContent?.trim() === '×' });
       checks.push({ name: 'Close button clickable', pass: clickable(closeBtn) });
 
-      // 2. Minimize button has ― character
-      const minBtn = document.getElementById('wp-minimize-btn');
-      checks.push({ name: 'Minimize button has ― text', pass: minBtn?.textContent?.trim() === '―' });
+      // 2. Session tab is visible in the redesigned header
+      const sessionTab = document.querySelector('[data-panel="room"]');
+      checks.push({ name: 'Session tab visible', pass: visible(sessionTab) });
+      checks.push({ name: 'Session tab label present', pass: /Session/i.test(sessionTab?.innerText || '') });
 
       // 3. Room code element
       const roomCode = document.getElementById('wp-room-code');
@@ -525,9 +528,15 @@ async function main() {
       // 5. User status indicators aligned
       const statusEls = sidebar?.querySelectorAll('.wp-user-status');
       if (statusEls?.length > 0) {
-        const first = statusEls[0].getBoundingClientRect();
-        checks.push({ name: 'User status indicator visible', pass: first.width > 0 && first.height > 0 });
-        checks.push({ name: 'User status within sidebar', pass: within(first) });
+        const visibleStatus = [...statusEls].find((el) => {
+          const rect = el.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        });
+        if (visibleStatus) {
+          const first = visibleStatus.getBoundingClientRect();
+          checks.push({ name: 'User status indicator visible', pass: first.width > 0 && first.height > 0 });
+          checks.push({ name: 'User status within sidebar', pass: within(first) });
+        }
       }
 
       // 6. Chat input row — emoji, gif, input, send all on same row
@@ -559,11 +568,14 @@ async function main() {
       // 8. Long username truncation
       const users = sidebar?.querySelectorAll('.wp-user');
       if (users?.length > 0) {
-        const userRect = users[0].getBoundingClientRect();
-        checks.push({ name: 'User element within sidebar width', pass: within(userRect) });
+        const visibleUser = [...users].find((el) => visible(el)) || users[0];
+        const userRect = visibleUser.getBoundingClientRect();
+        if (userRect.width > 0 && userRect.height > 0) {
+          checks.push({ name: 'User element within sidebar width', pass: within(userRect) });
+        }
         // Check overflow handling
-        const overflow = getComputedStyle(users[0]).overflow;
-        const textOverflow = getComputedStyle(users[0]).textOverflow;
+        const overflow = getComputedStyle(visibleUser).overflow;
+        const textOverflow = getComputedStyle(visibleUser).textOverflow;
         checks.push({ name: 'User element handles overflow', pass: overflow === 'hidden' || textOverflow === 'ellipsis' || userRect.width <= sRect.width });
       }
 
@@ -658,7 +670,7 @@ async function main() {
       results.push({ name: 'No sidebar overflow', pass: overflowCount === 0, detail: `${overflowCount} elements overflow` });
 
       // Check all buttons are clickable (not covered)
-      for (const id of ['wp-close-sidebar', 'wp-minimize-btn', 'wp-emoji-btn', 'wp-gif-btn', 'wp-chat-send']) {
+      for (const id of ['wp-close-sidebar', 'wp-emoji-btn', 'wp-gif-btn', 'wp-chat-send']) {
         const el = document.getElementById(id);
         if (!el) continue;
         const r = el.getBoundingClientRect();
