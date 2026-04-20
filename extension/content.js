@@ -154,4 +154,11 @@ window.addEventListener('message', (event) => {
       action: 'open-options',
     }).catch(() => {});
   }
+  if (event.data?.type === 'watchparty-open-stremio') {
+    chrome.runtime.sendMessage({
+      type: 'watchparty-ext',
+      action: 'open-stremio',
+      url: typeof event.data.url === 'string' ? event.data.url : undefined,
+    }).catch(() => {});
+  }
 });

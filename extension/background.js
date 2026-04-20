@@ -293,6 +293,18 @@ async function openOrFocusWatchParty() {
   return { opened: true, tab: created };
 }
 
+async function openOrFocusStremio(url = 'https://web.stremio.com') {
+  const tabs = await getStremioTabs();
+  if (tabs.length > 0) {
+    await focusTab(tabs[0]);
+    return { opened: false, tab: tabs[0] };
+  }
+  const targetUrl = typeof url === 'string' && url.trim() ? url.trim() : 'https://web.stremio.com';
+  const created = await chrome.tabs.create({ url: targetUrl });
+  rememberSurfaceTab('stremio', created?.id ?? null);
+  return { opened: true, tab: created };
+}
+
 async function resumeRoomInStremio() {
   const stremioTabs = await getStremioTabs();
   const result = await chrome.storage.local.get([
@@ -514,6 +526,10 @@ const messageHandlers = {
   'open-options': (_m, _s, sendResponse) => respondAsync(sendResponse, async () => {
     await chrome.runtime.openOptionsPage();
     return { ok: true };
+  }),
+  'open-stremio': (m, _s, sendResponse) => respondAsync(sendResponse, async () => {
+    const result = await openOrFocusStremio(m.url);
+    return { ok: true, openedStremio: result.opened };
   }),
   'save-auth-key': (m) => {
     if (m.authKey) { chrome.storage.session.set({ [WPConstants.STORAGE.SAVED_AUTH_KEY]: m.authKey }); tryProfileSync(); }

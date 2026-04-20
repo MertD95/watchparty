@@ -42,7 +42,14 @@ function openWatchPartyTab() {
 }
 
 function openStremioTab() {
-  chrome.tabs.create({ url: 'https://web.stremio.com' });
+  chrome.runtime.sendMessage(
+    { type: 'watchparty-ext', action: 'open-stremio', url: 'https://web.stremio.com' },
+    (response) => {
+      if (chrome.runtime.lastError || response?.ok === false) {
+        chrome.tabs.create({ url: 'https://web.stremio.com' });
+      }
+    }
+  );
 }
 
 function openOptionsPage() {
@@ -513,34 +520,7 @@ function renderRoomDetails(room, myUserId, mySessionId) {
     $('content-stream-link').href = '#';
   }
 
-  return;
 
-  // Users list
-  const usersList = $('users-list');
-  const ownerInList = room.users?.some(u => u.id === room.owner);
-  usersList.innerHTML = room.users.map(u => {
-    // Crown: either the actual owner, or if owner is orphaned, the host (us)
-    const isOwner = u.id === room.owner || (!ownerInList && isHost && isMe(u.id));
-    const isMyUser = isMe(u.id);
-    return `<div class="user-item">${isOwner ? '<span class="user-crown">👑</span> ' : ''}${escapeHtml(u.name)}${isMyUser ? ' (you)' : ''}</div>`;
-  }).join('');
-  const publicRow = $('setting-public-row');
-  const autopauseRow = $('setting-autopause-row');
-  if (isHost) {
-    publicRow.classList.remove('hidden');
-    autopauseRow.classList.remove('hidden');
-    $('setting-public').checked = room.public || false;
-    $('setting-autopause').checked = room.settings?.autoPauseOnDisconnect || false;
-  } else {
-    publicRow.classList.add('hidden');
-    autopauseRow.classList.add('hidden');
-  }
-
-  // Load reaction preferences
-  chrome.storage.local.get([WPConstants.STORAGE.REACTION_SOUND, WPConstants.STORAGE.FLOATING_REACTIONS], (result) => {
-    $('setting-reaction-sound').checked = result[WPConstants.STORAGE.REACTION_SOUND] !== false;
-    $('setting-floating-reactions').checked = result[WPConstants.STORAGE.FLOATING_REACTIONS] !== false;
-  });
 }
 
 // --- Actions ---

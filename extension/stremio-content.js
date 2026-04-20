@@ -30,6 +30,7 @@
   let lastSharedContentKey = null;
   let pendingJoinOptions = null;
   let pendingCreatedRoomKey = null;
+  let deferredLeaveIntent = null;
   let lastJoinAttemptRoomId = null;
   let shareContentLinkInFlight = false;
   let reconnectNoticeTimer = null;
@@ -164,6 +165,43 @@
     return value === true || (!!value && typeof value === 'object');
   }
 
+  function normalizeDeferredLeaveIntent(value) {
+    if (!value || typeof value !== 'object') return null;
+    const roomId = typeof value.roomId === 'string' ? value.roomId.trim() : '';
+    if (!roomId) return null;
+    const requestedAt = Number(value.requestedAt);
+    return {
+      roomId,
+      requestedAt: Number.isFinite(requestedAt) && requestedAt > 0 ? requestedAt : Date.now(),
+    };
+  }
+
+  function syncDeferredLeaveIntent(value) {
+    deferredLeaveIntent = normalizeDeferredLeaveIntent(value);
+    return deferredLeaveIntent;
+  }
+
+  function rememberDeferredLeaveIntent(roomId) {
+    const normalizedRoomId = typeof roomId === 'string' ? roomId.trim() : '';
+    if (!normalizedRoomId) return null;
+    const nextIntent = {
+      roomId: normalizedRoomId,
+      requestedAt: Date.now(),
+    };
+    deferredLeaveIntent = nextIntent;
+    if (extOk()) {
+      chrome.storage.local.set({ [WPConstants.STORAGE.DEFERRED_LEAVE_ROOM]: nextIntent }).catch(() => { });
+    }
+    return nextIntent;
+  }
+
+  function clearDeferredLeaveIntent(roomId) {
+    if (roomId && deferredLeaveIntent?.roomId && deferredLeaveIntent.roomId !== roomId) return;
+    deferredLeaveIntent = null;
+    if (!extOk()) return;
+    chrome.storage.local.remove(WPConstants.STORAGE.DEFERRED_LEAVE_ROOM).catch(() => { });
+  }
+
   function clearPendingLeaveIntent() {
     if (!extOk()) return;
     chrome.storage.local.remove(WPConstants.STORAGE.PENDING_LEAVE_ROOM).catch(() => { });
@@ -194,12 +232,44 @@
   }
 
   function finalizeLeaveIntent(options = {}) {
-    const leavingRoomId = options.roomId || roomState?.id;
+    const leavingRoomId = options.roomId || roomState?.id || deferredLeaveIntent?.roomId;
     clearPendingLeaveIntent();
+    if (!leavingRoomId) return;
     if (options.sendLeave && inRoom && WPWS.isReady()) {
+      clearDeferredLeaveIntent(leavingRoomId);
       WPWS.send({ type: WPProtocol.C2S.ROOM_LEAVE, payload: {} });
+    } else {
+      rememberDeferredLeaveIntent(leavingRoomId);
+      if (!WPWS.isConnected()) {
+        WPWS.connect();
+      }
     }
     applyLocalLeaveState(leavingRoomId);
+  }
+
+  async function drainDeferredLeaveIntent() {
+    if (!deferredLeaveIntent?.roomId || !WPWS.isReady()) return false;
+    const roomId = deferredLeaveIntent.roomId;
+    const stored = await new Promise((resolve) => {
+      chrome.storage.local.get(WPConstants.STORAGE.USERNAME, (result) => resolve(result || {}));
+    }).catch(() => ({}));
+    const username = stored?.[WPConstants.STORAGE.USERNAME];
+    if (username) {
+      WPWS.send({ type: WPProtocol.C2S.USER_UPDATE, payload: { username, sessionId } });
+    }
+    const roomKey = await loadStoredRoomKey(roomId);
+    lastJoinAttemptRoomId = roomId;
+    WPWS.send({
+      type: WPProtocol.C2S.ROOM_JOIN,
+      payload: { id: roomId, roomKey: roomKey || undefined },
+    });
+    return true;
+  }
+
+  function shouldDrainDeferredLeave(payload) {
+    return !!payload?.id
+      && !!deferredLeaveIntent?.roomId
+      && deferredLeaveIntent.roomId === payload.id;
   }
 
   function buildSharedStreamKey(stream) {
@@ -423,33 +493,41 @@
     if (shouldAnnounceReconnect && inRoom) {
       WPOverlay.showToast('WatchParty reconnected', 1800);
     }
-    // If we were in a room, rejoin (with replay if we have a sequence number)
-    if (roomState?.id) {
-      chrome.storage.local.get(WPConstants.STORAGE.PENDING_LEAVE_ROOM, (leaveState) => {
-        if (hasPendingLeaveIntent(leaveState[WPConstants.STORAGE.PENDING_LEAVE_ROOM])) {
-          finalizeLeaveIntent({ sendLeave: false, roomId: roomState?.id });
-          return;
+    chrome.storage.local.get([
+      WPConstants.STORAGE.PENDING_LEAVE_ROOM,
+      WPConstants.STORAGE.DEFERRED_LEAVE_ROOM,
+      WPConstants.STORAGE.USERNAME,
+      WPConstants.STORAGE.CURRENT_ROOM,
+    ], (stored) => {
+      syncDeferredLeaveIntent(stored[WPConstants.STORAGE.DEFERRED_LEAVE_ROOM]);
+      if (hasPendingLeaveIntent(stored[WPConstants.STORAGE.PENDING_LEAVE_ROOM])) {
+        finalizeLeaveIntent({
+          sendLeave: inRoom,
+          roomId: stored[WPConstants.STORAGE.CURRENT_ROOM] || roomState?.id || deferredLeaveIntent?.roomId,
+        });
+      }
+      if (deferredLeaveIntent?.roomId) {
+        drainDeferredLeaveIntent().catch(() => { });
+        return;
+      }
+      // If we were in a room, rejoin (with replay if we have a sequence number)
+      if (!roomState?.id) return;
+      // Load E2E crypto key before rejoining (prevents garbled messages on new tabs)
+      loadCryptoKeyForRoom(roomState.id).then(() => {
+        if (stored[WPConstants.STORAGE.USERNAME]) {
+          WPWS.send({ type: WPProtocol.C2S.USER_UPDATE, payload: { username: stored[WPConstants.STORAGE.USERNAME], sessionId } });
         }
-        // Load E2E crypto key before rejoining (prevents garbled messages on new tabs)
-        loadCryptoKeyForRoom(roomState.id).then(() => {
-          // Send username + sessionId so server knows who we are
-          chrome.storage.local.get(WPConstants.STORAGE.USERNAME, (result) => {
-            if (result[WPConstants.STORAGE.USERNAME]) {
-              WPWS.send({ type: WPProtocol.C2S.USER_UPDATE, payload: { username: result[WPConstants.STORAGE.USERNAME], sessionId } });
-            }
-            loadStoredRoomKey(roomState.id).then((roomKey) => {
-              const seq = WPWS.getLastSeq();
-              lastJoinAttemptRoomId = roomState.id;
-              if (seq > 0) {
-                WPWS.send({ type: WPProtocol.C2S.ROOM_REJOIN, payload: { id: roomState.id, lastSeq: seq, roomKey: roomKey || undefined } });
-              } else {
-                WPWS.send({ type: WPProtocol.C2S.ROOM_JOIN, payload: { id: roomState.id, roomKey: roomKey || undefined } });
-              }
-            });
-          });
+        loadStoredRoomKey(roomState.id).then((roomKey) => {
+          const seq = WPWS.getLastSeq();
+          lastJoinAttemptRoomId = roomState.id;
+          if (seq > 0) {
+            WPWS.send({ type: WPProtocol.C2S.ROOM_REJOIN, payload: { id: roomState.id, lastSeq: seq, roomKey: roomKey || undefined } });
+          } else {
+            WPWS.send({ type: WPProtocol.C2S.ROOM_JOIN, payload: { id: roomState.id, roomKey: roomKey || undefined } });
+          }
         });
       });
-    }
+    });
   });
 
   WPWS.onDisconnect(() => {
@@ -483,6 +561,13 @@
 
       case WPProtocol.S2C.SYNC:
         if (!p) return;
+        if (shouldDrainDeferredLeave(p)) {
+          lastJoinAttemptRoomId = null;
+          clearDeferredLeaveIntent(p.id);
+          WPWS.send({ type: WPProtocol.C2S.ROOM_LEAVE, payload: {} });
+          applyLocalLeaveState(p.id);
+          return;
+        }
         prevPlayerTime = roomState?.player?.time || 0;
         roomState = p;
         lastJoinAttemptRoomId = null;
@@ -496,6 +581,13 @@
 
       case WPProtocol.S2C.ROOM:
         if (!p?.id) return;
+        if (shouldDrainDeferredLeave(p)) {
+          lastJoinAttemptRoomId = null;
+          clearDeferredLeaveIntent(p.id);
+          WPWS.send({ type: WPProtocol.C2S.ROOM_LEAVE, payload: {} });
+          applyLocalLeaveState(p.id);
+          return;
+        }
         roomState = p;
         lastJoinAttemptRoomId = null;
         if (pendingCreatedRoomKey && roomState?.id) {
@@ -527,6 +619,9 @@
         break;
 
       case WPProtocol.S2C.ERROR:
+        if (deferredLeaveIntent?.roomId && lastJoinAttemptRoomId === deferredLeaveIntent.roomId) {
+          clearDeferredLeaveIntent(deferredLeaveIntent.roomId);
+        }
         if (p?.code === WPProtocol.ERROR_CODE.ROOM_NOT_FOUND) {
           const wasInRoom = inRoom;
           clearPendingJoinOptions();
@@ -639,6 +734,7 @@
       WPConstants.STORAGE.PENDING_ROOM_JOIN,
       WPConstants.STORAGE.PENDING_ROOM_JOIN_OPTIONS,
       WPConstants.STORAGE.PENDING_LEAVE_ROOM,
+      WPConstants.STORAGE.DEFERRED_LEAVE_ROOM,
       WPConstants.STORAGE.ROOM_SERVICE_ACTIVE,
       WPConstants.STORAGE.CURRENT_ROOM,
       WPConstants.STORAGE.USERNAME,
@@ -1249,6 +1345,9 @@
       if (changes[WPConstants.STORAGE.PENDING_LEAVE_ROOM]?.newValue) {
         finalizeLeaveIntent({ sendLeave: inRoom });
       }
+      if (changes[WPConstants.STORAGE.DEFERRED_LEAVE_ROOM]) {
+        syncDeferredLeaveIntent(changes[WPConstants.STORAGE.DEFERRED_LEAVE_ROOM].newValue);
+      }
       if (changes[WPConstants.STORAGE.PENDING_ACTION]?.newValue) {
         chrome.storage.local.remove(WPConstants.STORAGE.PENDING_ACTION);
         handleAction(changes[WPConstants.STORAGE.PENDING_ACTION].newValue);
@@ -1305,6 +1404,7 @@
       WPConstants.STORAGE.ACTIVE_BACKEND,
       WPConstants.STORAGE.CURRENT_ROOM,
       WPConstants.STORAGE.PENDING_ROOM_JOIN,
+      WPConstants.STORAGE.DEFERRED_LEAVE_ROOM,
       WPConstants.STORAGE.ROOM_SERVICE_ACTIVE,
     ], (result) => {
       const storedSessionId = result[WPConstants.STORAGE.SESSION_ID];
@@ -1314,6 +1414,7 @@
         sessionId = crypto.randomUUID();
         chrome.storage.local.set({ [WPConstants.STORAGE.SESSION_ID]: sessionId });
       }
+      syncDeferredLeaveIntent(result[WPConstants.STORAGE.DEFERRED_LEAVE_ROOM]);
       const backendMode = WPConstants.BACKEND.normalizeMode(result[WPConstants.STORAGE.BACKEND_MODE]);
       const activeBackend = WPConstants.BACKEND.isKnownKey(result[WPConstants.STORAGE.ACTIVE_BACKEND])
         ? result[WPConstants.STORAGE.ACTIVE_BACKEND]

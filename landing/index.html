@@ -1329,6 +1329,17 @@
       window.location.href = url;
     }
 
+    function handoffToStremio(url) {
+      if (!document.documentElement.hasAttribute('data-watchparty-ext')) {
+        navigateToUrl(url || 'https://web.stremio.com');
+        return;
+      }
+      window.postMessage({
+        type: 'watchparty-open-stremio',
+        url: url || 'https://web.stremio.com',
+      }, location.origin);
+    }
+
     let extStatusRequestSeq = 0;
     function requestExtensionStatus(timeoutMs = 350) {
       if (!document.documentElement.hasAttribute('data-watchparty-ext')) {
@@ -1703,15 +1714,13 @@
         preferDirectJoin: options.preferDirectJoin === true,
       }, location.origin);
       if (options.preferDirectJoin === true) {
-        const status = await requestExtensionStatus();
-        if (status?.hasStremioTab) return;
-        navigateToUrl('https://web.stremio.com');
+        handoffToStremio('https://web.stremio.com');
         return;
       }
       const fallbackUrl = (metaId && metaId !== 'pending' && metaId !== 'unknown' && metaType)
         ? `https://web.stremio.com/#/detail/${encodeURIComponent(metaType)}/${encodeURIComponent(metaId)}`
         : 'https://web.stremio.com';
-      navigateToUrl(fallbackUrl);
+      handoffToStremio(fallbackUrl);
     }
 
     function openCreateModal() {
@@ -1753,7 +1762,7 @@
         public: document.getElementById('create-room-public').checked,
       }, location.origin);
       closeCreateModal();
-      navigateToUrl('https://web.stremio.com');
+      handoffToStremio('https://web.stremio.com');
     }
 
     // --- Private room key / invite modal ---
@@ -1885,7 +1894,7 @@
           window.postMessage({ type: 'watchparty-join-room', roomId, username: username || undefined, roomKey, cryptoKey: roomKey || undefined }, window.location.origin);
 
           setTimeout(() => {
-            navigateToUrl('https://web.stremio.com');
+            handoffToStremio('https://web.stremio.com');
           }, 500);
         }
       });
@@ -1896,7 +1905,7 @@
         window.postMessage({ type: 'watchparty-join-room', roomId, username: username || undefined, roomKey, cryptoKey: roomKey || undefined }, window.location.origin);
         document.getElementById('redirect-status').textContent = 'Redirecting to Stremio Web...';
         setTimeout(() => {
-          navigateToUrl('https://web.stremio.com');
+          handoffToStremio('https://web.stremio.com');
         }, 500);
       }
     }

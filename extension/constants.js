@@ -77,6 +77,7 @@ const WPConstants = (() => {
     PENDING_ROOM_JOIN: 'pendingRoomJoin',
     PENDING_ROOM_JOIN_OPTIONS: 'pendingRoomJoinOptions',
     PENDING_LEAVE_ROOM: 'pendingLeaveRoom',
+    DEFERRED_LEAVE_ROOM: 'wpDeferredLeaveRoom',
     PENDING_ACTION: 'pendingAction',
     ROOM_SERVICE_ACTIVE: 'wpRoomServiceActive',
     ROOM_SERVICE_ERROR: 'wpRoomServiceError',

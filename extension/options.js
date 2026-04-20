@@ -117,7 +117,14 @@ function openWatchParty() {
 }
 
 function openStremio() {
-  chrome.tabs.create({ url: 'https://web.stremio.com' });
+  chrome.runtime.sendMessage(
+    { type: 'watchparty-ext', action: 'open-stremio', url: 'https://web.stremio.com' },
+    (response) => {
+      if (chrome.runtime.lastError || response?.ok === false) {
+        chrome.tabs.create({ url: 'https://web.stremio.com' });
+      }
+    }
+  );
 }
 
 async function resumeRoom() {
