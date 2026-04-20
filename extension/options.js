@@ -4,6 +4,8 @@ const $ = (id) => document.getElementById(id);
 
 let lastStatus = null;
 let refreshTimer = null;
+let backendMutationInFlight = false;
+let didInit = false;
 
 function setText(id, value) {
   const el = $(id);
@@ -18,6 +20,27 @@ function setPill(id, text, tone = '') {
   if (tone) el.classList.add(tone);
 }
 
+function setBackendFeedback(message = '', tone = '') {
+  const el = $('backend-feedback');
+  if (!el) return;
+  el.textContent = message;
+  el.className = 'backend-feedback';
+  if (tone) el.classList.add(tone);
+}
+
+function setBackendButtonsState(selectedMode, options = {}) {
+  const pendingMode = options.pendingMode || null;
+  const disabled = !!options.disabled;
+  document.querySelectorAll('#backend-toggle .backend-btn').forEach((btn) => {
+    const isActive = btn.dataset.mode === selectedMode;
+    const isPending = btn.dataset.mode === pendingMode;
+    btn.classList.toggle('active', isActive);
+    btn.classList.toggle('pending', isPending);
+    btn.disabled = disabled;
+    btn.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+  });
+}
+
 function getRoomDisplayName(status) {
   const room = status?.room;
   if (!room) return '';
@@ -26,11 +49,9 @@ function getRoomDisplayName(status) {
 
 function renderBackend(status) {
   const selectedMode = WPConstants.BACKEND.normalizeMode(status?.backendMode);
-  document.querySelectorAll('#backend-toggle .backend-btn').forEach((btn) => {
-    btn.classList.toggle('active', btn.dataset.mode === selectedMode);
-  });
+  setBackendButtonsState(selectedMode, { disabled: backendMutationInFlight });
 
-  const displayBackendKey = WPConstants.BACKEND.resolveBackendKey(selectedMode, status?.activeBackend);
+  const displayBackendKey = WPConstants.BACKEND.resolveKey(selectedMode, status?.activeBackend);
   const info = WPConstants.BACKEND.getInfo(displayBackendKey);
   const nextUrl = status?.activeBackendUrl || info.wsUrl;
   if (selectedMode === WPConstants.BACKEND.MODES.AUTO) {
@@ -82,7 +103,7 @@ function renderStatus(status) {
   setText('diag-room-error', status?.roomServiceError?.message || 'None');
 
   setPill('pill-extension', status?.stremioRunning ? 'Extension ready' : 'Extension active', status?.stremioRunning ? 'success' : '');
-  const backendKey = WPConstants.BACKEND.resolveBackendKey(status?.backendMode, status?.activeBackend);
+  const backendKey = WPConstants.BACKEND.resolveKey(status?.backendMode, status?.activeBackend);
   setPill('pill-backend', `${WPConstants.BACKEND.getInfo(backendKey).label} backend`, status?.wsConnected ? 'success' : 'warn');
 
   if (!status) {
@@ -101,10 +122,13 @@ function renderStatus(status) {
 
 async function refreshStatus() {
   try {
-    const status = await chrome.runtime.sendMessage({
-      type: 'watchparty-ext',
-      action: 'get-status',
-    });
+    const status = await Promise.race([
+      chrome.runtime.sendMessage({
+        type: 'watchparty-ext',
+        action: 'get-status',
+      }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('status-timeout')), 2500)),
+    ]);
     renderStatus(status);
   } catch {
     renderStatus(null);
@@ -138,8 +162,28 @@ function bindBackendButtons() {
   document.querySelectorAll('#backend-toggle .backend-btn').forEach((btn) => {
     btn.addEventListener('click', async () => {
       const mode = WPConstants.BACKEND.normalizeMode(btn.dataset.mode);
-      await chrome.storage.local.set({ [WPConstants.STORAGE.BACKEND_MODE]: mode });
-      await refreshStatus();
+      if (backendMutationInFlight) return;
+      const currentMode = WPConstants.BACKEND.normalizeMode(lastStatus?.backendMode);
+      if (mode === currentMode) {
+        setBackendFeedback(`Already using ${WPConstants.BACKEND.getInfo(WPConstants.BACKEND.resolveKey(mode, lastStatus?.activeBackend)).label} mode.`, 'warn');
+        return;
+      }
+
+      backendMutationInFlight = true;
+      setBackendButtonsState(currentMode, { pendingMode: mode, disabled: true });
+      setBackendFeedback(`Switching to ${WPConstants.BACKEND.getInfo(WPConstants.BACKEND.resolveKey(mode, lastStatus?.activeBackend)).label} mode…`);
+      try {
+        await chrome.storage.local.set({ [WPConstants.STORAGE.BACKEND_MODE]: mode });
+        lastStatus = { ...(lastStatus || {}), backendMode: mode };
+        renderBackend(lastStatus);
+        await refreshStatus();
+        setBackendFeedback(`Using ${WPConstants.BACKEND.getInfo(WPConstants.BACKEND.resolveKey(mode, lastStatus?.activeBackend)).label} mode.`, 'success');
+      } catch {
+        setBackendFeedback('Could not update backend mode right now.', 'warn');
+      } finally {
+        backendMutationInFlight = false;
+        renderBackend(lastStatus);
+      }
     });
   });
 }
@@ -152,11 +196,27 @@ function startAutoRefresh() {
 }
 
 function init() {
+  if (didInit) return;
+  didInit = true;
   bindBackendButtons();
   $('btn-open-watchparty').addEventListener('click', openWatchParty);
   $('btn-open-stremio').addEventListener('click', openStremio);
   $('btn-resume-room').addEventListener('click', () => { resumeRoom().catch(() => {}); });
-  $('btn-refresh').addEventListener('click', () => { refreshStatus().catch(() => {}); });
+  $('btn-refresh').addEventListener('click', async () => {
+    const button = $('btn-refresh');
+    const originalLabel = button.textContent;
+    button.disabled = true;
+    button.textContent = 'Refreshing...';
+    try {
+      await Promise.all([
+        refreshStatus(),
+        new Promise((resolve) => setTimeout(resolve, 180)),
+      ]);
+    } finally {
+      button.disabled = false;
+      button.textContent = originalLabel;
+    }
+  });
 
   chrome.storage.onChanged.addListener((changes) => {
     if (
@@ -176,8 +236,13 @@ function init() {
     if (!document.hidden) refreshStatus().catch(() => {});
   });
 
+  renderStatus(null);
   startAutoRefresh();
   refreshStatus().catch(() => {});
 }
 
-document.addEventListener('DOMContentLoaded', init);
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', init, { once: true });
+}
+window.addEventListener('load', init, { once: true });
+setTimeout(init, 0);

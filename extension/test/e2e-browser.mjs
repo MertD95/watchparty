@@ -90,6 +90,14 @@ async function openSidepanel(context, extId) {
   return page;
 }
 
+async function openOptions(context, extId) {
+  const page = await context.newPage();
+  trackPageDiagnostics(page, 'options');
+  await page.goto(`chrome-extension://${extId}/options.html`, { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(1000);
+  return page;
+}
+
 /** Navigate to Stremio and wait for extension overlay */
 async function openStremio(context) {
   const page = await context.newPage();
@@ -207,6 +215,55 @@ async function testPopupLoadsWithStatus() {
 
     await stremio.close();
     await popup.close();
+  } finally {
+    await context.close();
+  }
+}
+
+async function testOptionsSurfaceShowsBackendFeedback() {
+  console.log('\n── Test: Options page backend controls show feedback ──');
+  const context = await launchWithExtension();
+  try {
+    const extId = await getExtensionId(context);
+    const options = await openOptions(context, extId);
+
+    const defaultState = await options.evaluate(() => ({
+      activeMode: document.querySelector('#backend-toggle .backend-btn.active')?.dataset.mode || null,
+      refreshLabel: document.getElementById('btn-refresh')?.textContent || '',
+    }));
+    assert(defaultState.activeMode === 'local', `Options page reflects the current backend mode: "${defaultState.activeMode}"`);
+    assert(defaultState.refreshLabel === 'Refresh Status', `Options refresh button label: "${defaultState.refreshLabel}"`);
+
+    await options.click('#backend-live');
+    const liveState = await options.waitForFunction(() => {
+      const active = document.querySelector('#backend-toggle .backend-btn.active');
+      const note = document.getElementById('backend-note')?.textContent || '';
+      const feedback = document.getElementById('backend-feedback')?.textContent || '';
+      return active?.dataset.mode === 'live' && note.includes('Live mode is selected.') && feedback.includes('Using Live mode.');
+    }, { timeout: TIMEOUT }).then(() => true).catch(() => false);
+    assert(liveState, 'Options backend controls switch to Live with visible feedback');
+
+    await options.click('#backend-auto');
+    const autoState = await options.waitForFunction(() => {
+      const active = document.querySelector('#backend-toggle .backend-btn.active');
+      const note = document.getElementById('backend-note')?.textContent || '';
+      return active?.dataset.mode === 'auto' && note.includes('Auto mode is selected.');
+    }, { timeout: TIMEOUT }).then(() => true).catch(() => false);
+    assert(autoState, 'Options backend controls return to Auto with updated active state');
+
+    const refreshFeedback = await options.evaluate(async () => {
+      const button = document.getElementById('btn-refresh');
+      button?.click();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const busyLabel = button?.textContent || '';
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+      const idleLabel = button?.textContent || '';
+      return { busyLabel, idleLabel };
+    });
+    assert(refreshFeedback.busyLabel === 'Refreshing...', `Options refresh button shows progress: "${refreshFeedback.busyLabel}"`);
+    assert(refreshFeedback.idleLabel === 'Refresh Status', `Options refresh button resets: "${refreshFeedback.idleLabel}"`);
+
+    await options.close();
   } finally {
     await context.close();
   }
@@ -396,8 +453,9 @@ async function testCreateRoomFlow() {
         !!document.querySelector('[data-panel="chat"]')
         && !!document.querySelector('[data-panel="people"]')
         && !!document.querySelector('[data-panel="room"]')
+        && !!document.querySelector('[data-panel="prefs"]')
       );
-      assert(panelsReady, 'Sidebar exposes Chat, People, and Room tabs');
+      assert(panelsReady, 'Sidebar exposes Chat, People, Room, and Prefs tabs');
 
       await openSidebarPanel(stremio, 'people');
       const peopleText = await stremio.evaluate(() => document.getElementById('wp-users')?.innerText || '');
@@ -406,11 +464,31 @@ async function testCreateRoomFlow() {
       const sessionControlsReady = await stremio.evaluate(() => ({
         publicToggle: !!document.getElementById('wp-session-public'),
         autoPauseToggle: !!document.getElementById('wp-session-autopause'),
+      }));
+      assert(sessionControlsReady.publicToggle, 'Room tab shows host privacy control');
+      assert(sessionControlsReady.autoPauseToggle, 'Room tab shows auto-pause safeguard');
+      const roomKeyHelpStable = await stremio.evaluate(async () => {
+        const help = document.getElementById('wp-room-key-help');
+        const row = document.querySelector('label[for="wp-session-autopause"]');
+        if (!help || !row) return false;
+        const seenTexts = [];
+        const observer = new MutationObserver(() => {
+          seenTexts.push(help.textContent || '');
+        });
+        observer.observe(help, { childList: true, subtree: true, characterData: true });
+        row.click();
+        await new Promise((resolve) => setTimeout(resolve, 350));
+        row.click();
+        await new Promise((resolve) => setTimeout(resolve, 350));
+        observer.disconnect();
+        return !seenTexts.some((text) => /Loading invite key/i.test(text));
+      });
+      assert(roomKeyHelpStable, 'Room key helper text stays stable while auto-pause toggles update');
+      await openSidebarPanel(stremio, 'prefs');
+      const prefsReady = await stremio.evaluate(() => ({
         soundToggle: !!document.getElementById('wp-settings-sound'),
       }));
-      assert(sessionControlsReady.publicToggle, 'Session tab shows host privacy control');
-      assert(sessionControlsReady.autoPauseToggle, 'Session tab shows auto-pause safeguard');
-      assert(sessionControlsReady.soundToggle, 'Session tab shows browser-level personal preferences');
+      assert(prefsReady.soundToggle, 'Prefs tab shows browser-level personal preferences');
 
       // Test leave room
       await popup.bringToFront();
@@ -1030,21 +1108,81 @@ async function testHostVsPeerSettings() {
     const aliceSettings = await env.stremio1.evaluate(() => ({
       publicVisible: !!document.getElementById('wp-session-public'),
       autopauseVisible: !!document.getElementById('wp-session-autopause'),
-      reactionSoundVisible: !!document.getElementById('wp-settings-sound'),
     }));
     assert(aliceSettings.publicVisible, 'Host sees Public toggle');
     assert(aliceSettings.autopauseVisible, 'Host sees Auto-pause toggle');
-    assert(aliceSettings.reactionSoundVisible, 'Host sees Reaction sound toggle');
+    const roomToggleInteractive = await env.stremio1.evaluate(() => {
+      const row = document.querySelector('label[for="wp-session-public"]');
+      const input = document.getElementById('wp-session-public');
+      if (!row || !input) return false;
+      const before = input.checked;
+      row.click();
+      const after = input.checked;
+      row.click();
+      return before !== after;
+    });
+    assert(roomToggleInteractive, 'Room toggle rows react to clicks');
+    const roomToggleStable = await env.stremio1.evaluate(async () => {
+      const row = document.querySelector('label[for="wp-session-autopause"]');
+      const input = document.getElementById('wp-session-autopause');
+      if (!row || !input) return false;
+      const before = input.checked;
+      row.click();
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const nextRow = document.querySelector('label[for="wp-session-autopause"]');
+      const nextInput = document.getElementById('wp-session-autopause');
+      const toggled = nextInput ? nextInput.checked !== before : false;
+      const stable = nextRow === row;
+      nextRow?.click();
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      return toggled && stable;
+    });
+    assert(roomToggleStable, 'Room auto-pause toggle keeps the same DOM row after updates');
+    await openSidebarPanel(env.stremio1, 'prefs');
+    const alicePrefs = await env.stremio1.evaluate(() => ({
+      reactionSoundVisible: !!document.getElementById('wp-settings-sound'),
+    }));
+    assert(alicePrefs.reactionSoundVisible, 'Host sees Reaction sound toggle');
+    const prefsToggleInteractive = await env.stremio1.evaluate(() => {
+      const row = document.querySelector('label[for="wp-settings-sound"]');
+      const input = document.getElementById('wp-settings-sound');
+      if (!row || !input) return false;
+      const before = input.checked;
+      row.click();
+      const after = input.checked;
+      row.click();
+      return before !== after;
+    });
+    assert(prefsToggleInteractive, 'Prefs toggle rows react to clicks');
+    const prefsToggleStable = await env.stremio1.evaluate(async () => {
+      const row = document.querySelector('label[for="wp-settings-sound"]');
+      const input = document.getElementById('wp-settings-sound');
+      if (!row || !input) return false;
+      const before = input.checked;
+      row.click();
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const nextRow = document.querySelector('label[for="wp-settings-sound"]');
+      const nextInput = document.getElementById('wp-settings-sound');
+      const toggled = nextInput ? nextInput.checked !== before : false;
+      const stable = nextRow === row;
+      nextRow?.click();
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      return toggled && stable;
+    });
+    assert(prefsToggleStable, 'Prefs toggle rows stay mounted while preferences update');
 
     await openSidebarPanel(env.stremio2, 'room');
     const bobSettings = await env.stremio2.evaluate(() => ({
       publicVisible: !!document.getElementById('wp-session-public'),
       autopauseVisible: !!document.getElementById('wp-session-autopause'),
-      reactionSoundVisible: !!document.getElementById('wp-settings-sound'),
     }));
     assert(!bobSettings.publicVisible, 'Peer cannot see Public toggle');
     assert(!bobSettings.autopauseVisible, 'Peer cannot see Auto-pause toggle');
-    assert(bobSettings.reactionSoundVisible, 'Peer can see Reaction sound toggle');
+    await openSidebarPanel(env.stremio2, 'prefs');
+    const bobPrefs = await env.stremio2.evaluate(() => ({
+      reactionSoundVisible: !!document.getElementById('wp-settings-sound'),
+    }));
+    assert(bobPrefs.reactionSoundVisible, 'Peer can see Reaction sound toggle');
   } finally {
     await cleanupTwoUsers(env);
   }
@@ -1698,6 +1836,7 @@ async function main() {
 
   const tests = [
     testPopupLoadsWithStatus,
+    testOptionsSurfaceShowsBackendFeedback,
     testEmptyUsernameValidation,
     testCreateRoomWithoutStremioTabAttachesLater,
     testPopupFirstJoinMissingRoomShowsImmediateError,

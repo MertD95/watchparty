@@ -508,18 +508,40 @@ async function main() {
       checks.push({ name: 'Close button has × text', pass: closeBtn?.textContent?.trim() === '×' });
       checks.push({ name: 'Close button clickable', pass: clickable(closeBtn) });
 
-      // 2. Session tab is visible in the redesigned header
-      const sessionTab = document.querySelector('[data-panel="room"]');
-      checks.push({ name: 'Session tab visible', pass: visible(sessionTab) });
-      checks.push({ name: 'Session tab label present', pass: /Session/i.test(sessionTab?.innerText || '') });
+      // 2. Room and Prefs tabs are visible in the redesigned header
+      const chatTab = document.querySelector('[data-panel="chat"]');
+      const chatTabLabel = chatTab?.querySelector('span:not(.wp-tab-badge)');
+      const roomTab = document.querySelector('[data-panel="room"]');
+      const prefsTab = document.querySelector('[data-panel="prefs"]');
+      checks.push({ name: 'Chat tab label stays on one line', pass: chatTabLabel ? chatTabLabel.getClientRects().length === 1 : false });
+      checks.push({ name: 'Room tab visible', pass: visible(roomTab) });
+      checks.push({ name: 'Room tab label present', pass: /Room/i.test(roomTab?.innerText || '') });
+      checks.push({ name: 'Prefs tab visible', pass: visible(prefsTab) });
+      checks.push({ name: 'Prefs tab label present', pass: /Prefs/i.test(prefsTab?.innerText || '') });
 
       // 3. Room code element
       const roomCode = document.getElementById('wp-room-code');
       checks.push({ name: 'Room code visible', pass: visible(roomCode) });
       checks.push({ name: 'Room code within sidebar', pass: within(roomCode?.getBoundingClientRect()) });
       checks.push({ name: 'Room code has cursor pointer', pass: roomCode ? getComputedStyle(roomCode).cursor === 'pointer' : false });
+      const roomStatus = document.getElementById('wp-status');
+      checks.push({ name: 'Room status content is not clipped', pass: roomStatus ? roomStatus.scrollHeight <= roomStatus.clientHeight + 1 : false });
+      checks.push({ name: 'Room toggle shell exists', pass: !!document.querySelector('#wp-session-public + .wp-toggle-ui') });
+      checks.push({ name: 'Prefs toggle shell exists', pass: !!document.querySelector('#wp-settings-sound + .wp-toggle-ui') });
 
-      // 4. Crown (👑) next to host username
+      // 4. Empty chat hint should stay near the top, not float mid-panel
+      const tabbar = document.getElementById('wp-tabbar');
+      const emptyCard = document.querySelector('.wp-chat-empty-card');
+      const inputRowEl = document.getElementById('wp-chat-input-row');
+      if (tabbar && emptyCard && inputRowEl) {
+        const tabbarRect = tabbar.getBoundingClientRect();
+        const emptyRect = emptyCard.getBoundingClientRect();
+        const inputRect = inputRowEl.getBoundingClientRect();
+        checks.push({ name: 'Empty chat hint near top of panel', pass: (emptyRect.top - tabbarRect.bottom) < 48, detail: `${Math.round(emptyRect.top - tabbarRect.bottom)}px gap` });
+        checks.push({ name: 'Empty chat hint above input row', pass: emptyRect.bottom < inputRect.top });
+      }
+
+      // 5. Crown (👑) next to host username
       const crown = sidebar?.querySelector('.wp-crown');
       const crownUser = crown?.closest('.wp-user');
       checks.push({ name: 'Crown icon exists for host', pass: !!crown && crown.textContent?.includes('👑') });

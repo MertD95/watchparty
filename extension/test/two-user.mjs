@@ -179,11 +179,15 @@ async function main() {
     await pageB.evaluate(() => document.querySelector('[data-panel="room"]')?.click());
     await pageA.waitForTimeout(300);
     await pageB.waitForTimeout(300);
-    ok(await pageA.evaluate(() => !!document.getElementById('wp-session-public')), 'Host sees Session Controls in the sidebar');
+    ok(await pageA.evaluate(() => !!document.getElementById('wp-session-public')), 'Host sees Room controls in the sidebar');
     ok(await pageA.evaluate(() => !!document.getElementById('wp-session-autopause')), 'Host sees auto-pause safeguard in the sidebar');
     ok(await pageB.evaluate(() => !document.getElementById('wp-session-public')), 'Peer does not see host-only session controls');
-    ok(await pageA.evaluate(() => !!document.getElementById('wp-settings-sound')), 'Host sees personal browser settings in the sidebar');
-    ok(await pageB.evaluate(() => !!document.getElementById('wp-settings-sound')), 'Peer sees personal browser settings in the sidebar');
+    await pageA.evaluate(() => document.querySelector('[data-panel="prefs"]')?.click());
+    await pageB.evaluate(() => document.querySelector('[data-panel="prefs"]')?.click());
+    await pageA.waitForTimeout(300);
+    await pageB.waitForTimeout(300);
+    ok(await pageA.evaluate(() => !!document.getElementById('wp-settings-sound')), 'Host sees personal browser settings in Prefs');
+    ok(await pageB.evaluate(() => !!document.getElementById('wp-settings-sound')), 'Peer sees personal browser settings in Prefs');
 
     await pageA.evaluate(() => document.querySelector('[data-panel="chat"]')?.click());
     await pageB.evaluate(() => document.querySelector('[data-panel="chat"]')?.click());
@@ -203,11 +207,11 @@ async function main() {
     ok(await pageA.waitForFunction(() => document.getElementById('wp-chat-messages')?.innerText?.includes('Hi from Alice'), { timeout: 5000 }).then(() => true).catch(() => false), 'Alice chat round-trip');
 
     await pageA.evaluate(() => {
-      document.querySelector('[data-panel="room"]')?.click();
+      document.querySelector('[data-panel="prefs"]')?.click();
       document.querySelector('.wp-color-btn[data-color="#ec4899"]')?.click();
     });
     await pageB.evaluate(() => {
-      document.querySelector('[data-panel="room"]')?.click();
+      document.querySelector('[data-panel="prefs"]')?.click();
       document.querySelector('.wp-color-btn[data-color="#22c55e"]')?.click();
     });
     await pageA.waitForTimeout(1000);

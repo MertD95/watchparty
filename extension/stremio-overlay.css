@@ -158,8 +158,8 @@
 
   #wp-tabbar {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 8px;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6px;
     padding: 10px 16px 12px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.08);
     background: rgba(255, 255, 255, 0.02);
@@ -167,21 +167,30 @@
 
   .wp-tab-btn {
     appearance: none;
+    position: relative;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 6px;
+    gap: 4px;
     width: 100%;
     min-width: 0;
-    padding: 8px 10px;
+    padding: 8px 8px;
     border-radius: 10px;
     border: 1px solid rgba(255, 255, 255, 0.08);
     background: rgba(255, 255, 255, 0.04);
     color: #9aa3c7;
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 600;
     cursor: pointer;
     transition: all .14s ease;
+  }
+
+  .wp-tab-btn > span:first-child {
+    display: block;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .wp-tab-btn:hover:not(.wp-tab-disabled) {
@@ -203,6 +212,9 @@
   }
 
   .wp-tab-badge {
+    position: absolute;
+    top: 6px;
+    right: 6px;
     min-width: 18px;
     height: 18px;
     border-radius: 999px;
@@ -241,14 +253,18 @@
   }
 
   #wp-status {
-    padding: 12px 14px;
+    padding: 14px 16px;
     font-size: 12px;
     color: #ccc;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
   }
 
   .wp-status-line {
     display: block;
-    margin-bottom: 2px;
+    margin-bottom: 0;
+    line-height: 1.45;
   }
 
   .wp-muted {
@@ -276,19 +292,19 @@
     font-size: 14px;
     font-weight: 700;
     color: #eef2ff;
-    margin-bottom: 6px;
+    margin-bottom: 2px;
   }
 
   #wp-room-controls,
   #wp-local-settings {
-    padding: 14px;
+    padding: 16px;
   }
 
   .wp-card-title {
-    font-size: 13px;
+    font-size: 14px;
     font-weight: 700;
     color: #eef2ff;
-    margin-bottom: 4px;
+    margin-bottom: 6px;
   }
 
   .wp-card-copy {
@@ -301,7 +317,7 @@
   .wp-setting-list {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 8px;
   }
 
   .wp-setting-row {
@@ -309,18 +325,85 @@
     align-items: flex-start;
     justify-content: space-between;
     gap: 12px;
-    padding: 12px;
+    padding: 10px 12px;
     border-radius: 12px;
     background: rgba(255, 255, 255, 0.025);
     border: 1px solid rgba(255, 255, 255, 0.05);
+    cursor: pointer;
+    transition: background .12s ease, border-color .12s ease, transform .12s ease;
   }
 
-  .wp-setting-row input[type="checkbox"] {
-    width: 16px;
-    height: 16px;
-    margin-top: 2px;
-    accent-color: var(--wp-accent);
+  .wp-setting-row:hover {
+    background: rgba(255, 255, 255, 0.05);
+    border-color: rgba(255, 255, 255, 0.1);
+  }
+
+  .wp-setting-row:active {
+    transform: scale(0.995);
+  }
+
+  .wp-setting-row:has(.wp-toggle-shell input:checked) {
+    background: rgba(var(--wp-accent-rgb), 0.1);
+    border-color: rgba(var(--wp-accent-rgb), 0.3);
+  }
+
+  .wp-toggle-shell {
+    position: relative;
+    width: 42px;
+    height: 24px;
     flex-shrink: 0;
+    margin-top: 2px;
+  }
+
+  .wp-toggle-shell input[type="checkbox"] {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    opacity: 0;
+    appearance: none !important;
+    -webkit-appearance: none !important;
+    cursor: pointer;
+    z-index: 2;
+  }
+
+  .wp-toggle-ui {
+    position: absolute;
+    inset: 0;
+    border-radius: 999px;
+    background: rgba(148, 163, 184, 0.18);
+    border: 1px solid rgba(148, 163, 184, 0.22);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    transition: background .15s ease, border-color .15s ease, box-shadow .15s ease;
+  }
+
+  .wp-toggle-knob {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 18px;
+    height: 18px;
+    border-radius: 999px;
+    background: #f8fafc;
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.45);
+    transition: transform .15s ease;
+  }
+
+  .wp-toggle-shell input[type="checkbox"]:checked + .wp-toggle-ui {
+    background: rgba(var(--wp-accent-rgb), 0.42);
+    border-color: rgba(var(--wp-accent-rgb), 0.55);
+    box-shadow: inset 0 0 0 1px rgba(var(--wp-accent-rgb), 0.2);
+  }
+
+  .wp-toggle-shell input[type="checkbox"]:checked + .wp-toggle-ui .wp-toggle-knob {
+    transform: translateX(18px);
+  }
+
+  .wp-toggle-shell input[type="checkbox"]:focus-visible + .wp-toggle-ui {
+    box-shadow:
+      0 0 0 2px rgba(var(--wp-accent-rgb), 0.2),
+      inset 0 0 0 1px rgba(var(--wp-accent-rgb), 0.2);
   }
 
   .wp-setting-copy {
@@ -356,7 +439,7 @@
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 8px;
-    margin-top: 12px;
+    margin-top: 14px;
   }
 
   .wp-name-row {
@@ -405,6 +488,10 @@
     background: rgba(var(--wp-accent-rgb), 0.24);
   }
 
+  .wp-name-save:active {
+    transform: scale(0.98);
+  }
+
   .wp-room-key-help {
     min-height: 16px;
     color: #8f98ba;
@@ -418,7 +505,7 @@
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    margin-bottom: 8px;
+    margin: 14px 0 8px;
   }
 
   .wp-color-row {
@@ -705,10 +792,12 @@
 
   #wp-chat-empty {
     position: absolute;
-    inset: 16px 16px 82px;
+    top: 16px;
+    left: 16px;
+    right: 16px;
     display: flex;
-    align-items: center;
-    justify-content: center;
+    align-items: flex-start;
+    justify-content: stretch;
     pointer-events: none;
     z-index: 1;
   }
@@ -824,16 +913,18 @@
   /* Action buttons */
   .wp-action-row {
     display: flex;
-    gap: 6px;
-    margin-top: 6px;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 8px;
   }
 
   .wp-action-btn {
     background: rgba(255, 255, 255, 0.06);
     border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 6px;
-    padding: 3px 10px;
+    border-radius: 10px;
+    padding: 6px 10px;
     font-size: 11px;
+    font-weight: 600;
     color: #ccc;
     cursor: pointer;
     transition: all .12s;
@@ -843,6 +934,10 @@
     background: rgba(var(--wp-accent-rgb), 0.15);
     border-color: rgba(var(--wp-accent-rgb), 0.3);
     color: var(--wp-accent-light);
+  }
+
+  .wp-action-btn:active {
+    transform: scale(0.98);
   }
 
   /* GIF button */
