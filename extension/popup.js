@@ -655,5 +655,3 @@ document.addEventListener('click', (e) => {
   }
 });
 
-// escapeHtml provided by WPUtils (loaded via popup.html)
-function escapeHtml(str) { return WPUtils.escapeHtml(str); }
