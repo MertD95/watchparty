@@ -84,12 +84,12 @@ function resetLobbyActionButtons() {
   $('btn-join').textContent = 'Join Room';
 }
 
-function copyTextWithFeedback(textPromise, target, idleText, successText) {
-  Promise.resolve(textPromise)
-    .then((value) => {
-      if (!value) return;
-      return WPUtils.copyText(value);
-    })
+function copyTextWithFeedback(textSource, target, idleText, successText) {
+  WPUtils.copyTextDeferred(() => (
+    typeof textSource === 'function'
+      ? textSource()
+      : textSource
+  ))
     .then((copied) => {
       if (!copied) return;
       if (!target) return;
@@ -111,11 +111,15 @@ function setStremioStatus(isRunning) {
   }
 }
 
-function updateStatusHint(hasStremioTab, stremioRunning) {
+function updateStatusHint(hasStremioTab, stremioRunning, bootstrapPending) {
   const hint = $('status-hint');
   if (!hint) return;
+  if (bootstrapPending) {
+    hint.textContent = 'WatchParty is staged and waiting for Stremio Web. Finish setup there to create or join the room.';
+    return;
+  }
   if (!hasStremioTab) {
-    hint.textContent = 'No Stremio Web tab is open. You can still create or join a room here and open Stremio later when you are ready to watch.';
+    hint.textContent = 'No Stremio Web tab is open. Create or join here and WatchParty will hand the room off when Stremio opens.';
     return;
   }
   if (!stremioRunning) {
@@ -261,7 +265,7 @@ function applyStatusResponse(response) {
   currentActiveBackend = getKnownBackendKey(response.activeBackend);
   currentActiveBackendUrl = response.activeBackendUrl || null;
   currentWsConnected = !!response.wsConnected;
-  updateStatusHint(!!response.hasStremioTab, !!response.stremioRunning);
+  updateStatusHint(!!response.hasStremioTab, !!response.stremioRunning, !!response.bootstrapPending);
   renderBackendControls();
   setWsStatus(currentWsConnected);
 }
@@ -321,9 +325,6 @@ function waitForRoomState({ onRoom, onError, onTimeout }) {
         });
       });
       return;
-    }
-    if (changes[WPConstants.STORAGE.ROOM_SERVICE_ERROR]?.newValue) {
-      finish(() => onError?.(changes[WPConstants.STORAGE.ROOM_SERVICE_ERROR].newValue));
     }
   }
 
@@ -550,8 +551,8 @@ $('btn-create').addEventListener('click', () => {
   // Arm the watcher before sending create-room so a warm WS can't win the race.
   const stopWaiting = waitForRoomState({
     onRoom: (room, userId) => showRoomView(room, userId),
-    onError: (error) => setCreateError(getErrorMessage(error, 'Failed to create room. WatchParty could not reach the room service in time.')),
-    onTimeout: () => setCreateError('Failed to create room. WatchParty could not reach the room service in time.'),
+    onError: (error) => setCreateError(getErrorMessage(error, 'Failed to create room. Open Stremio and try again.')),
+    onTimeout: () => setCreateError('Failed to create room. Open Stremio and try again.'),
   });
 
   chrome.runtime.sendMessage({
@@ -563,12 +564,17 @@ $('btn-create').addEventListener('click', () => {
     public: isPublic,
     roomName,
   }, (response) => {
-    handleSendMessageFailure(
+    if (handleSendMessageFailure(
       response,
-      'Failed to create room. WatchParty could not reach the room service in time.',
+      'Failed to create room. Open Stremio and try again.',
       stopWaiting,
       setCreateError,
-    );
+    )) return;
+    if (response?.staged === true) {
+      stopWaiting();
+      $('btn-create').textContent = 'Opening Stremio...';
+      openStremioTab();
+    }
   });
 
   $('btn-create').disabled = true;
@@ -590,8 +596,8 @@ $('btn-join').addEventListener('click', () => {
   // Arm the watcher before sending join-room so fast local updates aren't missed.
   const stopWaiting = waitForRoomState({
     onRoom: (room, userId) => showRoomView(room, userId),
-    onError: (error) => setJoinError(getErrorMessage(error, 'Room join timed out. WatchParty could not reach the room service in time.')),
-    onTimeout: () => setJoinError('Room join timed out. WatchParty could not reach the room service in time.'),
+    onError: (error) => setJoinError(getErrorMessage(error, 'Room join timed out. Open Stremio and try again.')),
+    onTimeout: () => setJoinError('Room join timed out. Open Stremio and try again.'),
   });
 
   chrome.runtime.sendMessage({
@@ -601,12 +607,17 @@ $('btn-join').addEventListener('click', () => {
     roomId,
     roomKey: parsedJoin.roomKey || undefined,
   }, (response) => {
-    handleSendMessageFailure(
+    if (handleSendMessageFailure(
       response,
-      'Room join timed out. WatchParty could not reach the room service in time.',
+      'Room join timed out. Open Stremio and try again.',
       stopWaiting,
       setJoinError,
-    );
+    )) return;
+    if (response?.staged === true) {
+      stopWaiting();
+      $('btn-join').textContent = 'Opening Stremio...';
+      openStremioTab();
+    }
   });
 
   $('btn-join').disabled = true;
@@ -635,7 +646,7 @@ $('btn-share').addEventListener('click', () => {
   const roomId = $('room-id-display').textContent;
   if (!roomId) return;
   copyTextWithFeedback(
-    buildInviteUrlWithKey(roomId),
+    () => buildInviteUrlWithKey(roomId),
     $('btn-share'),
     'Copy Invite',
     'Link Copied!'
@@ -648,7 +659,7 @@ document.addEventListener('click', (e) => {
     const roomId = e.target.textContent;
     const original = e.target.textContent;
     copyTextWithFeedback(
-      buildInviteUrlWithKey(roomId),
+      () => buildInviteUrlWithKey(roomId),
       e.target,
       original,
       'Link copied!'

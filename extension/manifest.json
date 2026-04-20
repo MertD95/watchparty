@@ -7,6 +7,7 @@
   "permissions": [
     "declarativeNetRequest",
     "declarativeNetRequestFeedback",
+    "offscreen",
     "storage",
     "scripting",
     "sidePanel"

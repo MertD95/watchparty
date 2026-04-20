@@ -1231,6 +1231,8 @@
           profileNote.textContent = 'Install the extension to create and join rooms from WatchParty.';
         } else if (room) {
           profileNote.textContent = 'You already have an active room. Go to it in Stremio to reopen the WatchParty sidebar.';
+        } else if (nextStatus?.bootstrapPending) {
+          profileNote.textContent = 'WatchParty is staged and waiting for Stremio. Continue there to finish creating or joining the room.';
         } else if (nextStatus?.hasStremioTab) {
           profileNote.textContent = 'Stremio is already open. Create here, then continue there when the room is ready.';
         } else {

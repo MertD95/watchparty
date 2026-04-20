@@ -1740,8 +1740,7 @@ const WPOverlay = (() => {
     try {
       const roomId = roomState?.id;
       if (!roomId) return false;
-      const inviteUrl = await buildInviteUrl(roomId);
-      return await WPUtils.copyText(inviteUrl);
+      return await WPUtils.copyTextDeferred(() => buildInviteUrl(roomId));
     } catch {
       return false;
     }

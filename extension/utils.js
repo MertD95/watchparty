@@ -62,5 +62,49 @@ const WPUtils = (() => {
     }
   }
 
-  return { USER_COLORS, getUserColor, escapeHtml, copyText };
+  async function copyTextViaExtension(text) {
+    const value = String(text || '');
+    if (!value || !chrome?.runtime?.sendMessage) return false;
+
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: 'watchparty-ext',
+        action: 'copy-to-clipboard',
+        text: value,
+      });
+      return response?.ok === true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function copyTextDeferred(resolveText) {
+    const loader = (typeof resolveText === 'function')
+      ? resolveText
+      : () => resolveText;
+    let resolvedValue = '';
+
+    try {
+      resolvedValue = String(await loader() || '');
+      if (!resolvedValue) return false;
+
+      if (await copyTextViaExtension(resolvedValue)) return true;
+
+      if (navigator.clipboard?.write && typeof ClipboardItem !== 'undefined') {
+        const item = new ClipboardItem({
+          'text/plain': Promise.resolve(new Blob([resolvedValue], { type: 'text/plain' })),
+        });
+        await navigator.clipboard.write([item]);
+        return true;
+      }
+    } catch {}
+
+    try {
+      return await copyText(resolvedValue || await loader());
+    } catch {
+      return false;
+    }
+  }
+
+  return { USER_COLORS, getUserColor, escapeHtml, copyText, copyTextDeferred, copyTextViaExtension };
 })();

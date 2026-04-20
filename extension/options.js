@@ -99,8 +99,8 @@ function renderStatus(status) {
   setText('diag-backend-url', status?.activeBackendUrl || '-');
   setText('diag-stremio', status?.stremioRunning ? 'Detected' : 'Not detected');
   setText('diag-surface', status?.hasStremioTab ? 'Stremio tab available' : 'No Stremio tab');
-  setText('diag-room-service', status?.roomServiceActive ? 'Active in background' : 'Idle');
-  setText('diag-room-error', status?.roomServiceError?.message || 'None');
+  setText('diag-room-service', status?.bootstrapPending ? 'Pending until Stremio opens' : 'Idle');
+  setText('diag-room-error', 'Stremio tabs own live room connections');
 
   setPill('pill-extension', status?.stremioRunning ? 'Extension ready' : 'Extension active', status?.stremioRunning ? 'success' : '');
   const backendKey = WPConstants.BACKEND.resolveKey(status?.backendMode, status?.activeBackend);
@@ -110,6 +110,8 @@ function renderStatus(status) {
     $('hero-note').textContent = 'WatchParty could not read extension status just now. Try refreshing this page.';
   } else if (status.room) {
     $('hero-note').textContent = 'A room is already active. Go to it in Stremio to focus the tab and reopen the WatchParty sidebar.';
+  } else if (status.bootstrapPending) {
+    $('hero-note').textContent = 'WatchParty is staged and waiting for Stremio. Open it to finish creating or joining the room.';
   } else if (status.hasStremioTab) {
     $('hero-note').textContent = 'Stremio is already open. When a room is active, WatchParty can focus that tab and reopen the in-page sidebar.';
   } else {
@@ -225,8 +227,8 @@ function init() {
       || changes[WPConstants.STORAGE.ACTIVE_BACKEND_URL]
       || changes[WPConstants.STORAGE.WS_CONNECTED]
       || changes[WPConstants.STORAGE.ROOM_STATE]
-      || changes[WPConstants.STORAGE.ROOM_SERVICE_ACTIVE]
-      || changes[WPConstants.STORAGE.ROOM_SERVICE_ERROR]
+      || changes[WPConstants.STORAGE.CURRENT_ROOM]
+      || changes[WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT]
     ) {
       refreshStatus().catch(() => {});
     }

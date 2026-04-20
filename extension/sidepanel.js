@@ -175,22 +175,23 @@
   }
 
   function copyInvite(roomState) {
-    chrome.storage.local.get([
-      WPConstants.STORAGE.BACKEND_MODE,
-      WPConstants.STORAGE.ACTIVE_BACKEND,
-    ], (result) => {
-      const inviteUrl = WPConstants.BACKEND.buildInviteUrl(
-        roomState.id,
-        result[WPConstants.STORAGE.BACKEND_MODE],
-        result[WPConstants.STORAGE.ACTIVE_BACKEND]
-      );
-      getStoredRoomKey(roomState.id, (roomKey) => {
-        const finalUrl = roomKey ? `${inviteUrl}#key=${roomKey}` : inviteUrl;
-        WPUtils.copyText(finalUrl)
-          .then((copied) => showToast(copied ? 'Invite copied' : 'Copy failed'))
-          .catch(() => showToast('Copy failed'));
+    WPUtils.copyTextDeferred(() => new Promise((resolve) => {
+      chrome.storage.local.get([
+        WPConstants.STORAGE.BACKEND_MODE,
+        WPConstants.STORAGE.ACTIVE_BACKEND,
+      ], (result) => {
+        const inviteUrl = WPConstants.BACKEND.buildInviteUrl(
+          roomState.id,
+          result[WPConstants.STORAGE.BACKEND_MODE],
+          result[WPConstants.STORAGE.ACTIVE_BACKEND]
+        );
+        getStoredRoomKey(roomState.id, (roomKey) => {
+          resolve(roomKey ? `${inviteUrl}#key=${roomKey}` : inviteUrl);
+        });
       });
-    });
+    }))
+      .then((copied) => showToast(copied ? 'Invite copied' : 'Copy failed'))
+      .catch(() => showToast('Copy failed'));
   }
 
   function updateRoomCodeChip(roomState) {
@@ -254,12 +255,10 @@
   }
 
   function sendAction(detail) {
-    chrome.storage.local.set({
-      [WPConstants.STORAGE.PENDING_ACTION]: {
-        ...detail,
-        nonce: crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(),
-      },
-    });
+    chrome.runtime.sendMessage({
+      type: 'watchparty-ext',
+      ...detail,
+    }).catch(() => {});
   }
 
   function stopTypingSignal() {

@@ -56,6 +56,10 @@ const WPConstants = (() => {
 
   const ROOM_KEY_LOCAL_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 
+  function normalizeTabId(value) {
+    return Number.isInteger(value) && value >= 0 ? value : null;
+  }
+
   // Chrome storage keys — single source of truth across all extension files
   const STORAGE = Object.freeze({
     ROOM_STATE: 'wpRoomState',
@@ -73,17 +77,108 @@ const WPConstants = (() => {
     FLOATING_REACTIONS: 'wpFloatingReactions',
     STREMIO_PROFILE: 'stremioProfile',
     SAVED_AUTH_KEY: 'savedAuthKey',
-    PENDING_ROOM_CREATE: 'pendingRoomCreate',
-    PENDING_ROOM_JOIN: 'pendingRoomJoin',
-    PENDING_ROOM_JOIN_OPTIONS: 'pendingRoomJoinOptions',
-    PENDING_LEAVE_ROOM: 'pendingLeaveRoom',
+    BOOTSTRAP_ROOM_INTENT: 'wpBootstrapRoomIntent',
     DEFERRED_LEAVE_ROOM: 'wpDeferredLeaveRoom',
-    PENDING_ACTION: 'pendingAction',
-    ROOM_SERVICE_ACTIVE: 'wpRoomServiceActive',
-    ROOM_SERVICE_ERROR: 'wpRoomServiceError',
-    ACTIVE_VIDEO_TAB: 'wpActiveVideoTab', // userId of the tab that owns sync/playback
+    ACTIVE_VIDEO_TAB: 'wpActiveVideoTab', // active video-tab lease { leaseId, tabId, sessionId, claimedAt }
     // Dynamic key helper for per-room encryption keys
     roomKey(roomId) { return `wpRoomKey:${roomId}`; },
+  });
+
+  // Storage contract — keep durable state and cross-context bootstrap state in storage.
+  // Same-tab "do this right now" commands should stay in memory.
+  const STORAGE_CONTRACT = Object.freeze({
+    DURABLE: Object.freeze([
+      STORAGE.ROOM_STATE,
+      STORAGE.USER_ID,
+      STORAGE.WS_CONNECTED,
+      STORAGE.BACKEND_MODE,
+      STORAGE.ACTIVE_BACKEND,
+      STORAGE.ACTIVE_BACKEND_URL,
+      STORAGE.USERNAME,
+      STORAGE.SESSION_ID,
+      STORAGE.CURRENT_ROOM,
+      STORAGE.ACCENT_COLOR,
+      STORAGE.COMPACT_CHAT,
+      STORAGE.REACTION_SOUND,
+      STORAGE.FLOATING_REACTIONS,
+      STORAGE.STREMIO_PROFILE,
+      STORAGE.SAVED_AUTH_KEY,
+      STORAGE.ACTIVE_VIDEO_TAB,
+    ]),
+    BOOTSTRAP: Object.freeze([
+      STORAGE.BOOTSTRAP_ROOM_INTENT,
+      STORAGE.DEFERRED_LEAVE_ROOM,
+    ]),
+    IN_MEMORY_ONLY: Object.freeze([
+      'pendingRoomCreateCommand',
+      'pendingRoomJoinCommand',
+      'pendingJoinOptions',
+      'deferredLeaveIntent',
+      'activeVideoLease',
+    ]),
+  });
+
+  const BOOTSTRAP_ROOM_INTENT = Object.freeze({
+    buildCreate(command = {}) {
+      return {
+        action: 'create-room',
+        username: typeof command.username === 'string' ? command.username.trim() : '',
+        meta: command.meta || null,
+        stream: command.stream || null,
+        public: command.public === true,
+        roomName: typeof command.roomName === 'string' && command.roomName.trim() ? command.roomName.trim() : undefined,
+        roomKey: typeof command.roomKey === 'string' && command.roomKey.trim() ? command.roomKey.trim() : undefined,
+        requestedAt: Date.now(),
+      };
+    },
+    buildJoin(command = {}) {
+      const roomId = typeof command.roomId === 'string' ? command.roomId.trim() : '';
+      if (!roomId) return null;
+      return {
+        action: 'join-room',
+        roomId,
+        username: typeof command.username === 'string' ? command.username.trim() : '',
+        roomKey: typeof command.roomKey === 'string' && command.roomKey.trim() ? command.roomKey.trim() : undefined,
+        preferDirectJoin: command.preferDirectJoin === true,
+        requestedAt: Date.now(),
+      };
+    },
+    normalize(value) {
+      if (!value || typeof value !== 'object') return null;
+      if (value.action === 'create-room') {
+        return this.buildCreate(value);
+      }
+      if (value.action === 'join-room') {
+        return this.buildJoin(value);
+      }
+      return null;
+    },
+  });
+
+  const VIDEO_TAB_LEASE = Object.freeze({
+    build({ leaseId, tabId, sessionId, claimedAt = Date.now() }) {
+      if (typeof leaseId !== 'string' || !leaseId.trim()) return null;
+      return {
+        leaseId: leaseId.trim(),
+        tabId: normalizeTabId(tabId),
+        sessionId: typeof sessionId === 'string' && sessionId.trim() ? sessionId.trim() : null,
+        claimedAt: Number.isFinite(claimedAt) && claimedAt > 0 ? claimedAt : Date.now(),
+      };
+    },
+    normalize(value) {
+      if (!value || typeof value !== 'object') return null;
+      if (typeof value.leaseId !== 'string' || !value.leaseId.trim()) return null;
+      return {
+        leaseId: value.leaseId.trim(),
+        tabId: normalizeTabId(value.tabId),
+        sessionId: typeof value.sessionId === 'string' && value.sessionId.trim() ? value.sessionId.trim() : null,
+        claimedAt: Number.isFinite(value.claimedAt) && value.claimedAt > 0 ? value.claimedAt : Date.now(),
+      };
+    },
+    isOwner(value, leaseId) {
+      const normalized = this.normalize(value);
+      return !!normalized && normalized.leaseId === leaseId;
+    },
   });
 
   const ROOM_KEYS = Object.freeze({
@@ -129,5 +224,5 @@ const WPConstants = (() => {
     buildInviteUrl,
   });
 
-  return { STORAGE, BACKEND, ROOM_KEYS };
+  return { STORAGE, STORAGE_CONTRACT, BACKEND, ROOM_KEYS, VIDEO_TAB_LEASE, BOOTSTRAP_ROOM_INTENT };
 })();
