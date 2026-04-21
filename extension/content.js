@@ -23,11 +23,11 @@ window.addEventListener('message', async (event) => {
   if (event.source !== window) return;
   if (!ALLOWED_ORIGINS.has(event.origin)) return;
 
-  if (event.data?.type === 'watchparty-ext-request' && event.data.action === 'get-status') {
+  if (event.data?.type === 'watchparty-ext-request' && event.data.action === WPConstants.ACTION.STATUS_GET) {
     try {
       const response = await chrome.runtime.sendMessage({
         type: 'watchparty-ext',
-        action: 'get-status',
+        action: WPConstants.ACTION.STATUS_GET,
       });
       window.postMessage({
         type: 'watchparty-ext-response',
@@ -48,7 +48,7 @@ async function sendCachedProfile() {
   try {
     const response = await chrome.runtime.sendMessage({
       type: 'watchparty-ext',
-      action: 'get-status',
+      action: WPConstants.ACTION.STATUS_GET,
     });
     window.postMessage({ type: 'watchparty-ext-profile', data: response }, location.origin);
   } catch { /* extension context invalidated */ }
@@ -59,7 +59,7 @@ function onReady() {
     detail: { version: chrome.runtime.getManifest().version },
   }));
   sendRuntimeMessage({
-    action: 'surface-ready',
+    action: WPConstants.ACTION.SURFACE_READY,
     surface: 'watchparty',
   });
   sendCachedProfile();
@@ -69,7 +69,7 @@ function onReady() {
     const raw = localStorage.getItem('stremio.authKey');
     if (raw) {
       const authKey = JSON.parse(raw);
-      if (authKey) sendRuntimeMessage({ action: 'save-auth-key', authKey });
+      if (authKey) sendRuntimeMessage({ action: WPConstants.ACTION.AUTH_KEY_SAVE, authKey });
     }
   } catch { /* no saved auth key */ }
 }
@@ -83,13 +83,13 @@ if (document.readyState === 'loading') {
 // Listen for updates pushed from background
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type !== 'watchparty-ext') return;
-  if (message.action === 'probe-surface') {
+  if (message.action === WPConstants.ACTION.PROBE_SURFACE) {
     sendResponse({ surface: 'watchparty' });
     return true;
   }
-  if (message.action === 'profile-updated') {
+  if (message.action === WPConstants.ACTION.PROFILE_UPDATED) {
     window.postMessage({ type: 'watchparty-ext-profile', data: { profile: message.data } }, location.origin);
-  } else if (message.action === 'stremio-status') {
+  } else if (message.action === WPConstants.ACTION.STREMIO_STATUS_UPDATED) {
     window.postMessage({ type: 'watchparty-ext-profile', data: { stremioRunning: message.stremioRunning } }, location.origin);
   }
   return false;
@@ -106,7 +106,7 @@ window.addEventListener('message', (event) => {
     const username = typeof event.data.username === 'string' ? event.data.username.trim() : '';
     const roomKey = event.data.roomKey || event.data.cryptoKey;
     sendRuntimeMessage({
-      action: 'join-room',
+      action: WPConstants.ACTION.ROOM_JOIN,
       roomId: event.data.roomId,
       username,
       roomKey,
@@ -117,7 +117,7 @@ window.addEventListener('message', (event) => {
   if (event.data?.type === 'watchparty-create-room' && event.data.username) {
     const username = typeof event.data.username === 'string' ? event.data.username.trim() : '';
     sendRuntimeMessage({
-      action: 'create-room',
+      action: WPConstants.ACTION.ROOM_CREATE,
       username,
       meta: event.data.meta || { id: 'pending', type: 'movie', name: 'WatchParty Session' },
       stream: event.data.stream || { url: 'https://watchparty.mertd.me/sync' },
@@ -127,17 +127,18 @@ window.addEventListener('message', (event) => {
   }
 
   if (event.data?.type === 'watchparty-resume-room') {
-    sendRuntimeMessage({ action: 'resume-room' });
+    sendRuntimeMessage({ action: WPConstants.ACTION.ROOM_RESUME });
   }
 
   if (event.data?.type === 'watchparty-open-options') {
-    sendRuntimeMessage({ action: 'open-options' });
+    sendRuntimeMessage({ action: WPConstants.ACTION.APP_OPTIONS_OPEN });
   }
 
   if (event.data?.type === 'watchparty-open-stremio') {
     sendRuntimeMessage({
-      action: 'open-stremio',
+      action: WPConstants.ACTION.APP_STREMIO_OPEN,
       url: typeof event.data.url === 'string' ? event.data.url : undefined,
     });
   }
 });
+

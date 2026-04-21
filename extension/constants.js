@@ -61,6 +61,40 @@ const WPConstants = (() => {
   const VIDEO_TAB_LEASE_TTL_MS = 15 * 1000;
   const VIDEO_TAB_LEASE_RENEW_INTERVAL_MS = 5 * 1000;
 
+  const COORDINATOR_MODE = Object.freeze({
+    IDLE: 'idle',
+    BOOTSTRAP_PENDING: 'bootstrap_pending',
+    CONTROLLER_CLAIMING: 'controller_claiming',
+    CONTROLLER_ACTIVE: 'controller_active',
+    CONTROLLER_RECOVERING: 'controller_recovering',
+    CONTROLLER_MISSING: 'controller_missing',
+  });
+
+  const CONTROLLER_RUNTIME_PHASE = Object.freeze({
+    BOOTING: 'booting',
+    PASSIVE: 'passive',
+    CLAIMING: 'claiming',
+    CONNECTING: 'connecting',
+    ACTIVE: 'active',
+    ACTIVE_IN_ROOM: 'active_in_room',
+    RECOVERING: 'recovering',
+  });
+
+  const ADAPTER_ROUTE = Object.freeze({
+    IDLE: 'idle',
+    DETAIL: 'detail',
+    PLAYER: 'player',
+    OTHER: 'other',
+  });
+
+  const ADAPTER_AVAILABILITY = Object.freeze({
+    UNAVAILABLE: 'unavailable',
+    DETAIL_ONLY: 'detail_only',
+    PLAYER_PENDING: 'player_pending',
+    DIRECT_JOIN_READY: 'direct_join_ready',
+    MANUAL_JOIN_ONLY: 'manual_join_only',
+  });
+
   function normalizeTabId(value) {
     return Number.isInteger(value) && value >= 0 ? value : null;
   }
@@ -68,6 +102,8 @@ const WPConstants = (() => {
   function normalizeRequestedAt(value) {
     return Number.isFinite(value) && value > 0 ? value : Date.now();
   }
+
+  const ACTION = WPAction;
 
   // Chrome storage keys — single source of truth across all extension files
   const STORAGE = Object.freeze({
@@ -77,6 +113,8 @@ const WPConstants = (() => {
     BACKEND_MODE: 'wpBackendMode',
     ACTIVE_BACKEND: 'wpActiveBackend',
     ACTIVE_BACKEND_URL: 'wpActiveBackendUrl',
+    CONTROLLER_RUNTIME: 'wpControllerRuntime',
+    ADAPTER_STATE: 'wpAdapterState',
     USERNAME: 'wpUsername',
     SESSION_ID: 'wpSessionId',
     CURRENT_ROOM: 'currentRoom',
@@ -113,6 +151,8 @@ const WPConstants = (() => {
       STORAGE.WS_CONNECTED,
       STORAGE.ACTIVE_BACKEND,
       STORAGE.ACTIVE_BACKEND_URL,
+      STORAGE.CONTROLLER_RUNTIME,
+      STORAGE.ADAPTER_STATE,
       STORAGE.CURRENT_ROOM,
       STORAGE.CONTROLLER_TAB,
       STORAGE.ACTIVE_VIDEO_TAB,
@@ -138,7 +178,7 @@ const WPConstants = (() => {
     TTL_MS: BOOTSTRAP_ROOM_INTENT_TTL_MS,
     buildCreate(command = {}) {
       return {
-        action: 'create-room',
+        action: ACTION.ROOM_CREATE,
         username: typeof command.username === 'string' ? command.username.trim() : '',
         meta: command.meta || null,
         stream: command.stream || null,
@@ -152,7 +192,7 @@ const WPConstants = (() => {
       const roomId = typeof command.roomId === 'string' ? command.roomId.trim() : '';
       if (!roomId) return null;
       return {
-        action: 'join-room',
+        action: ACTION.ROOM_JOIN,
         roomId,
         username: typeof command.username === 'string' ? command.username.trim() : '',
         roomKey: typeof command.roomKey === 'string' && command.roomKey.trim() ? command.roomKey.trim() : undefined,
@@ -165,11 +205,11 @@ const WPConstants = (() => {
     },
     normalize(value, now = Date.now()) {
       if (!value || typeof value !== 'object') return null;
-      if (value.action === 'create-room') {
+      if (value.action === ACTION.ROOM_CREATE) {
         const normalized = this.buildCreate(value);
         return this.isExpired(normalized.requestedAt, now) ? null : normalized;
       }
-      if (value.action === 'join-room') {
+      if (value.action === ACTION.ROOM_JOIN) {
         const normalized = this.buildJoin(value);
         return this.isExpired(normalized.requestedAt, now) ? null : normalized;
       }
@@ -260,22 +300,18 @@ const WPConstants = (() => {
       };
     },
     decodeFromLocal(storedValue, now = Date.now()) {
-      if (typeof storedValue === 'string') {
-        return { value: storedValue, expired: false, legacy: true };
-      }
       if (!storedValue || typeof storedValue !== 'object') {
-        return { value: null, expired: false, legacy: false };
+        return { value: null, expired: false };
       }
       const value = typeof storedValue.value === 'string' ? storedValue.value.trim() : '';
       const storedAt = Number(storedValue.storedAt);
       if (!value || !Number.isFinite(storedAt) || storedAt <= 0) {
-        return { value: null, expired: true, legacy: false };
+        return { value: null, expired: true };
       }
       const expired = (now - storedAt) > ROOM_KEY_LOCAL_TTL_MS;
       return {
         value: expired ? null : value,
         expired,
-        legacy: false,
       };
     },
   });
@@ -292,5 +328,18 @@ const WPConstants = (() => {
     buildInviteUrl,
   });
 
-  return { STORAGE, STORAGE_CONTRACT, BACKEND, ROOM_KEYS, CONTROLLER_TAB_LEASE, VIDEO_TAB_LEASE, BOOTSTRAP_ROOM_INTENT };
+  return {
+    STORAGE,
+    STORAGE_CONTRACT,
+    BACKEND,
+    ROOM_KEYS,
+    CONTROLLER_TAB_LEASE,
+    VIDEO_TAB_LEASE,
+    BOOTSTRAP_ROOM_INTENT,
+    COORDINATOR_MODE,
+    CONTROLLER_RUNTIME_PHASE,
+    ADAPTER_ROUTE,
+    ADAPTER_AVAILABILITY,
+    ACTION,
+  };
 })();

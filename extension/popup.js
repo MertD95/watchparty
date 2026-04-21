@@ -30,7 +30,7 @@ function getContentDetailUrl(room) {
 }
 
 function getDirectStreamUrl(room) {
-  return WPDirectPlay.getDirectJoinUrl(room?.stream);
+  return WPUtils.getDirectJoinUrl(room);
 }
 
 function getBrowseUrl() {
@@ -53,7 +53,7 @@ function openWatchPartyTab() {
 
 function openStremioTab() {
   chrome.runtime.sendMessage(
-    { type: 'watchparty-ext', action: 'open-stremio', url: 'https://web.stremio.com' },
+    { type: 'watchparty-ext', action: WPConstants.ACTION.APP_STREMIO_OPEN, url: 'https://web.stremio.com' },
     (response) => {
       if (chrome.runtime.lastError || response?.ok === false) {
         chrome.tabs.create({ url: 'https://web.stremio.com' });
@@ -78,7 +78,7 @@ function resumeRoomInStremio() {
     return;
   }
   chrome.runtime.sendMessage(
-    { type: 'watchparty-ext', action: 'resume-room' },
+    { type: 'watchparty-ext', action: WPConstants.ACTION.ROOM_RESUME },
     (response) => {
       if (chrome.runtime.lastError || response?.ok === false) {
         openStremioTab();
@@ -167,26 +167,9 @@ function buildInviteUrl(roomId) {
   return WPConstants.BACKEND.buildInviteUrl(roomId, currentBackendMode, currentActiveBackend);
 }
 
-function getStoredRoomKey(roomId) {
-  if (!roomId) return Promise.resolve(null);
-  const storageKey = WPConstants.STORAGE.roomKey(roomId);
-  return new Promise((resolve) => {
-    chrome.storage.session.get(storageKey, (result) => {
-      if (!chrome.runtime?.id) return resolve(null);
-      if (!chrome.runtime.lastError && result?.[storageKey]) return resolve(result[storageKey]);
-      chrome.storage.local.get(storageKey, (fallback) => {
-        const decoded = WPConstants.ROOM_KEYS.decodeFromLocal(fallback?.[storageKey]);
-        if (decoded.expired) chrome.storage.local.remove(storageKey).catch(() => { });
-        resolve(decoded.value || null);
-      });
-    });
-  });
-}
-
 async function buildInviteUrlWithKey(roomId) {
   const inviteUrl = buildInviteUrl(roomId);
-  const roomKey = await getStoredRoomKey(roomId);
-  return roomKey ? `${inviteUrl}#key=${roomKey}` : inviteUrl;
+  return WPRoomKeys.appendToInviteUrl(roomId, inviteUrl);
 }
 
 function parseRoomJoinInput(rawValue) {
@@ -352,7 +335,7 @@ function waitForRoomState({ onRoom, onError, onTimeout }) {
 
   function listener(message) {
     if (resolved) return;
-    if (message.type !== 'watchparty-ext' || message.action !== 'status-updated') return;
+    if (message.type !== 'watchparty-ext' || message.action !== WPConstants.ACTION.STATUS_UPDATED) return;
     const nextRoom = message.payload?.room || null;
     if (!nextRoom) return;
     finish(() => onRoom(nextRoom, message.payload?.userId || null));
@@ -398,7 +381,7 @@ function handleSendMessageFailure(response, fallbackMessage, stopWaiting, showEr
 // --- Init ---
 
 chrome.runtime.sendMessage(
-  { type: 'watchparty-ext', action: 'get-status' },
+  { type: 'watchparty-ext', action: WPConstants.ACTION.STATUS_GET },
   (response) => {
     if (!response) return;
 
@@ -440,7 +423,7 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 
 chrome.runtime.onMessage.addListener((message) => {
   if (message.type !== 'watchparty-ext') return false;
-  if (message.action === 'status-updated') {
+  if (message.action === WPConstants.ACTION.STATUS_UPDATED) {
     applyCoordinatorUpdate(message.payload);
   }
   return false;
@@ -565,7 +548,7 @@ $('btn-create').addEventListener('click', () => {
 
   chrome.runtime.sendMessage({
     type: 'watchparty-ext',
-    action: 'create-room',
+    action: WPConstants.ACTION.ROOM_CREATE,
     username,
     meta: { id: 'pending', type: 'movie', name: 'WatchParty Session' },
     stream: { url: 'https://watchparty.mertd.me/sync' },
@@ -610,7 +593,7 @@ $('btn-join').addEventListener('click', () => {
 
   chrome.runtime.sendMessage({
     type: 'watchparty-ext',
-    action: 'join-room',
+    action: WPConstants.ACTION.ROOM_JOIN,
     username,
     roomId,
     roomKey: parsedJoin.roomKey || undefined,
@@ -634,7 +617,7 @@ $('btn-join').addEventListener('click', () => {
 
 $('btn-leave').addEventListener('click', () => {
   suppressedRoomId = currentRenderedRoom?.id || null;
-  chrome.runtime.sendMessage({ type: 'watchparty-ext', action: 'leave-room' });
+  chrome.runtime.sendMessage({ type: 'watchparty-ext', action: WPConstants.ACTION.ROOM_LEAVE });
   showLobbyView();
 });
 
@@ -674,4 +657,5 @@ document.addEventListener('click', (e) => {
     );
   }
 });
+
 

@@ -18,24 +18,12 @@ const WPRuntimeState = (() => {
     const sessionKeys = keyList.filter((key) => SESSION_KEYS.has(key));
     const localKeys = keyList.filter((key) => !SESSION_KEYS.has(key));
 
-    const [sessionValues, localValues, fallbackValues] = await Promise.all([
+    const [sessionValues, localValues] = await Promise.all([
       sessionKeys.length > 0 ? chrome.storage.session.get(sessionKeys).catch(() => ({})) : Promise.resolve({}),
       localKeys.length > 0 ? chrome.storage.local.get(localKeys).catch(() => ({})) : Promise.resolve({}),
-      sessionKeys.length > 0 ? chrome.storage.local.get(sessionKeys).catch(() => ({})) : Promise.resolve({}),
     ]);
 
-    const migratedValues = {};
-    for (const key of sessionKeys) {
-      if (sessionValues[key] !== undefined || fallbackValues[key] === undefined) continue;
-      migratedValues[key] = fallbackValues[key];
-    }
-
-    if (Object.keys(migratedValues).length > 0) {
-      chrome.storage.session.set(migratedValues).catch(() => {});
-      chrome.storage.local.remove(Object.keys(migratedValues)).catch(() => {});
-    }
-
-    return { ...localValues, ...fallbackValues, ...sessionValues };
+    return { ...localValues, ...sessionValues };
   }
 
   async function set(values) {

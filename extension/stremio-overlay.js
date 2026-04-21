@@ -106,7 +106,7 @@ const WPOverlay = (() => {
       // No per-pill listener — handled by delegated click on #wp-chat-messages
       pillsContainer.appendChild(pill);
     }
-    dispatchAction('send-reaction', { emoji });
+    dispatchAction(WPConstants.ACTION.ROOM_REACTION_SEND, { emoji });
   }
 
 
@@ -274,7 +274,7 @@ const WPOverlay = (() => {
     localPreferences.username = username;
     cachedUsername = username;
     chrome.storage.local.set({ [WPConstants.STORAGE.USERNAME]: username });
-    dispatchAction('update-username', { username });
+    dispatchAction(WPConstants.ACTION.SESSION_USERNAME_UPDATE, { username });
     refreshLocalSettingsCard();
     return true;
   }
@@ -285,19 +285,7 @@ const WPOverlay = (() => {
   }
 
   function getStoredRoomKey(roomId) {
-    if (!roomId) return Promise.resolve(null);
-    const storageKey = WPConstants.STORAGE.roomKey(roomId);
-    return new Promise((resolve) => {
-      chrome.storage.session.get(storageKey, (result) => {
-        if (!chrome.runtime?.id) return resolve(null);
-        if (!chrome.runtime.lastError && result?.[storageKey]) return resolve(result[storageKey]);
-        chrome.storage.local.get(storageKey, (fallback) => {
-          const decoded = WPConstants.ROOM_KEYS.decodeFromLocal(fallback?.[storageKey]);
-          if (decoded.expired) chrome.storage.local.remove(storageKey).catch(() => { });
-          resolve(decoded.value || null);
-        });
-      });
-    });
+    return WPRoomKeys.get(roomId);
   }
 
   function clearRoomKeyDraft(roomId) {
@@ -355,7 +343,7 @@ const WPOverlay = (() => {
       button.textContent = 'Updating...';
     }
 
-    dispatchAction('toggle-public', { public: false, roomKey: nextKey });
+    dispatchAction(WPConstants.ACTION.ROOM_VISIBILITY_UPDATE, { public: false, roomKey: nextKey });
     showToast('Invite key updated for future room links.', 2200);
 
     setTimeout(() => {
@@ -1057,7 +1045,7 @@ const WPOverlay = (() => {
       const img = e.target.closest('.wp-gif-item');
       if (!img?.dataset.url) return;
       const gifContent = `[gif:${img.dataset.url}]`;
-      dispatchAction('send-chat', { content: gifContent });
+      dispatchAction(WPConstants.ACTION.ROOM_CHAT_SEND, { content: gifContent });
       // Local echo + dedup tracking (same pattern as text chat)
       const container = document.getElementById('wp-chat-messages');
       if (container) {
@@ -1128,8 +1116,8 @@ const WPOverlay = (() => {
       addLocalEcho(content);
     }
 
-    dispatchAction('send-chat', { content });
-    dispatchAction('send-typing', { typing: false });
+    dispatchAction(WPConstants.ACTION.ROOM_CHAT_SEND, { content });
+    dispatchAction(WPConstants.ACTION.ROOM_TYPING_SEND, { typing: false });
     input.value = '';
   }
 
@@ -1224,7 +1212,7 @@ const WPOverlay = (() => {
     status.innerHTML = newStatusHtml;
     renderCache.lastStatusHtml = newStatusHtml;
     document.getElementById('wp-ready-check-btn')?.addEventListener('click', () => {
-      dispatchAction('ready-check', { readyAction: 'initiate' });
+      dispatchAction(WPConstants.ACTION.ROOM_READY_CHECK_UPDATE, { readyAction: 'initiate' });
       const video = document.querySelector('video');
       if (video && !video.paused) video.pause();
       const userCount = document.getElementById('wp-users')?.children.length || 1;
@@ -1234,7 +1222,7 @@ const WPOverlay = (() => {
       const video = document.querySelector('video');
       if (!video) return;
       const time = video.currentTime;
-      dispatchAction('send-bookmark', { time });
+      dispatchAction(WPConstants.ACTION.ROOM_BOOKMARK_ADD, { time });
       appendBookmark({ user: cachedUserId, userName: cachedUsername, time, label: '' });
       showToast('Bookmark saved!', 1500);
     });
@@ -1300,16 +1288,16 @@ const WPOverlay = (() => {
       showToast(copied ? 'Invite copied' : 'Copy failed', 1600);
     };
     container.querySelector('#wp-leave-room-btn').onclick = () => {
-      dispatchAction('leave-room');
+      dispatchAction(WPConstants.ACTION.ROOM_LEAVE);
     };
     if (publicToggle) {
       publicToggle.onchange = (event) => {
-        dispatchAction('toggle-public', { public: !!event.target.checked });
+        dispatchAction(WPConstants.ACTION.ROOM_VISIBILITY_UPDATE, { public: !!event.target.checked });
       };
     }
     if (autoPauseToggle) {
       autoPauseToggle.onchange = (event) => {
-        dispatchAction('update-room-settings', { settings: { autoPauseOnDisconnect: !!event.target.checked } });
+        dispatchAction(WPConstants.ACTION.ROOM_SETTINGS_UPDATE, { settings: { autoPauseOnDisconnect: !!event.target.checked } });
       };
     }
     renderRoomKeyControls(roomState, isHost);
@@ -1418,7 +1406,7 @@ const WPOverlay = (() => {
   }
 
   function getDirectStreamUrl(roomState) {
-    return WPDirectPlay.getDirectJoinUrl(roomState?.stream);
+    return WPUtils.getDirectJoinUrl(roomState);
   }
 
   function renderContentLink(contentLink, isHost, roomState) {
@@ -1512,7 +1500,7 @@ const WPOverlay = (() => {
     }).join('');
     usersDiv.onclick = (e) => {
       const btn = e.target.closest('.wp-transfer-btn');
-      if (btn?.dataset.uid) dispatchAction('transfer-ownership', { targetUserId: btn.dataset.uid });
+      if (btn?.dataset.uid) dispatchAction(WPConstants.ACTION.ROOM_OWNERSHIP_TRANSFER, { targetUserId: btn.dataset.uid });
     };
   }
 
@@ -1741,9 +1729,8 @@ const WPOverlay = (() => {
     if (typeof WPCrypto !== 'undefined' && WPCrypto.isEnabled()) {
       roomKey = await WPCrypto.exportKey();
     }
-    if (!roomKey) roomKey = await getStoredRoomKey(roomId);
-    if (roomKey) inviteUrl += `#key=${roomKey}`;
-    return inviteUrl;
+    if (roomKey) return `${inviteUrl}#key=${roomKey}`;
+    return WPRoomKeys.appendToInviteUrl(roomId, inviteUrl);
   }
 
   async function copyInviteUrl(roomState) {
@@ -1838,7 +1825,7 @@ const WPOverlay = (() => {
       btn = document.createElement('button');
       btn.id = 'wp-catchup-btn';
       btn.addEventListener('click', () => {
-        dispatchAction('request-sync');
+        dispatchAction(WPConstants.ACTION.ROOM_PLAYBACK_REQUEST_SYNC);
         removeCatchUpButton();
       });
       document.getElementById('wp-overlay')?.appendChild(btn);
@@ -1866,3 +1853,4 @@ const WPOverlay = (() => {
     showCatchUpButton,
   };
 })();
+

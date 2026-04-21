@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  function legacyCopyText(text) {
+  function fallbackCopyText(text) {
     const value = String(text || '');
     if (!value) return false;
 
@@ -28,7 +28,7 @@
     if (!value) return false;
 
     try {
-      if (legacyCopyText(value)) return true;
+      if (fallbackCopyText(value)) return true;
     } catch {}
 
     try {
@@ -42,7 +42,7 @@
   }
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (message?.type !== 'watchparty-ext' || message?.target !== 'offscreen' || message?.action !== 'offscreen-copy') {
+    if (message?.type !== 'watchparty-ext' || message?.target !== 'offscreen' || message?.action !== 'offscreen.copy') {
       return false;
     }
 
@@ -57,3 +57,4 @@
     return true;
   });
 })();
+

@@ -1393,7 +1393,7 @@
         window.addEventListener('message', onMessage);
         window.postMessage({
           type: 'watchparty-ext-request',
-          action: 'get-status',
+          action: 'status.get',
           requestId,
         }, location.origin);
       });

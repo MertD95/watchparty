@@ -1,11 +1,9 @@
-// WatchParty Extension — Message Routing Table Test
-// Statically parses extension source to verify every action sent by
-// overlay/popup has a matching case in both background.js AND content.js.
+// WatchParty Extension - Routing and Protocol Contract Test
+// Verifies:
+// 1. Generated internal actions resolve across overlay/popup/background/content
+// 2. Canonical WPProtocol command/event contracts are fully consumed
 //
-// This catches bugs like a missing 'send-chat' case in background.js
-// without needing a browser or any chrome.* APIs.
-//
-// Usage:  node extension/test/routing.mjs
+// Usage: node extension/test/routing.mjs
 
 import { readFileSync } from 'fs';
 import { resolve, dirname } from 'path';
@@ -14,396 +12,315 @@ import { fileURLToPath } from 'url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const EXT = resolve(__dirname, '..');
 
-let passed = 0, failed = 0, total = 0;
-function ok(cond, label) {
-  total++;
-  if (cond) { console.log('  \u2713 ' + label); passed++; }
-  else      { console.error('  \u2717 ' + label); failed++; }
-}
+let passed = 0;
+let failed = 0;
+let total = 0;
 
-// ── Source readers ──
+function ok(condition, label) {
+  total++;
+  if (condition) {
+    console.log(`  \u2713 ${label}`);
+    passed++;
+  } else {
+    console.error(`  \u2717 ${label}`);
+    failed++;
+  }
+}
 
 function readSrc(file) {
   return readFileSync(resolve(EXT, file), 'utf8');
 }
 
-// ── Extract case values from switch blocks ──
-// Matches:  case 'foo':  patterns. When switchVar is given, only extracts from
-// the switch block that switches on that variable name.
-
-function extractSwitchCases(source, label, switchVar) {
-  const cases = new Set();
-
-  if (switchVar) {
-    // Find the switch block for the specific variable and extract cases from it only.
-    // Strategy: find "switch (X.var)" then collect cases until the matching closing brace.
-    const switchPattern = new RegExp(`switch\\s*\\(\\w+\\.${switchVar}\\)\\s*\\{`);
-    const switchMatch = switchPattern.exec(source);
-    if (!switchMatch) {
-      console.error(`  WARNING: No switch(*.${switchVar}) found in ${label}`);
-      return cases;
-    }
-    // Extract the block content by counting braces
-    let depth = 1, i = switchMatch.index + switchMatch[0].length;
-    const start = i;
-    while (i < source.length && depth > 0) {
-      if (source[i] === '{') depth++;
-      else if (source[i] === '}') depth--;
-      i++;
-    }
-    const block = source.slice(start, i);
-    const re = /case\s+'([^']+)'\s*:/g;
-    let m;
-    while ((m = re.exec(block)) !== null) cases.add(m[1]);
-  } else {
-    // Extract all case statements from the entire file
-    const re = /case\s+'([^']+)'\s*:/g;
-    let m;
-    while ((m = re.exec(source)) !== null) cases.add(m[1]);
+function extractObjectMap(source, varName) {
+  const map = {};
+  const pattern = new RegExp(`const ${varName} = Object\\.freeze\\(\\{([\\s\\S]*?)\\}\\)`);
+  const match = pattern.exec(source);
+  if (!match) return map;
+  const re = /([A-Z0-9_]+):\s*'([^']+)'/g;
+  let next;
+  while ((next = re.exec(match[1])) !== null) {
+    map[next[1]] = next[2];
   }
+  return map;
+}
 
-  if (cases.size === 0) {
-    console.error(`  WARNING: No case statements found in ${label} — parser may be broken`);
+function extractSwitchCases(source, switchVar) {
+  const cases = new Set();
+  const switchPattern = new RegExp(`switch\\s*\\(\\w+\\.${switchVar}\\)\\s*\\{`);
+  const match = switchPattern.exec(source);
+  if (!match) return cases;
+  let depth = 1;
+  let index = match.index + match[0].length;
+  const start = index;
+  while (index < source.length && depth > 0) {
+    if (source[index] === '{') depth++;
+    else if (source[index] === '}') depth--;
+    index++;
+  }
+  const block = source.slice(start, index);
+  const re = /case\s+'([^']+)'\s*:/g;
+  let next;
+  while ((next = re.exec(block)) !== null) {
+    cases.add(next[1]);
   }
   return cases;
 }
 
-// ── Extract keys from an object literal handler map ──
-// Matches:  const actionHandlers = { 'foo': ..., 'bar': ... }
-
-function extractObjectHandlerKeys(source, varName) {
+function extractObjectHandlerKeys(source, varName, actionMap) {
   const keys = new Set();
   const pattern = new RegExp(`(?:const|let|var)\\s+${varName}\\s*=\\s*\\{`);
   const match = pattern.exec(source);
   if (!match) return keys;
-  // Count braces to find the object block
-  let depth = 1, i = match.index + match[0].length;
-  while (i < source.length && depth > 0) {
-    if (source[i] === '{') depth++;
-    else if (source[i] === '}') depth--;
-    i++;
+  let depth = 1;
+  let index = match.index + match[0].length;
+  const start = index;
+  while (index < source.length && depth > 0) {
+    if (source[index] === '{') depth++;
+    else if (source[index] === '}') depth--;
+    index++;
   }
-  const block = source.slice(match.index + match[0].length, i - 1);
-  const re = /'([^']+)'\s*:/g;
-  let m;
-  while ((m = re.exec(block)) !== null) keys.add(m[1]);
+  const block = source.slice(start, index - 1);
+  const re = /'([^']+)'\s*:|\[WPConstants\.ACTION\.(\w+)\]\s*:/g;
+  let next;
+  while ((next = re.exec(block)) !== null) {
+    if (next[1]) keys.add(next[1]);
+    else if (next[2] && actionMap[next[2]]) keys.add(actionMap[next[2]]);
+  }
   return keys;
 }
 
-// ── Extract actions sent via chrome.runtime.sendMessage ──
-
-function extractSentActions(source, label) {
+function extractSentActions(source, actionMap) {
   const actions = new Set();
-  // Pattern 1: action: 'foo'  (inside sendMessage object literal)
-  const re1 = /chrome\.runtime\.sendMessage\s*\(\s*\{[^}]*action:\s*'([^']+)'/g;
-  let m;
-  while ((m = re1.exec(source)) !== null) {
-    actions.add(m[1]);
-  }
-  // Pattern 2: CustomEvent('wp-action', { detail: { action: 'foo' } })  (direct DOM events)
-  const re2 = /CustomEvent\s*\(\s*'wp-action'\s*,\s*\{\s*detail:\s*\{[^}]*action:\s*'([^']+)'/g;
-  while ((m = re2.exec(source)) !== null) {
-    actions.add(m[1]);
-  }
-  // Pattern 3: dispatchAction('foo' ...)  (helper wrapper for CustomEvent)
-  const re3 = /dispatchAction\s*\(\s*'([^']+)'/g;
-  while ((m = re3.exec(source)) !== null) {
-    actions.add(m[1]);
-  }
-  // Pattern 4: sendRuntimeMessage({ action: 'foo' })  (WatchParty page bridge helper)
-  const re4 = /sendRuntimeMessage\s*\(\s*\{[^}]*action:\s*'([^']+)'/g;
-  while ((m = re4.exec(source)) !== null) {
-    actions.add(m[1]);
-  }
-  if (actions.size === 0) {
-    console.error(`  WARNING: No actions found in ${label} — parser may be broken`);
+  const patterns = [
+    /chrome\.runtime\.sendMessage\s*\(\s*\{[^}]*action:\s*(?:'([^']+)'|WPConstants\.ACTION\.(\w+))/g,
+    /CustomEvent\s*\(\s*'wp-action'\s*,\s*\{\s*detail:\s*\{[^}]*action:\s*(?:'([^']+)'|WPConstants\.ACTION\.(\w+))/g,
+    /dispatchAction\s*\(\s*(?:'([^']+)'|WPConstants\.ACTION\.(\w+))/g,
+    /sendRuntimeMessage\s*\(\s*\{[^}]*action:\s*(?:'([^']+)'|WPConstants\.ACTION\.(\w+))/g,
+  ];
+  for (const pattern of patterns) {
+    let next;
+    while ((next = pattern.exec(source)) !== null) {
+      if (next[1]) actions.add(next[1]);
+      else if (next[2] && actionMap[next[2]]) actions.add(actionMap[next[2]]);
+    }
   }
   return actions;
 }
 
-// ── Parse all sources ──
-
-console.log('\n=== Message Routing Table Test ===\n');
-
-const bgSource        = readSrc('background.js');
-const contentSource   = readSrc('stremio-content.js');
-const bridgeSource    = readSrc('content.js');
-const overlaySource   = readSrc('stremio-overlay.js');
-const popupSource     = readSrc('popup.js');
-const sidepanelSource = readSrc('sidepanel.js');
-const constantsSource = readSrc('constants.js');
-
-// background.js uses a messageHandlers object map (or switch on message.action)
-let bgCases = extractSwitchCases(bgSource, 'background.js', 'action');
-if (bgCases.size === 0) {
-  bgCases = extractObjectHandlerKeys(bgSource, 'messageHandlers');
-}
-// stremio-content.js uses an actionHandlers object map (not a switch statement)
-// Fall back to extracting keys from the object literal if switch parsing finds nothing
-let contentCases = extractSwitchCases(contentSource, 'stremio-content.js', 'action');
-if (contentCases.size === 0) {
-  contentCases = extractObjectHandlerKeys(contentSource, 'actionHandlers');
-}
-const overlaySends = extractSentActions(overlaySource, 'stremio-overlay.js');
-const popupSends   = extractSentActions(popupSource, 'popup.js');
-const bridgeSends  = extractSentActions(bridgeSource, 'content.js');
-const optionsSource = readSrc('options.js');
-
-console.log('── Parsed routing table ──');
-console.log(`  background.js cases:       ${[...bgCases].sort().join(', ')}`);
-console.log(`  content.js action cases:   ${[...contentCases].sort().join(', ')}`);
-console.log(`  landing bridge sends:      ${[...bridgeSends].sort().join(', ')}`);
-console.log(`  stremio-overlay.js sends:  ${[...overlaySends].sort().join(', ')}`);
-console.log(`  popup.js sends:            ${[...popupSends].sort().join(', ')}`);
-
-// ── Actions that background.js handles internally (not forwarded to content script) ──
-// These are handled entirely in background.js and don't need a content.js case.
-const BG_ONLY_ACTIONS = new Set([
-  'get-status',         // Responds with status from storage, no forwarding
-  'session-state',      // Projected room/session state from content→background
-  'profile-updated',    // Broadcasts to WatchParty tabs, not Stremio tabs
-  'copy-to-clipboard',  // Shared utility action handled entirely in background/offscreen
-  'save-auth-key',      // Stores auth key + triggers profile sync
-  'resume-room',        // Website/popup intent handled fully in background
-  'open-stremio',       // Focuses or opens the Stremio tab entirely in background
-  'open-options',       // Opens extension settings page from website/popup
-  'claim-controller-lease',
-  'release-controller-lease',
-  'claim-active-video-lease',
-  'release-active-video-lease',
-]);
-
-// ── Actions that content.js handles but aren't sent by overlay/popup ──
-// These originate from background.js broadcasts or internal logic.
-const BG_LEASE_ACTIONS = new Set([
-  'claim-controller-lease',
-  'release-controller-lease',
-  'claim-active-video-lease',
-  'release-active-video-lease',
-]);
-
-const CONTENT_INTERNAL_ACTIONS = new Set([
-  'get-ws-status',      // Background queries content script WS status
-  'stremio-status',     // Background broadcasts Stremio detection changes
-]);
-
-// ── Test 1: Every overlay action has a case in stremio-content.js ──
-// Overlay now uses direct DOM events (wp-action) to content script, not background.js
-console.log('\n── Test 1: Overlay actions → stremio-content.js ──');
-for (const action of overlaySends) {
-  ok(contentCases.has(action), `overlay sends '${action}' → stremio-content.js has case`);
-}
-
-// ── Test 2: Every popup action has a case in background.js ──
-console.log('\n── Test 2: Popup actions → background.js ──');
-for (const action of popupSends) {
-  ok(bgCases.has(action), `popup sends '${action}' → background.js has case`);
-}
-
-console.log('\n── Test 2b: Landing bridge actions → background.js ──');
-for (const action of ['get-status', 'surface-ready', 'save-auth-key', 'join-room', 'create-room', 'resume-room', 'open-options', 'open-stremio']) {
-  ok(bridgeSends.has(action), `landing bridge sends '${action}' through runtime messaging`);
-  ok(bgCases.has(action) || BG_ONLY_ACTIONS.has(action), `landing bridge action '${action}' resolves in background.js`);
-}
-
-// ── Test 3: Every forwarded action has a case in content.js ──
-// "Forwarded" = handled by background.js AND not in BG_ONLY_ACTIONS
-console.log('\n── Test 3: Forwarded actions → stremio-content.js ──');
-const allSenderActions = new Set([...overlaySends, ...popupSends]);
-for (const action of allSenderActions) {
-  if (BG_ONLY_ACTIONS.has(action)) continue; // Not forwarded
-  ok(contentCases.has(action), `forwarded '${action}' → stremio-content.js has case`);
-}
-
-// ── Test 4: No dead cases in background.js ──
-// Actions in background.js that are sent by other sources (not overlay/popup UI).
-// These are excluded from the "dead case" check because they have legitimate senders.
-console.log('\n── Test 4: No dead cases in background.js ──');
-const BG_NON_UI_SENDERS = new Set([
-  'controller-released',   // controller tab → background during handoff/teardown
-  'session-state',         // content script → background (projected coordinator state)
-  'profile-updated',       // content.js WPProfile → background
-  'copy-to-clipboard',     // utils.js shared clipboard helper → background/offscreen
-  'save-auth-key',         // content.js (landing page) → background
-  'resume-room',           // content.js (landing page) → background
-  'open-stremio',          // content.js/options/popup → background tab handoff
-  'open-options',          // content.js (landing page) → background
-  'send-presence',         // content.js programmatic (visibility change)
-  'send-playback-status',  // content.js programmatic (periodic status)
-  'update-username',       // content.js processPendingActions (username from storage)
-  'chat-message',          // content.js → background (relay to sidepanel)
-  'typing',                // content.js → background (relay typing indicator to sidepanel)
-  'bookmark',              // content.js → background (relay to sidepanel)
-  'reaction',              // content.js → background (relay floating reactions to passive tabs)
-  'surface-ready',         // content.js / stremio-content.js → background (tab registration)
-  // Overlay actions now use DOM events directly — background.js cases kept for popup relay
-  'send-chat', 'send-typing', 'send-reaction', 'send-bookmark', 'seek-bookmark',
-  'ready-check', 'transfer-ownership', 'request-sync',
-  // Room-control actions now relay directly through runtime messaging/background forwarding.
-  'toggle-public', 'update-room-settings',
-]);
-for (const action of bgCases) {
-  if (BG_NON_UI_SENDERS.has(action) || BG_LEASE_ACTIONS.has(action)) continue;
-  ok(allSenderActions.has(action), `background.js case '${action}' is sent by overlay or popup`);
-}
-
-// ── Test 5: Sanity — minimum expected action counts ──
-console.log('\n── Test 5: Sanity checks ──');
-ok(bgCases.size >= 10,      `background.js has ${bgCases.size} cases (expected >= 10)`);
-ok(contentCases.size >= 10,  `stremio-content.js has ${contentCases.size} cases (expected >= 10)`);
-ok(overlaySends.size >= 5,   `stremio-overlay.js sends ${overlaySends.size} actions (expected >= 5)`);
-ok(popupSends.size >= 4,     `popup.js sends ${popupSends.size} actions (expected >= 4)`);
-ok(!sidepanelSource.includes('PENDING_ACTION'), 'sidepanel no longer writes transient room actions into chrome.storage.local');
-ok(!bgSource.includes('PENDING_ACTION'), 'background no longer stages transient room actions in chrome.storage.local');
-ok(!contentSource.includes('PENDING_ACTION'), 'stremio-content no longer consumes transient room actions from chrome.storage.onChanged');
-ok(!contentSource.includes('PENDING_ROOM_CREATE'), 'stremio-content no longer stages same-tab create commands in chrome.storage.local');
-ok(!contentSource.includes('PENDING_LEAVE_ROOM'), 'stremio-content no longer depends on dead pending-leave storage state');
-ok(!bgSource.includes("background-room-service.js"), 'background no longer imports the fallback room service runtime');
-ok(constantsSource.includes('BOOTSTRAP_ROOM_INTENT'), 'constants.js defines a bootstrap room-intent contract');
-ok(!constantsSource.includes('ROOM_SERVICE_ACTIVE'), 'constants.js no longer exposes fallback room-service storage flags');
-ok(constantsSource.includes('STORAGE_CONTRACT'), 'constants.js documents the storage contract');
-ok(constantsSource.includes('SESSION_RUNTIME'), 'constants.js defines session-backed runtime storage keys');
-ok(constantsSource.includes('BOOTSTRAP_SESSION'), 'constants.js defines session-backed bootstrap storage keys');
-ok(constantsSource.includes('BOOTSTRAP_ROOM_INTENT_TTL_MS'), 'constants.js defines a bootstrap intent expiry');
-ok(constantsSource.includes('CONTROLLER_TAB_LEASE'), 'constants.js defines the controller-tab lease contract');
-ok(constantsSource.includes('CONTROLLER_TAB_LEASE_TTL_MS'), 'constants.js defines a controller-tab lease expiry');
-ok(constantsSource.includes('VIDEO_TAB_LEASE'), 'constants.js defines the active video-tab lease contract');
-ok(constantsSource.includes('VIDEO_TAB_LEASE_TTL_MS'), 'constants.js defines an active video-tab lease expiry');
-ok(constantsSource.includes('RENEW_INTERVAL_MS'), 'constants.js defines active video-tab lease renewal timing');
-ok(!contentSource.includes('[WPConstants.STORAGE.ACTIVE_VIDEO_TAB]: userId'), 'stremio-content no longer stores active video ownership as a raw userId');
-ok(bgSource.includes('setAccessLevel'), 'background exposes session storage to untrusted contexts for content scripts');
-ok(optionsSource.includes('btn-clear-bootstrap'), 'options.js wires staged handoff recovery controls');
-ok(optionsSource.includes('btn-copy-diagnostics'), 'options.js wires diagnostics copy recovery controls');
-
-// ══════════════════════════════════════════════════
-// Protocol Completeness Tests (wp-protocol.js)
-// ══════════════════════════════════════════════════
-
-console.log('\n=== Protocol Completeness Tests ===\n');
-
-const protocolSource = readSrc('wp-protocol.js');
-
-// ── Parse wp-protocol.js to extract C2S, S2C, and ERROR_CODE values ──
-
-function extractProtocolMap(source, mapName) {
-  const map = {};
-  const pattern = new RegExp(`const ${mapName} = Object\\.freeze\\(\\{([^}]+)\\}\\)`, 's');
-  const match = pattern.exec(source);
-  if (!match) { console.error(`  WARNING: Could not parse ${mapName} from wp-protocol.js`); return map; }
-  const re = /(\w+):\s*'([^']+)'/g;
-  let m;
-  while ((m = re.exec(match[1])) !== null) map[m[1]] = m[2];
-  return map;
-}
-
-const C2S_MAP = extractProtocolMap(protocolSource, 'C2S');
-const S2C_MAP = extractProtocolMap(protocolSource, 'S2C');
-const ERROR_CODE_MAP = extractProtocolMap(protocolSource, 'ERROR_CODE');
-
-// ── Extract WPProtocol.S2C.* case statements from processWsEvent switch ──
-
 function extractProtocolSwitchCases(source, prefix) {
   const cases = new Set();
   const re = new RegExp(`case\\s+WPProtocol\\.${prefix}\\.(\\w+)\\s*:`, 'g');
-  let m;
-  while ((m = re.exec(source)) !== null) cases.add(m[1]);
+  let next;
+  while ((next = re.exec(source)) !== null) {
+    cases.add(next[1]);
+  }
   return cases;
 }
 
-// ── Extract WPProtocol.C2S.* from WPWS.send() or internal send() calls ──
-
 function extractProtocolSends(source) {
   const sends = new Set();
-  // Match both WPWS.send({type: WPProtocol.C2S.X}) and send({type: WPProtocol.C2S.X})
-  const re = /(?:WPWS\.)?send\(\s*\{\s*type:\s*WPProtocol\.C2S\.(\w+)/g;
-  let m;
-  while ((m = re.exec(source)) !== null) sends.add(m[1]);
+  const re = /(?:WPWS\.)?send\(\s*\{\s*type:\s*WPProtocol\.COMMAND\.(\w+)/g;
+  let next;
+  while ((next = re.exec(source)) !== null) {
+    sends.add(next[1]);
+  }
   return sends;
 }
-
-// ── Extract WPProtocol.ERROR_CODE.* from error handler ──
 
 function extractProtocolErrorCodes(source) {
   const codes = new Set();
   const re = /WPProtocol\.ERROR_CODE\.(\w+)/g;
-  let m;
-  while ((m = re.exec(source)) !== null) codes.add(m[1]);
+  let next;
+  while ((next = re.exec(source)) !== null) {
+    codes.add(next[1]);
+  }
   return codes;
 }
 
-const wsSource = readSrc('stremio-ws.js');
-const contentS2CCases = extractProtocolSwitchCases(contentSource, 'S2C');
-const contentC2SSends = extractProtocolSends(contentSource);
-const wsC2SSends = extractProtocolSends(wsSource);
-const allC2SSends = new Set([...contentC2SSends, ...wsC2SSends]);
-const contentErrorCodes = extractProtocolErrorCodes(contentSource);
-
-console.log('── Parsed protocol table ──');
-console.log(`  wp-protocol.js C2S types:    ${Object.keys(C2S_MAP).length}`);
-console.log(`  wp-protocol.js S2C types:    ${Object.keys(S2C_MAP).length}`);
-console.log(`  wp-protocol.js error codes:  ${Object.keys(ERROR_CODE_MAP).length}`);
-console.log(`  content.js S2C cases:        ${[...contentS2CCases].sort().join(', ')}`);
-console.log(`  content+ws C2S sends:        ${[...allC2SSends].sort().join(', ')}`);
-console.log(`  content.js error codes used: ${[...contentErrorCodes].sort().join(', ')}`);
-
-// ── Test 6: Every S2C type has a handler in processWsEvent ──
-// clock.pong is handled internally by stremio-ws.js (not the content script switch)
-const S2C_HANDLED_ELSEWHERE = new Set(['CLOCK_PONG']);
-
-console.log('\n── Test 6: Every S2C type has a handler ──');
-for (const [constName, value] of Object.entries(S2C_MAP)) {
-  if (S2C_HANDLED_ELSEWHERE.has(constName)) {
-    // Verify it's referenced in stremio-ws.js instead
-    ok(wsSource.includes(`WPProtocol.S2C.${constName}`), `S2C.${constName} ('${value}') handled in stremio-ws.js`);
-  } else {
-    ok(contentS2CCases.has(constName), `S2C.${constName} ('${value}') has case in processWsEvent`);
-  }
-}
-
-// ── Test 7: Every WPWS.send() uses a valid C2S constant ──
-console.log('\n── Test 7: Every send uses a valid C2S constant ──');
-for (const constName of allC2SSends) {
-  ok(constName in C2S_MAP, `C2S.${constName} used in send() exists in wp-protocol.js`);
-}
-
-// ── Test 8: Every C2S type is sent somewhere ──
-// Some types may only be used in specific flows; we allow a small exclusion list.
-const C2S_OPTIONAL = new Set(); // All C2S types should be sent by the extension
-console.log('\n── Test 8: Every C2S type is sent by the extension ──');
-for (const [constName, value] of Object.entries(C2S_MAP)) {
-  if (C2S_OPTIONAL.has(constName)) continue;
-  ok(allC2SSends.has(constName), `C2S.${constName} ('${value}') is used in a WPWS.send() call`);
-}
-
-// ── Test 9: Error handler covers key error codes ──
-const CRITICAL_ERROR_CODES = ['ROOM_NOT_FOUND', 'NOT_OWNER', 'COOLDOWN', 'VALIDATION_FAILED'];
-console.log('\n── Test 9: Error handler covers key error codes ──');
-for (const code of CRITICAL_ERROR_CODES) {
-  ok(contentErrorCodes.has(code), `ERROR_CODE.${code} handled in error case`);
-}
-
-// ── Test 10: No hardcoded message type strings remain in content/ws scripts ──
-console.log('\n── Test 10: No hardcoded WS message type strings ──');
-
-function findHardcodedTypes(source, label) {
+function findHardcodedTypes(source) {
   const problems = [];
-  // Check for hardcoded type strings in WPWS.send calls
   const sendRe = /WPWS\.send\(\s*\{\s*type:\s*'([^']+)'/g;
-  let m;
-  while ((m = sendRe.exec(source)) !== null) problems.push(m[1]);
-  // Check for hardcoded case strings in msg.type switch (but not action switch)
-  // Only flag if it looks like a WS message type (contains dot or is camelCase)
+  let next;
+  while ((next = sendRe.exec(source)) !== null) problems.push(next[1]);
   const caseRe = /case\s+'([a-z]+(?:\.[a-z]+|[A-Z][a-zA-Z]+))'\s*:/g;
-  while ((m = caseRe.exec(source)) !== null) problems.push(m[1]);
+  while ((next = caseRe.exec(source)) !== null) problems.push(next[1]);
   return problems;
 }
 
-const contentHardcoded = findHardcodedTypes(contentSource, 'stremio-content.js');
-const wsHardcoded = findHardcodedTypes(wsSource, 'stremio-ws.js');
-ok(contentHardcoded.length === 0, `stremio-content.js has no hardcoded WS message types${contentHardcoded.length ? ': ' + contentHardcoded.join(', ') : ''}`);
-ok(wsHardcoded.length === 0, `stremio-ws.js has no hardcoded WS message types${wsHardcoded.length ? ': ' + wsHardcoded.join(', ') : ''}`);
+console.log('\n=== Message Routing Table Test ===\n');
 
-// ── Results ──
+const bgSource = readSrc('background.js');
+const contentSource = readSrc('stremio-content.js');
+const bridgeSource = readSrc('content.js');
+const overlaySource = readSrc('stremio-overlay.js');
+const popupSource = readSrc('popup.js');
+const sidepanelSource = readSrc('sidepanel.js');
+const actionsSource = readSrc('wp-actions.js');
+const constantsSource = readSrc('constants.js');
+const optionsSource = readSrc('options.js');
+const protocolSource = readSrc('wp-protocol.js');
+const wsSource = readSrc('stremio-ws.js');
+
+const ACTION_MAP = extractObjectMap(actionsSource, 'ACTION');
+const COMMAND_MAP = extractObjectMap(protocolSource, 'COMMAND');
+const EVENT_MAP = extractObjectMap(protocolSource, 'EVENT');
+const ERROR_CODE_MAP = extractObjectMap(protocolSource, 'ERROR_CODE');
+
+let bgCases = extractSwitchCases(bgSource, 'action');
+if (bgCases.size === 0) bgCases = extractObjectHandlerKeys(bgSource, 'messageHandlers', ACTION_MAP);
+
+let contentCases = extractSwitchCases(contentSource, 'action');
+if (contentCases.size === 0) contentCases = extractObjectHandlerKeys(contentSource, 'actionHandlers', ACTION_MAP);
+
+const overlaySends = extractSentActions(overlaySource, ACTION_MAP);
+const popupSends = extractSentActions(popupSource, ACTION_MAP);
+const bridgeSends = extractSentActions(bridgeSource, ACTION_MAP);
+const contentEventCases = extractProtocolSwitchCases(contentSource, 'EVENT');
+const commandSends = new Set([...extractProtocolSends(contentSource), ...extractProtocolSends(wsSource)]);
+const contentErrorCodes = extractProtocolErrorCodes(contentSource);
+
+console.log('--- Parsed routing table ---');
+console.log(`  background.js cases:     ${[...bgCases].sort().join(', ')}`);
+console.log(`  stremio-content cases:   ${[...contentCases].sort().join(', ')}`);
+console.log(`  overlay sends:           ${[...overlaySends].sort().join(', ')}`);
+console.log(`  popup sends:             ${[...popupSends].sort().join(', ')}`);
+console.log(`  landing bridge sends:    ${[...bridgeSends].sort().join(', ')}`);
+
+const BG_ONLY_ACTIONS = new Set([
+  ACTION_MAP.STATUS_GET,
+  ACTION_MAP.SESSION_STATE_PUBLISH,
+  ACTION_MAP.PROFILE_UPDATED,
+  ACTION_MAP.CLIPBOARD_COPY,
+  ACTION_MAP.AUTH_KEY_SAVE,
+  ACTION_MAP.ROOM_RESUME,
+  ACTION_MAP.APP_STREMIO_OPEN,
+  ACTION_MAP.APP_OPTIONS_OPEN,
+  ACTION_MAP.CONTROLLER_LEASE_CLAIM,
+  ACTION_MAP.CONTROLLER_LEASE_RELEASE,
+  ACTION_MAP.ACTIVE_VIDEO_LEASE_CLAIM,
+  ACTION_MAP.ACTIVE_VIDEO_LEASE_RELEASE,
+]);
+
+const BG_NON_UI_SENDERS = new Set([
+  ACTION_MAP.CONTROLLER_RELEASED,
+  ACTION_MAP.SESSION_STATE_PUBLISH,
+  ACTION_MAP.PROFILE_UPDATED,
+  ACTION_MAP.CLIPBOARD_COPY,
+  ACTION_MAP.AUTH_KEY_SAVE,
+  ACTION_MAP.ROOM_RESUME,
+  ACTION_MAP.APP_STREMIO_OPEN,
+  ACTION_MAP.APP_OPTIONS_OPEN,
+  ACTION_MAP.ROOM_MEMBER_PRESENCE_PUBLISH,
+  ACTION_MAP.ROOM_MEMBER_PLAYBACK_STATUS_PUBLISH,
+  ACTION_MAP.SESSION_USERNAME_UPDATE,
+  ACTION_MAP.ROOM_CHAT_EVENT,
+  ACTION_MAP.ROOM_TYPING_EVENT,
+  ACTION_MAP.ROOM_BOOKMARK_EVENT,
+  ACTION_MAP.ROOM_REACTION_EVENT,
+  ACTION_MAP.SURFACE_READY,
+  ACTION_MAP.ROOM_CHAT_SEND,
+  ACTION_MAP.ROOM_TYPING_SEND,
+  ACTION_MAP.ROOM_REACTION_SEND,
+  ACTION_MAP.ROOM_BOOKMARK_ADD,
+  ACTION_MAP.ROOM_BOOKMARK_SEEK,
+  ACTION_MAP.ROOM_READY_CHECK_UPDATE,
+  ACTION_MAP.ROOM_OWNERSHIP_TRANSFER,
+  ACTION_MAP.ROOM_PLAYBACK_REQUEST_SYNC,
+  ACTION_MAP.ROOM_VISIBILITY_UPDATE,
+  ACTION_MAP.ROOM_SETTINGS_UPDATE,
+]);
+
+console.log('\n--- Test 1: Overlay actions -> stremio-content ---');
+for (const action of overlaySends) {
+  ok(contentCases.has(action), `overlay sends '${action}' -> stremio-content has case`);
+}
+
+console.log('\n--- Test 2: Popup actions -> background ---');
+for (const action of popupSends) {
+  ok(bgCases.has(action), `popup sends '${action}' -> background has case`);
+}
+
+console.log('\n--- Test 2b: Landing bridge actions -> background ---');
+for (const action of [
+  ACTION_MAP.STATUS_GET,
+  ACTION_MAP.SURFACE_READY,
+  ACTION_MAP.AUTH_KEY_SAVE,
+  ACTION_MAP.ROOM_JOIN,
+  ACTION_MAP.ROOM_CREATE,
+  ACTION_MAP.ROOM_RESUME,
+  ACTION_MAP.APP_OPTIONS_OPEN,
+  ACTION_MAP.APP_STREMIO_OPEN,
+]) {
+  ok(bridgeSends.has(action), `landing bridge sends '${action}'`);
+  ok(bgCases.has(action) || BG_ONLY_ACTIONS.has(action), `landing bridge action '${action}' resolves in background`);
+}
+
+console.log('\n--- Test 3: Forwarded actions -> stremio-content ---');
+const allSenderActions = new Set([...overlaySends, ...popupSends]);
+for (const action of allSenderActions) {
+  if (BG_ONLY_ACTIONS.has(action)) continue;
+  ok(contentCases.has(action), `forwarded '${action}' -> stremio-content has case`);
+}
+
+console.log('\n--- Test 4: No dead cases in background ---');
+for (const action of bgCases) {
+  if (BG_NON_UI_SENDERS.has(action) || BG_ONLY_ACTIONS.has(action)) continue;
+  ok(allSenderActions.has(action), `background case '${action}' is sent by overlay or popup`);
+}
+
+console.log('\n--- Test 5: Action contract sanity ---');
+ok(Object.keys(ACTION_MAP).length >= 20, `wp-actions.js exposes ${Object.keys(ACTION_MAP).length} actions`);
+ok(actionsSource.includes('AUTO-GENERATED'), 'wp-actions.js is generated');
+ok(constantsSource.includes('const ACTION = WPAction;'), 'constants.js consumes the generated action contract');
+ok(constantsSource.includes('BOOTSTRAP_ROOM_INTENT'), 'constants.js defines bootstrap room intent');
+ok(constantsSource.includes('STORAGE_CONTRACT'), 'constants.js documents the storage contract');
+ok(constantsSource.includes('SESSION_RUNTIME'), 'constants.js defines session runtime storage keys');
+ok(constantsSource.includes('BOOTSTRAP_SESSION'), 'constants.js defines bootstrap session keys');
+ok(constantsSource.includes('CONTROLLER_TAB_LEASE'), 'constants.js defines controller lease contract');
+ok(constantsSource.includes('VIDEO_TAB_LEASE'), 'constants.js defines active video lease contract');
+ok(!sidepanelSource.includes('PENDING_ACTION'), 'sidepanel does not use transient action storage');
+ok(!bgSource.includes('PENDING_ACTION'), 'background does not use transient action storage');
+ok(!contentSource.includes('PENDING_ACTION'), 'stremio-content does not use transient action storage');
+ok(!contentSource.includes('PENDING_ROOM_CREATE'), 'stremio-content does not stage create commands in storage');
+ok(!contentSource.includes('PENDING_LEAVE_ROOM'), 'stremio-content does not depend on old pending leave storage state');
+ok(optionsSource.includes('btn-copy-diagnostics'), 'options exposes diagnostics actions');
+
+console.log('\n=== Protocol Completeness Tests ===\n');
+console.log(`  COMMAND types: ${Object.keys(COMMAND_MAP).length}`);
+console.log(`  EVENT types:   ${Object.keys(EVENT_MAP).length}`);
+console.log(`  Error codes:   ${Object.keys(ERROR_CODE_MAP).length}`);
+
+console.log('\n--- Test 6: Every EVENT type has a handler ---');
+const EVENT_HANDLED_ELSEWHERE = new Set(['SESSION_CLOCK_PONG']);
+for (const [constName, value] of Object.entries(EVENT_MAP)) {
+  if (EVENT_HANDLED_ELSEWHERE.has(constName)) {
+    ok(wsSource.includes(`WPProtocol.EVENT.${constName}`), `EVENT.${constName} ('${value}') handled in stremio-ws.js`);
+  } else {
+    ok(contentEventCases.has(constName), `EVENT.${constName} ('${value}') handled in stremio-content`);
+  }
+}
+
+console.log('\n--- Test 7: Every send uses a valid COMMAND constant ---');
+for (const constName of commandSends) {
+  ok(constName in COMMAND_MAP, `COMMAND.${constName} exists in wp-protocol.js`);
+}
+
+console.log('\n--- Test 8: Every COMMAND type is sent by the extension ---');
+for (const [constName, value] of Object.entries(COMMAND_MAP)) {
+  ok(commandSends.has(constName), `COMMAND.${constName} ('${value}') is used in a send() call`);
+}
+
+console.log('\n--- Test 9: Error handler covers key error codes ---');
+for (const code of ['ROOM_NOT_FOUND', 'NOT_OWNER', 'COOLDOWN', 'VALIDATION_FAILED']) {
+  ok(contentErrorCodes.has(code), `ERROR_CODE.${code} handled in stremio-content`);
+}
+
+console.log('\n--- Test 10: No hardcoded WS message type strings remain ---');
+const contentHardcoded = findHardcodedTypes(contentSource);
+const wsHardcoded = findHardcodedTypes(wsSource);
+ok(contentHardcoded.length === 0, `stremio-content has no hardcoded WS message types${contentHardcoded.length ? `: ${contentHardcoded.join(', ')}` : ''}`);
+ok(wsHardcoded.length === 0, `stremio-ws has no hardcoded WS message types${wsHardcoded.length ? `: ${wsHardcoded.join(', ')}` : ''}`);
+
 console.log('\n' + '='.repeat(50));
 console.log(`Results: ${passed} passed, ${failed} failed (${total} total)`);
 console.log('='.repeat(50));

@@ -2,6 +2,7 @@ const DEFAULT_IGNORES = [
   /no viable transport found \(qt\.webChannelTransport\)/i,
   /googleads\.g\.doubleclick\.net\/pagead\/viewthroughconversion/i,
   /youtube\.com\/pagead\/viewthroughconversion/i,
+  /Failed to load resource: net::ERR_FAILED/i,
 ];
 
 export function createBrowserDiagnostics(extraIgnores = []) {

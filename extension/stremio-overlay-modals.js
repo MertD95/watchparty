@@ -56,7 +56,7 @@ const WPModals = (() => {
       document.getElementById('wp-overlay')?.appendChild(modal);
       modal.showPopover();
       document.getElementById('wp-ready-confirm').addEventListener('click', () => {
-        document.dispatchEvent(new CustomEvent('wp-action', { detail: { action: 'ready-check', readyAction: 'confirm' } }));
+        document.dispatchEvent(new CustomEvent('wp-action', { detail: { action: WPConstants.ACTION.ROOM_READY_CHECK_UPDATE, readyAction: 'confirm' } }));
         document.getElementById('wp-ready-confirm').disabled = true;
         document.getElementById('wp-ready-confirm').textContent = 'Waiting...';
         const countEl = document.getElementById('wp-ready-count');

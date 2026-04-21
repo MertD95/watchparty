@@ -67,6 +67,32 @@ const WPUtils = (() => {
     return false;
   }
 
+  function upsertRoomUser(users, nextUser) {
+    if (!Array.isArray(users) || !nextUser?.id) return Array.isArray(users) ? users : [];
+    const nextList = users.map((user) => ({ ...user }));
+    const index = nextList.findIndex((user) => {
+      if (nextUser.sessionId && user.sessionId) return user.sessionId === nextUser.sessionId;
+      return user.id === nextUser.id;
+    });
+    if (index >= 0) nextList[index] = { ...nextList[index], ...nextUser };
+    else nextList.push({ ...nextUser });
+    return nextList;
+  }
+
+  function removeRoomUser(users, target) {
+    if (!Array.isArray(users) || !target?.userId) return Array.isArray(users) ? users : [];
+    return users.filter((user) => {
+      if (target.sessionId && user.sessionId) return user.sessionId !== target.sessionId;
+      return user.id !== target.userId;
+    }).map((user) => ({ ...user }));
+  }
+
+  function getDirectJoinUrl(room) {
+    if (!room?.stream) return null;
+    if (!WPRoomDomain.hasDirectJoinFromJoinHint(room.joinHint)) return null;
+    return WPDirectPlay.getDirectJoinUrl(room.stream);
+  }
+
   async function copyText(text) {
     const value = String(text || '');
     if (!value) return false;
@@ -112,7 +138,7 @@ const WPUtils = (() => {
     try {
       const response = await chrome.runtime.sendMessage({
         type: 'watchparty-ext',
-        action: 'copy-to-clipboard',
+        action: WPAction.CLIPBOARD_COPY,
         text: value,
       });
       return response?.ok === true;
@@ -157,6 +183,9 @@ const WPUtils = (() => {
     isCurrentSessionUser,
     getCanonicalOwnerUser,
     isCurrentSessionOwner,
+    upsertRoomUser,
+    removeRoomUser,
+    getDirectJoinUrl,
     copyText,
     copyTextDeferred,
     copyTextViaExtension,

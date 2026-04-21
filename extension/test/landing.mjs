@@ -1,10 +1,12 @@
 import fs from 'node:fs';
 import http from 'node:http';
+import net from 'node:net';
 import path from 'node:path';
 import { chromium } from 'playwright';
+import { expectPass } from './assertions.mjs';
 
-const API_PORT = Number(process.env.WP_LANDING_TEST_API_PORT || 8181);
-const PAGE_PORT = Number(process.env.WP_LANDING_TEST_PAGE_PORT || 8096);
+const REQUESTED_API_PORT = Number(process.env.WP_LANDING_TEST_API_PORT || 8181);
+const REQUESTED_PAGE_PORT = Number(process.env.WP_LANDING_TEST_PAGE_PORT || 8096);
 const LANDING_PATH = path.resolve('landing', 'index.html');
 
 let passed = 0;
@@ -20,7 +22,27 @@ function ok(condition, label) {
   }
 }
 
-function createServers() {
+async function pickPort(preferredPort, { strict = false } = {}) {
+  const canListen = (port) => new Promise((resolve) => {
+    const probe = net.createServer();
+    probe.once('error', () => resolve(null));
+    probe.listen(port, () => {
+      const address = probe.address();
+      const chosenPort = typeof address === 'object' && address ? address.port : port;
+      probe.close(() => resolve(chosenPort));
+    });
+  });
+
+  const preferred = await canListen(preferredPort);
+  if (preferred !== null) return preferred;
+  if (strict) throw new Error(`Landing test port ${preferredPort} is already in use.`);
+
+  const fallback = await canListen(0);
+  if (fallback !== null) return fallback;
+  throw new Error('Could not allocate a free local port for the landing test harness.');
+}
+
+function createServers(apiPort, pagePort) {
   let rooms = [];
   let revision = 0;
   let queuedRoomsResponse = null;
@@ -53,12 +75,12 @@ function createServers() {
   landingHtml = replaceOnce(
     landingHtml,
     "const WS_API = IS_DEV ? 'ws://localhost:8181' : 'wss://ws.mertd.me';",
-    `const WS_API = IS_DEV ? 'ws://localhost:${API_PORT}' : 'wss://ws.mertd.me';`
+    `const WS_API = IS_DEV ? 'ws://localhost:${apiPort}' : 'wss://ws.mertd.me';`
   );
   landingHtml = replaceOnce(
     landingHtml,
     "const ROOMS_API = IS_DEV ? 'http://localhost:8181/rooms' : 'https://ws.mertd.me/rooms';",
-    `const ROOMS_API = IS_DEV ? 'http://localhost:${API_PORT}/rooms' : 'https://ws.mertd.me/rooms';`
+    `const ROOMS_API = IS_DEV ? 'http://localhost:${apiPort}/rooms' : 'https://ws.mertd.me/rooms';`
   );
   landingHtml = replaceOnce(landingHtml, 'setInterval(loadPublicRooms, 10000);', 'setInterval(loadPublicRooms, 100);');
   landingHtml = replaceOnce(
@@ -120,8 +142,8 @@ function createServers() {
   return {
     async start() {
       await Promise.all([
-        new Promise((resolve) => apiServer.listen(API_PORT, resolve)),
-        new Promise((resolve) => pageServer.listen(PAGE_PORT, resolve)),
+        new Promise((resolve) => apiServer.listen(apiPort, resolve)),
+        new Promise((resolve) => pageServer.listen(pagePort, resolve)),
       ]);
     },
     setRooms(nextRooms, options = {}) {
@@ -160,7 +182,9 @@ async function main() {
   console.log('WatchParty Landing Tests');
   console.log('========================');
 
-  const servers = createServers();
+  const apiPort = await pickPort(REQUESTED_API_PORT, { strict: !!process.env.WP_LANDING_TEST_API_PORT });
+  const pagePort = await pickPort(REQUESTED_PAGE_PORT, { strict: !!process.env.WP_LANDING_TEST_PAGE_PORT });
+  const servers = createServers(apiPort, pagePort);
   await servers.start();
 
   const browser = await chromium.launch({ headless: true });
@@ -202,7 +226,7 @@ async function main() {
       ].includes(event.data?.type)) {
         window.__bridgeMessages.push(event.data);
       }
-      if (event.data?.type === 'watchparty-ext-request' && event.data.action === 'get-status') {
+      if (event.data?.type === 'watchparty-ext-request' && event.data.action === 'status.get') {
         window.postMessage({
           type: 'watchparty-ext-response',
           requestId: event.data.requestId,
@@ -229,7 +253,7 @@ async function main() {
       },
     ]);
 
-    await page.goto(`http://localhost:${PAGE_PORT}/`, { waitUntil: 'domcontentloaded' });
+    await page.goto(`http://localhost:${pagePort}/`, { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('.room-card');
 
     const initialCard = await page.evaluate(() => ({
@@ -262,11 +286,10 @@ async function main() {
       window.__navTargets = [];
     });
     await page.click('#hero-primary-btn');
-    const createModalOpened = await page.waitForFunction(
+    await expectPass(ok, 'landing opens the create-room modal from the hero action', () => page.waitForFunction(
       () => getComputedStyle(document.getElementById('create-modal')).display !== 'none',
       { timeout: 3000 }
-    ).then(() => true).catch(() => false);
-    ok(createModalOpened, 'landing opens the create-room modal from the hero action');
+    ));
     await page.fill('#create-room-name', 'team-room');
     await page.click('#create-room-public');
     await page.click('#create-submit-btn');
@@ -295,7 +318,7 @@ async function main() {
         },
       };
     });
-    const heroRoomVisible = await page.waitForFunction(
+    await expectPass(ok, 'landing shows the active-room hero card after website-first room creation', () => page.waitForFunction(
       () => {
         const card = document.getElementById('hero-room-card');
         const title = document.getElementById('hero-room-title')?.textContent?.trim();
@@ -307,18 +330,16 @@ async function main() {
           && !resume.classList.contains('hidden');
       },
       { timeout: 4000 }
-    ).then(() => true).catch(() => false);
-    ok(heroRoomVisible, 'landing shows the active-room hero card after website-first room creation');
+    ));
 
     await page.evaluate(() => {
       window.__bridgeMessages = [];
     });
     await page.click('#hero-settings-btn');
-    const heroSettingsBridge = await page.waitForFunction(
+    await expectPass(ok, 'landing keeps the active-room Extension Settings bridge action', () => page.waitForFunction(
       () => window.__bridgeMessages.some((entry) => entry.type === 'watchparty-open-options'),
       { timeout: 3000 }
-    ).then(() => true).catch(() => false);
-    ok(heroSettingsBridge, 'landing keeps the active-room Extension Settings bridge action');
+    ));
 
     const initialRoomNodeToken = await page.evaluate(() => {
       const card = document.querySelector('.room-card[data-room-id="room-1"]') || document.querySelector('.room-card');
@@ -343,15 +364,14 @@ async function main() {
     ]);
     servers.broadcastRooms();
 
-    const cardPatchedInPlace = await page.waitForFunction(
+    await expectPass(ok, 'landing patches an existing room card in place when the same room updates', () => page.waitForFunction(
       (token) => {
         const card = document.querySelector('.room-card[data-room-id="room-1"]');
         return card?.__nodeToken === token && document.body.innerText.includes('2:10');
       },
       initialRoomNodeToken,
       { timeout: 5000 }
-    ).then(() => true).catch(() => false);
-    ok(cardPatchedInPlace, 'landing patches an existing room card in place when the same room updates');
+    ));
 
     servers.setRooms([
       {
@@ -369,17 +389,15 @@ async function main() {
       },
     ]);
     servers.broadcastRooms();
-    const customRoomNameVisible = await page.waitForFunction(
+    await expectPass(ok, 'landing room cards prefer the custom room name when it exists', () => page.waitForFunction(
       () => document.querySelector('.room-card[data-room-id="room-1"] .room-title')?.textContent?.trim() === 'custom-room-name',
       { timeout: 5000 }
-    ).then(() => true).catch(() => false);
-    ok(customRoomNameVisible, 'landing room cards prefer the custom room name when it exists');
+    ));
 
-    const sseRevisionObserved = await page.waitForFunction(
+    await expectPass(ok, 'landing receives SSE revision IDs from the server', () => page.waitForFunction(
       () => window.__sseEvents.some((event) => event.type === 'message' && !!event.lastEventId),
       { timeout: 5000 }
-    ).then(() => true).catch(() => false);
-    ok(sseRevisionObserved, 'landing receives SSE revision IDs from the server');
+    ));
 
     await page.evaluate(() => {
       window.__joinMessages = [];
@@ -482,11 +500,10 @@ async function main() {
     ]);
     servers.broadcastRooms();
 
-    const summaryExcludesPlaceholder = await page.waitForFunction(
+    await expectPass(ok, 'landing hero summary deduplicates identical titles and ignores WatchParty Session placeholders', () => page.waitForFunction(
       () => (document.getElementById('hero-live-summary')?.textContent || '').trim() === '4 people across 3 rooms, 1 title identified.',
       { timeout: 5000 }
-    ).then(() => true).catch(() => false);
-    ok(summaryExcludesPlaceholder, 'landing hero summary deduplicates identical titles and ignores WatchParty Session placeholders');
+    ));
 
     servers.setRooms([
       {
@@ -505,11 +522,10 @@ async function main() {
     ]);
     servers.broadcastRooms();
 
-    const debridReady = await page.waitForFunction(
+    await expectPass(ok, 'landing keeps the debrid fallback button clickable', () => page.waitForFunction(
       () => document.body.innerText.includes('DebridHost') && document.querySelector('.room-card .room-direct-btn')?.disabled === false,
       { timeout: 5000 }
-    ).then(() => true).catch(() => false);
-    ok(debridReady, 'landing keeps the debrid fallback button clickable');
+    ));
 
     const debridButtonState = await page.evaluate(() => ({
       directDisabled: document.querySelector('.room-card .room-direct-btn')?.disabled ?? true,
@@ -557,14 +573,13 @@ async function main() {
     ]);
     servers.broadcastRooms();
 
-    const reconnectingReady = await page.waitForFunction(
+    await expectPass(ok, 'landing keeps reconnecting rooms visible during disconnect grace', () => page.waitForFunction(
       () => {
         const text = document.getElementById('rooms-list')?.innerText || '';
         return text.includes('Dracula') && text.includes('Reconnecting...');
       },
       { timeout: 5000 }
-    ).then(() => true).catch(() => false);
-    ok(reconnectingReady, 'landing keeps reconnecting rooms visible during disconnect grace');
+    ));
 
     const reconnectingRoomState = await page.evaluate(() => ({
       usersText: document.querySelector('.room-card .room-users')?.textContent || '',
@@ -604,12 +619,10 @@ async function main() {
     ]);
     servers.broadcastRooms();
 
-    await page.waitForTimeout(400);
-    const privateHidden = await page.evaluate(() => {
+    await expectPass(ok, 'landing keeps private rooms out of the public room list', () => page.waitForFunction(() => {
       const text = (document.getElementById('rooms-list')?.innerText || '').toLowerCase();
       return !text.includes('neo') && !text.includes('the matrix');
-    });
-    ok(privateHidden, 'landing keeps private rooms out of the public room list');
+    }, { timeout: 3000 }));
 
     await page.evaluate(() => {
       window.__joinMessages = [];
@@ -619,12 +632,11 @@ async function main() {
       window.__watchpartyExtStatus = { hasStremioTab: true };
     });
     await page.click('#hero-private-btn');
-    const privateJoinModalReady = await page.waitForFunction(
+    await expectPass(ok, 'private invite flow opens the key modal before posting a join', () => page.waitForFunction(
       () => getComputedStyle(document.getElementById('uuid-modal')).display !== 'none' && window.__joinMessages.length === 0,
       { timeout: 3000 }
-    ).then(() => true).catch(() => false);
-    ok(privateJoinModalReady, 'private invite flow opens the key modal before posting a join');
-    await page.fill('#uuid-input', `http://localhost:${PAGE_PORT}/r/room-private#key=invite-private-room-key`);
+    ));
+    await page.fill('#uuid-input', `http://localhost:${pagePort}/r/room-private#key=invite-private-room-key`);
     await page.click('#uuid-submit-btn');
     await page.waitForFunction(() => window.__joinMessages.length > 0 && window.__bridgeMessages.some((entry) => entry.type === 'watchparty-open-stremio'), { timeout: 3000 });
     const privateJoinAction = await page.evaluate(() => ({
@@ -637,11 +649,10 @@ async function main() {
     ok(privateJoinAction.openMessage?.url === 'https://web.stremio.com', 'private invite flow asks the extension background to open or focus Stremio Web');
     ok(privateJoinAction.navTarget == null, 'private invite flow keeps the landing page in place during the handoff');
 
-    const sseReady = await page.waitForFunction(
+    await expectPass(ok, 'landing establishes an SSE subscription', () => page.waitForFunction(
       () => window.__sseEvents.some((event) => event.type === 'message'),
       { timeout: 5000 }
-    ).then(() => true).catch(() => false);
-    ok(sseReady, 'landing establishes an SSE subscription');
+    ));
 
     servers.setRooms([
       {
@@ -673,11 +684,10 @@ async function main() {
     ]);
     servers.broadcastRooms();
 
-    const sseUpdated = await page.waitForFunction(
+    await expectPass(ok, 'landing updates the room list from SSE pushes', () => page.waitForFunction(
       () => document.querySelectorAll('.room-card').length === 2 && document.body.innerText.includes('Interstellar'),
       { timeout: 5000 }
-    ).then(() => true).catch(() => false);
-    ok(sseUpdated, 'landing updates the room list from SSE pushes');
+    ));
 
     servers.queueRoomsResponseSnapshot({
       rooms: [
@@ -699,12 +709,10 @@ async function main() {
       revision: 1,
     });
     await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-    await page.waitForTimeout(200);
-    const staleFetchIgnored = await page.evaluate(() => {
+    await expectPass(ok, 'landing ignores stale /rooms snapshots that arrive after a newer SSE update', () => page.waitForFunction(() => {
       const text = document.getElementById('rooms-list')?.innerText || '';
       return !text.includes('Stale Snapshot') && text.includes('Interstellar');
-    });
-    ok(staleFetchIgnored, 'landing ignores stale /rooms snapshots that arrive after a newer SSE update');
+    }, { timeout: 3000 }));
 
     servers.setRooms([
       {
@@ -723,28 +731,25 @@ async function main() {
     ]);
     servers.dropSseConnections();
 
-    const fallbackUpdated = await page.waitForFunction(
+    await expectPass(ok, 'landing falls back to polling after the SSE stream drops', () => page.waitForFunction(
       () => document.querySelectorAll('.room-card').length === 1 && document.body.innerText.includes('Pulp Fiction'),
       { timeout: 5000 }
-    ).then(() => true).catch(() => false);
-    ok(fallbackUpdated, 'landing falls back to polling after the SSE stream drops');
+    ));
 
-    await page.goto(`http://localhost:${PAGE_PORT}/r/test-room-123#key=redirect-room-key-1234`, { waitUntil: 'domcontentloaded' });
+    await page.goto(`http://localhost:${pagePort}/r/test-room-123#key=redirect-room-key-1234`, { waitUntil: 'domcontentloaded' });
 
-    const joinMessageObserved = await page.waitForFunction(() => window.__joinMessages.length > 0, { timeout: 3000 })
-      .then(() => true)
-      .catch(() => false);
-    ok(joinMessageObserved, 'redirect page posts the join-room message immediately');
+    await expectPass(ok, 'redirect page posts the join-room message immediately', () =>
+      page.waitForFunction(() => window.__joinMessages.length > 0, { timeout: 3000 })
+    );
 
     const joinMessage = await page.evaluate(() => window.__joinMessages[0] || null);
     ok(joinMessage?.roomId === 'test-room-123', 'redirect page posts the correct room ID');
     ok(joinMessage?.roomKey === 'redirect-room-key-1234', 'redirect page forwards the invite room key to the extension bridge');
 
-    const noExtensionWarning = await page.waitForFunction(
+    await expectPass(ok, 'redirect page shows the missing-extension warning when no extension responds', () => page.waitForFunction(
       () => getComputedStyle(document.getElementById('no-ext-warning')).display !== 'none',
       { timeout: 3000 }
-    ).then(() => true).catch(() => false);
-    ok(noExtensionWarning, 'redirect page shows the missing-extension warning when no extension responds');
+    ));
   } finally {
     await page.close().catch(() => {});
     await browser.close().catch(() => {});

@@ -40,8 +40,8 @@ const WPProfile = (() => {
         readAt: Date.now(),
       };
       chrome.storage.local.set({ [WPConstants.STORAGE.STREMIO_PROFILE]: data });
-      chrome.runtime.sendMessage({
-        type: 'watchparty-ext', action: 'profile-updated', data,
+        chrome.runtime.sendMessage({
+        type: 'watchparty-ext', action: WPConstants.ACTION.PROFILE_UPDATED, data,
       }).catch(() => {});
     } catch { /* localStorage read failed or JSON parse error */ }
   }

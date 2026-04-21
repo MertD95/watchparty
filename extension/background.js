@@ -3,8 +3,10 @@
 // NOTE: WebSocket connection lives in stremio-content.js (not here) to avoid MV3 suspension issues.
 
 // Load shared constants (service workers don't get content_scripts injection)
+importScripts('wp-actions.js');
 importScripts('constants.js');
 importScripts('runtime-state.js');
+importScripts('room-keys.js');
 importScripts('wp-protocol.js');
 
 const BG_VERSION = '2025-04-12-fix-chat';
@@ -23,16 +25,89 @@ const stats = { bytesProxied: 0, requestsProxied: 0, lastLatencyMs: 0 };
 const knownStremioTabIds = new Set();
 const knownWatchPartyTabIds = new Set();
 let offscreenDocumentPromise = null;
+const COORDINATOR_EVENT_LOG_LIMIT = 20;
 const coordinatorState = {
   room: null,
   userId: null,
   sessionId: null,
+  mode: WPConstants.COORDINATOR_MODE.IDLE,
+  bootstrapPending: false,
   wsConnected: false,
   activeBackend: null,
   activeBackendUrl: null,
   controllerTabId: null,
+  controllerRuntime: null,
+  adapterState: null,
+  invariants: [],
+  recentEvents: [],
   updatedAt: 0,
 };
+
+function pushCoordinatorEvent(type, details = null) {
+  coordinatorState.recentEvents = [
+    ...coordinatorState.recentEvents,
+    {
+      type,
+      at: Date.now(),
+      details: details && typeof details === 'object' ? structuredClone(details) : details,
+    },
+  ].slice(-COORDINATOR_EVENT_LOG_LIMIT);
+}
+
+function deriveCoordinatorInvariants(state) {
+  const issues = [];
+  if (state.wsConnected && state.controllerTabId == null) {
+    issues.push({ code: 'ws_without_controller', severity: 'error', message: 'Coordinator reports a live socket without a controller tab.' });
+  }
+  if (state.room?.id && !state.sessionId) {
+    issues.push({ code: 'room_without_session', severity: 'error', message: 'Coordinator holds room state before session identity is known.' });
+  }
+  if (state.controllerRuntime?.isControllerTab === false && state.wsConnected) {
+    issues.push({ code: 'controller_runtime_mismatch', severity: 'warn', message: 'Coordinator runtime reports a disconnected controller while wsConnected is true.' });
+  }
+  if (Array.isArray(state.controllerRuntime?.invariants)) {
+    for (const invariant of state.controllerRuntime.invariants) {
+      issues.push({ ...invariant, source: 'controller-runtime' });
+    }
+  }
+  if (Array.isArray(state.adapterState?.invariants)) {
+    for (const invariant of state.adapterState.invariants) {
+      issues.push({ ...invariant, source: 'adapter-runtime' });
+    }
+  }
+  return issues;
+}
+
+function refreshCoordinatorDiagnostics() {
+  coordinatorState.invariants = deriveCoordinatorInvariants(coordinatorState);
+  return coordinatorState.invariants;
+}
+
+function deriveCoordinatorModeFromState(state) {
+  if (state.bootstrapPending) return WPConstants.COORDINATOR_MODE.BOOTSTRAP_PENDING;
+  if (state.controllerTabId != null && state.wsConnected) {
+    return WPConstants.COORDINATOR_MODE.CONTROLLER_ACTIVE;
+  }
+  if (state.controllerTabId != null && state.room?.id) {
+    return WPConstants.COORDINATOR_MODE.CONTROLLER_RECOVERING;
+  }
+  if (state.controllerTabId != null) {
+    return WPConstants.COORDINATOR_MODE.CONTROLLER_CLAIMING;
+  }
+  if (state.room?.id) {
+    return WPConstants.COORDINATOR_MODE.CONTROLLER_MISSING;
+  }
+  return WPConstants.COORDINATOR_MODE.IDLE;
+}
+
+function deriveCoordinatorMode() {
+  return deriveCoordinatorModeFromState(coordinatorState);
+}
+
+function refreshCoordinatorMode() {
+  coordinatorState.mode = deriveCoordinatorMode();
+  return coordinatorState.mode;
+}
 
 function cloneRoomProjection(room) {
   return room && typeof room === 'object'
@@ -41,19 +116,28 @@ function cloneRoomProjection(room) {
 }
 
 function cloneCoordinatorState() {
+  refreshCoordinatorMode();
+  refreshCoordinatorDiagnostics();
   return {
     room: cloneRoomProjection(coordinatorState.room),
     userId: coordinatorState.userId,
     sessionId: coordinatorState.sessionId,
+    mode: coordinatorState.mode,
+    bootstrapPending: coordinatorState.bootstrapPending,
     wsConnected: coordinatorState.wsConnected,
     activeBackend: coordinatorState.activeBackend,
     activeBackendUrl: coordinatorState.activeBackendUrl,
     controllerTabId: coordinatorState.controllerTabId,
+    controllerRuntime: coordinatorState.controllerRuntime ? structuredClone(coordinatorState.controllerRuntime) : null,
+    adapterState: coordinatorState.adapterState ? structuredClone(coordinatorState.adapterState) : null,
+    invariants: structuredClone(coordinatorState.invariants),
+    recentEvents: structuredClone(coordinatorState.recentEvents),
     updatedAt: coordinatorState.updatedAt,
   };
 }
 
 function buildCoordinatorStorageState() {
+  refreshCoordinatorMode();
   return {
     [WPConstants.STORAGE.ROOM_STATE]: cloneRoomProjection(coordinatorState.room),
     [WPConstants.STORAGE.USER_ID]: coordinatorState.userId,
@@ -61,14 +145,16 @@ function buildCoordinatorStorageState() {
     [WPConstants.STORAGE.WS_CONNECTED]: coordinatorState.wsConnected,
     [WPConstants.STORAGE.ACTIVE_BACKEND]: coordinatorState.activeBackend,
     [WPConstants.STORAGE.ACTIVE_BACKEND_URL]: coordinatorState.activeBackendUrl,
+    [WPConstants.STORAGE.CONTROLLER_RUNTIME]: coordinatorState.controllerRuntime ? structuredClone(coordinatorState.controllerRuntime) : null,
+    [WPConstants.STORAGE.ADAPTER_STATE]: coordinatorState.adapterState ? structuredClone(coordinatorState.adapterState) : null,
     [WPConstants.STORAGE.CURRENT_ROOM]: coordinatorState.room?.id || null,
   };
 }
 
 function publishCoordinatorState() {
   const payload = cloneCoordinatorState();
-  relayToPanel('status-updated', payload);
-  broadcastToStremioTabs({ action: 'status-updated', payload });
+  relayToPanel(WPConstants.ACTION.STATUS_UPDATED, payload);
+  broadcastToStremioTabs({ action: WPConstants.ACTION.STATUS_UPDATED, payload });
 }
 
 function persistCoordinatorState() {
@@ -80,11 +166,16 @@ function clearCoordinatorController(tabId, payload = {}) {
   if ('room' in payload) coordinatorState.room = cloneRoomProjection(payload.room);
   if ('userId' in payload) coordinatorState.userId = payload.userId || null;
   if ('sessionId' in payload) coordinatorState.sessionId = payload.sessionId || null;
+  if ('controllerRuntime' in payload) coordinatorState.controllerRuntime = payload.controllerRuntime ? structuredClone(payload.controllerRuntime) : null;
+  if ('adapterState' in payload) coordinatorState.adapterState = payload.adapterState ? structuredClone(payload.adapterState) : null;
   coordinatorState.controllerTabId = null;
   coordinatorState.wsConnected = false;
   coordinatorState.activeBackend = null;
   coordinatorState.activeBackendUrl = null;
   coordinatorState.updatedAt = Date.now();
+  refreshCoordinatorMode();
+  refreshCoordinatorDiagnostics();
+  pushCoordinatorEvent('controller.released', { tabId });
   persistCoordinatorState();
   publishCoordinatorState();
   return true;
@@ -98,8 +189,18 @@ function updateCoordinatorState(nextState, sender) {
   if ('wsConnected' in payload) coordinatorState.wsConnected = payload.wsConnected === true;
   if ('activeBackend' in payload) coordinatorState.activeBackend = payload.activeBackend || null;
   if ('activeBackendUrl' in payload) coordinatorState.activeBackendUrl = payload.activeBackendUrl || null;
+  if ('controllerRuntime' in payload) coordinatorState.controllerRuntime = payload.controllerRuntime ? structuredClone(payload.controllerRuntime) : null;
+  if ('adapterState' in payload) coordinatorState.adapterState = payload.adapterState ? structuredClone(payload.adapterState) : null;
   if (sender?.tab?.id != null) coordinatorState.controllerTabId = sender.tab.id;
   coordinatorState.updatedAt = Date.now();
+  refreshCoordinatorMode();
+  refreshCoordinatorDiagnostics();
+  pushCoordinatorEvent('session.state.publish', {
+    tabId: sender?.tab?.id ?? null,
+    roomId: coordinatorState.room?.id || null,
+    phase: coordinatorState.controllerRuntime?.phase || null,
+    route: coordinatorState.adapterState?.route || null,
+  });
   persistCoordinatorState();
   publishCoordinatorState();
 }
@@ -112,19 +213,47 @@ async function getProjectedRuntimeState() {
     WPConstants.STORAGE.WS_CONNECTED,
     WPConstants.STORAGE.ACTIVE_BACKEND,
     WPConstants.STORAGE.ACTIVE_BACKEND_URL,
+    WPConstants.STORAGE.CONTROLLER_RUNTIME,
+    WPConstants.STORAGE.ADAPTER_STATE,
     WPConstants.STORAGE.CURRENT_ROOM,
+    WPConstants.STORAGE.CONTROLLER_TAB,
+    WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT,
   ]);
   const useCoordinator = coordinatorState.updatedAt > 0;
+  const persistedControllerLease = WPConstants.CONTROLLER_TAB_LEASE.normalize(result[WPConstants.STORAGE.CONTROLLER_TAB]);
+  const persistedBootstrapIntent = WPConstants.BOOTSTRAP_ROOM_INTENT.normalize(result[WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT]);
+  const persistedControllerRuntime = result[WPConstants.STORAGE.CONTROLLER_RUNTIME] ?? null;
+  const persistedAdapterState = result[WPConstants.STORAGE.ADAPTER_STATE] ?? null;
   const room = useCoordinator
     ? cloneRoomProjection(coordinatorState.room)
     : (result[WPConstants.STORAGE.ROOM_STATE] ?? null);
+  const fallbackState = {
+    room,
+    wsConnected: result[WPConstants.STORAGE.WS_CONNECTED] ?? false,
+    controllerTabId: persistedControllerLease?.tabId ?? null,
+    bootstrapPending: !!persistedBootstrapIntent,
+    controllerRuntime: persistedControllerRuntime,
+    adapterState: persistedAdapterState,
+  };
+  const fallbackInvariants = deriveCoordinatorInvariants(fallbackState);
+  refreshCoordinatorMode();
   return {
     room,
     userId: useCoordinator ? coordinatorState.userId : (result[WPConstants.STORAGE.USER_ID] ?? null),
     sessionId: useCoordinator ? coordinatorState.sessionId : (result[WPConstants.STORAGE.SESSION_ID] ?? null),
+    mode: useCoordinator ? coordinatorState.mode : deriveCoordinatorModeFromState(fallbackState),
+    bootstrapPending: useCoordinator ? coordinatorState.bootstrapPending : !!persistedBootstrapIntent,
     wsConnected: useCoordinator ? coordinatorState.wsConnected : (result[WPConstants.STORAGE.WS_CONNECTED] ?? false),
     activeBackend: useCoordinator ? coordinatorState.activeBackend : (result[WPConstants.STORAGE.ACTIVE_BACKEND] ?? null),
     activeBackendUrl: useCoordinator ? coordinatorState.activeBackendUrl : (result[WPConstants.STORAGE.ACTIVE_BACKEND_URL] ?? null),
+    controllerRuntime: useCoordinator
+      ? (coordinatorState.controllerRuntime ? structuredClone(coordinatorState.controllerRuntime) : null)
+      : persistedControllerRuntime,
+    adapterState: useCoordinator
+      ? (coordinatorState.adapterState ? structuredClone(coordinatorState.adapterState) : null)
+      : persistedAdapterState,
+    invariants: useCoordinator ? structuredClone(coordinatorState.invariants) : fallbackInvariants,
+    recentEvents: useCoordinator ? structuredClone(coordinatorState.recentEvents) : [],
     currentRoomId: room?.id ?? result[WPConstants.STORAGE.CURRENT_ROOM] ?? null,
   };
 }
@@ -157,8 +286,8 @@ async function checkStremio() {
   }
   updateBadge();
   if (prev !== stremioRunning) {
-    broadcastToStremioTabs({ action: 'stremio-status', stremioRunning });
-    broadcastToWatchParty({ action: 'stremio-status', stremioRunning });
+    broadcastToStremioTabs({ action: WPConstants.ACTION.STREMIO_STATUS_UPDATED, stremioRunning });
+    broadcastToWatchParty({ action: WPConstants.ACTION.STREMIO_STATUS_UPDATED, stremioRunning });
     if (stremioRunning) {
       fetchStremioSettings();
       tryProfileSync();
@@ -219,7 +348,7 @@ async function tryProfileSync() {
       readAt: Date.now(),
     };
     await chrome.storage.local.set({ [WPConstants.STORAGE.STREMIO_PROFILE]: profile });
-    broadcastToWatchParty({ action: 'profile-updated', data: profile });
+    broadcastToWatchParty({ action: WPConstants.ACTION.PROFILE_UPDATED, data: profile });
   } catch (e) { console.warn('[WP-BG] Profile sync failed:', e.message); }
 }
 
@@ -316,7 +445,7 @@ async function probeKnownExtensionSurfaces() {
       try {
         const response = await chrome.tabs.sendMessage(tab.id, {
           type: 'watchparty-ext',
-          action: 'probe-surface',
+          action: WPConstants.ACTION.PROBE_SURFACE,
         });
         if (response?.surface) rememberSurfaceTab(response.surface, tab.id);
       } catch {
@@ -340,12 +469,22 @@ async function getWatchPartyTabs() {
 
 async function clearBootstrapRoomIntent() {
   await removeExtensionState(WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT);
+  coordinatorState.bootstrapPending = false;
+  coordinatorState.updatedAt = Date.now();
+  refreshCoordinatorMode();
+  persistCoordinatorState();
+  publishCoordinatorState();
 }
 
 async function stageBootstrapRoomIntent(intent) {
   const normalizedIntent = WPConstants.BOOTSTRAP_ROOM_INTENT.normalize(intent);
   if (!normalizedIntent) throw new Error('Invalid bootstrap room intent');
   await setExtensionState({ [WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT]: normalizedIntent });
+  coordinatorState.bootstrapPending = true;
+  coordinatorState.updatedAt = Date.now();
+  refreshCoordinatorMode();
+  persistCoordinatorState();
+  publishCoordinatorState();
 }
 
 async function getBootstrapRoomIntent() {
@@ -354,6 +493,8 @@ async function getBootstrapRoomIntent() {
   if (!normalized && result[WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT] !== undefined) {
     await clearBootstrapRoomIntent();
   }
+  coordinatorState.bootstrapPending = !!normalized;
+  refreshCoordinatorMode();
   return normalized;
 }
 
@@ -405,15 +546,7 @@ async function removeStorageKeys(keys) {
 }
 
 async function cacheRoomKey(roomId, roomKey) {
-  if (!roomId || !roomKey) return;
-  const storageKey = WPConstants.STORAGE.roomKey(roomId);
-  const encodedRoomKey = WPConstants.ROOM_KEYS.encodeForLocal(roomKey);
-  try {
-    await chrome.storage.session.set({ [storageKey]: roomKey });
-  } catch { /* session storage may be unavailable */ }
-  if (encodedRoomKey) {
-    await chrome.storage.local.set({ [storageKey]: encodedRoomKey });
-  }
+  await WPRoomKeys.set(roomId, roomKey);
 }
 
 async function focusTab(tab) {
@@ -435,7 +568,7 @@ async function openSidebarOnTab(tab, panel) {
   try {
     await chrome.tabs.sendMessage(tab.id, {
       type: 'watchparty-ext',
-      action: 'open-sidebar',
+      action: WPConstants.ACTION.OPEN_SIDEBAR,
       panel,
     });
     return true;
@@ -516,7 +649,7 @@ async function copyToClipboard(text) {
       {
         type: 'watchparty-ext',
         target: 'offscreen',
-        action: 'offscreen-copy',
+        action: WPConstants.ACTION.OFFSCREEN_COPY,
         text: value,
       },
       (response) => {
@@ -550,7 +683,7 @@ async function resumeRoomInStremio() {
 }
 
 const messageHandlers = {
-  'get-status': (_m, _s, sendResponse) => respondAsync(sendResponse, async () => {
+  [WPConstants.ACTION.STATUS_GET]: (_m, _s, sendResponse) => respondAsync(sendResponse, async () => {
     const stremioTabs = await getStremioTabs();
     const hasStremioTab = stremioTabs.length > 0;
     const result = await getExtensionState([
@@ -561,6 +694,10 @@ const messageHandlers = {
     const runtimeState = await getProjectedRuntimeState();
     const bootstrapIntent = await getBootstrapRoomIntent();
     const trustedPersistedRoom = hasStremioTab || !!runtimeState.currentRoomId;
+    const backendInfo = WPConstants.BACKEND.getInfo(WPConstants.BACKEND.resolveKey(
+      result[WPConstants.STORAGE.BACKEND_MODE],
+      runtimeState.activeBackend,
+    ));
     return {
       stremioRunning, stremioSettings,
       profile: result[WPConstants.STORAGE.STREMIO_PROFILE] ?? null,
@@ -569,26 +706,32 @@ const messageHandlers = {
       backendMode: result[WPConstants.STORAGE.BACKEND_MODE] ?? WPConstants.BACKEND.MODES.AUTO,
       activeBackend: runtimeState.activeBackend,
       activeBackendUrl: runtimeState.activeBackendUrl,
+      activeBackendHttpUrl: backendInfo.httpUrl,
+      coordinatorMode: runtimeState.mode,
       userId: runtimeState.userId,
       sessionId: runtimeState.sessionId,
       username: result[WPConstants.STORAGE.USERNAME] ?? null,
       room: trustedPersistedRoom ? runtimeState.room : null,
+      controllerRuntime: runtimeState.controllerRuntime,
+      adapterState: runtimeState.adapterState,
+      invariants: runtimeState.invariants,
+      recentEvents: runtimeState.recentEvents,
       hasStremioTab,
       bootstrapPending: !!bootstrapIntent,
       bgVersion: BG_VERSION,
     };
   }),
-  'session-state': (m, sender) => {
+  [WPConstants.ACTION.SESSION_STATE_PUBLISH]: (m, sender) => {
     const payload = m.payload && typeof m.payload === 'object' ? m.payload : {};
     updateCoordinatorState(payload, sender);
     updateBadge();
   },
-  'controller-released': (m, sender) => {
+  [WPConstants.ACTION.CONTROLLER_RELEASED]: (m, sender) => {
     const payload = m.payload && typeof m.payload === 'object' ? m.payload : {};
     clearCoordinatorController(sender?.tab?.id, payload);
     updateBadge();
   },
-  'claim-controller-lease': (_m, sender, sr) => respondAsync(sr, async () => {
+  [WPConstants.ACTION.CONTROLLER_LEASE_CLAIM]: (_m, sender, sr) => respondAsync(sr, async () => {
     const senderTabId = sender?.tab?.id ?? null;
     if (senderTabId == null) return { ok: false, claimed: false, lease: null };
     const response = await claimLease({
@@ -600,10 +743,14 @@ const messageHandlers = {
     });
     if (response.claimed) {
       coordinatorState.controllerTabId = response.ownerTabId;
+      coordinatorState.updatedAt = Date.now();
+      refreshCoordinatorMode();
+      refreshCoordinatorDiagnostics();
+      pushCoordinatorEvent('controller.lease.claim', { tabId: response.ownerTabId });
     }
     return response;
   }),
-  'release-controller-lease': (_m, sender, sr) => respondAsync(sr, async () => {
+  [WPConstants.ACTION.CONTROLLER_LEASE_RELEASE]: (_m, sender, sr) => respondAsync(sr, async () => {
     const senderTabId = sender?.tab?.id ?? null;
     const response = await releaseLease({
       storageKey: WPConstants.STORAGE.CONTROLLER_TAB,
@@ -612,10 +759,14 @@ const messageHandlers = {
     });
     if (response.released && senderTabId != null && coordinatorState.controllerTabId === senderTabId) {
       coordinatorState.controllerTabId = null;
+      coordinatorState.updatedAt = Date.now();
+      refreshCoordinatorMode();
+      refreshCoordinatorDiagnostics();
+      pushCoordinatorEvent('controller.lease.release', { tabId: senderTabId });
     }
     return response;
   }),
-  'claim-active-video-lease': (_m, sender, sr) => respondAsync(sr, async () => {
+  [WPConstants.ACTION.ACTIVE_VIDEO_LEASE_CLAIM]: (_m, sender, sr) => respondAsync(sr, async () => {
     const senderTabId = sender?.tab?.id ?? null;
     if (senderTabId == null) return { ok: false, claimed: false, lease: null };
     return claimLease({
@@ -626,29 +777,29 @@ const messageHandlers = {
       force: _m.force === true,
     });
   }),
-  'release-active-video-lease': (_m, _s, sr) => respondAsync(sr, async () => {
+  [WPConstants.ACTION.ACTIVE_VIDEO_LEASE_RELEASE]: (_m, _s, sr) => respondAsync(sr, async () => {
     return releaseLease({
       storageKey: WPConstants.STORAGE.ACTIVE_VIDEO_TAB,
       leaseContract: WPConstants.VIDEO_TAB_LEASE,
       leaseId: _m.leaseId,
     });
   }),
-  'chat-message': (m) => {
-    relayToPanel('chat-message', m.payload);
-    broadcastToStremioTabs({ action: 'chat-message', payload: m.payload });
+  [WPConstants.ACTION.ROOM_CHAT_EVENT]: (m) => {
+    relayToPanel(WPConstants.ACTION.ROOM_CHAT_EVENT, m.payload);
+    broadcastToStremioTabs({ action: WPConstants.ACTION.ROOM_CHAT_EVENT, payload: m.payload });
   },
-  'typing': (m) => {
-    relayToPanel('typing', m.payload);
-    broadcastToStremioTabs({ action: 'typing', payload: m.payload });
+  [WPConstants.ACTION.ROOM_TYPING_EVENT]: (m) => {
+    relayToPanel(WPConstants.ACTION.ROOM_TYPING_EVENT, m.payload);
+    broadcastToStremioTabs({ action: WPConstants.ACTION.ROOM_TYPING_EVENT, payload: m.payload });
   },
-  'bookmark': (m) => {
-    relayToPanel('bookmark', m.payload);
-    broadcastToStremioTabs({ action: 'bookmark', payload: m.payload });
+  [WPConstants.ACTION.ROOM_BOOKMARK_EVENT]: (m) => {
+    relayToPanel(WPConstants.ACTION.ROOM_BOOKMARK_EVENT, m.payload);
+    broadcastToStremioTabs({ action: WPConstants.ACTION.ROOM_BOOKMARK_EVENT, payload: m.payload });
   },
-  'reaction': (m) => {
-    broadcastToStremioTabs({ action: 'reaction', payload: m.payload });
+  [WPConstants.ACTION.ROOM_REACTION_EVENT]: (m) => {
+    broadcastToStremioTabs({ action: WPConstants.ACTION.ROOM_REACTION_EVENT, payload: m.payload });
   },
-  'create-room': (m, _s, sr) => respondAsync(sr, async () => {
+  [WPConstants.ACTION.ROOM_CREATE]: (m, _s, sr) => respondAsync(sr, async () => {
     const stremioTabs = await getStremioTabs();
     const hasStremioTab = stremioTabs.length > 0;
     if (m.username) {
@@ -664,10 +815,10 @@ const messageHandlers = {
       WPConstants.STORAGE.DEFERRED_LEAVE_ROOM,
     ]);
     await stageBootstrapRoomIntent(WPConstants.BOOTSTRAP_ROOM_INTENT.buildCreate(m));
-    broadcastToStremioTabs({ action: 'bootstrap-pending' });
-    return { ok: true, openedStremio: false, staged: true, needsStremio: !hasStremioTab, hasStremioTab };
+    broadcastToStremioTabs({ action: WPConstants.ACTION.BOOTSTRAP_PENDING });
+    return { ok: true, openedStremio: false, staged: true, needsStremio: true, hasStremioTab };
   }),
-  'join-room': (m, _s, sr) => respondAsync(sr, async () => {
+  [WPConstants.ACTION.ROOM_JOIN]: (m, _s, sr) => respondAsync(sr, async () => {
     const stremioTabs = await getStremioTabs();
     const hasStremioTab = stremioTabs.length > 0;
     if (m.roomKey) {
@@ -686,10 +837,10 @@ const messageHandlers = {
       WPConstants.STORAGE.DEFERRED_LEAVE_ROOM,
     ]);
     await stageBootstrapRoomIntent(WPConstants.BOOTSTRAP_ROOM_INTENT.buildJoin(m));
-    broadcastToStremioTabs({ action: 'bootstrap-pending' });
-    return { ok: true, openedStremio: false, staged: true, needsStremio: !hasStremioTab, hasStremioTab };
+    broadcastToStremioTabs({ action: WPConstants.ACTION.BOOTSTRAP_PENDING });
+    return { ok: true, openedStremio: false, staged: true, needsStremio: true, hasStremioTab };
   }),
-  'leave-room': (m, _s, sr) => respondAsync(sr, async () => {
+  [WPConstants.ACTION.ROOM_LEAVE]: (m, _s, sr) => respondAsync(sr, async () => {
     if (!await forwardToStremioTabWithRetry(m)) {
       await removeStorageKeys([
         WPConstants.STORAGE.CURRENT_ROOM,
@@ -701,48 +852,48 @@ const messageHandlers = {
     }
     return { ok: true };
   }),
-  'toggle-public': (m, _s, sr) => respondAsync(sr, async () => {
+  [WPConstants.ACTION.ROOM_VISIBILITY_UPDATE]: (m, _s, sr) => respondAsync(sr, async () => {
     return relayLiveRoomAction(m);
   }),
-  'update-room-settings': (m, _s, sr) => respondAsync(sr, async () => {
+  [WPConstants.ACTION.ROOM_SETTINGS_UPDATE]: (m, _s, sr) => respondAsync(sr, async () => {
     return relayLiveRoomAction(m);
   }),
-  'transfer-ownership': (m, _s, sr) => respondAsync(sr, async () => {
+  [WPConstants.ACTION.ROOM_OWNERSHIP_TRANSFER]: (m, _s, sr) => respondAsync(sr, async () => {
     return relayLiveRoomAction(m);
   }),
-  'update-username': (m, _s, sr) => respondAsync(sr, async () => {
+  [WPConstants.ACTION.SESSION_USERNAME_UPDATE]: (m, _s, sr) => respondAsync(sr, async () => {
     await chrome.storage.local.set({ [WPConstants.STORAGE.USERNAME]: m.username });
     await forwardToStremioTabWithRetry(m);
     return { ok: true };
   }),
-  'ready-check': (m, _s, sr) => respondAsync(sr, async () => { await forwardToStremioTabWithRetry(m); return { ok: true }; }),
-  'send-bookmark': (m, _s, sr) => respondAsync(sr, async () => { await forwardToStremioTabWithRetry(m); return { ok: true }; }),
-  'seek-bookmark': (m, _s, sr) => respondAsync(sr, async () => { await forwardToStremioTabWithRetry(m); return { ok: true }; }),
-  'send-chat': (m, _s, sr) => respondAsync(sr, async () => { await forwardToStremioTabWithRetry(m); return { ok: true }; }),
-  'send-typing': (m, _s, sr) => respondAsync(sr, async () => { await forwardToStremioTabWithRetry(m); return { ok: true }; }),
-  'send-reaction': (m, _s, sr) => respondAsync(sr, async () => { await forwardToStremioTabWithRetry(m); return { ok: true }; }),
-  'send-presence': (m, _s, sr) => respondAsync(sr, async () => { await forwardToStremioTabWithRetry(m); return { ok: true }; }),
-  'send-playback-status': (m, _s, sr) => respondAsync(sr, async () => { await forwardToStremioTabWithRetry(m); return { ok: true }; }),
-  'request-sync': (m, _s, sr) => respondAsync(sr, async () => { await forwardToStremioTabWithRetry(m); return { ok: true }; }),
-  'profile-updated': (m) => broadcastToWatchParty({ action: 'profile-updated', data: m.data }),
-  'surface-ready': (m, sender, sendResponse) => {
+  [WPConstants.ACTION.ROOM_READY_CHECK_UPDATE]: (m, _s, sr) => respondAsync(sr, async () => { await forwardToStremioTabWithRetry(m); return { ok: true }; }),
+  [WPConstants.ACTION.ROOM_BOOKMARK_ADD]: (m, _s, sr) => respondAsync(sr, async () => { await forwardToStremioTabWithRetry(m); return { ok: true }; }),
+  [WPConstants.ACTION.ROOM_BOOKMARK_SEEK]: (m, _s, sr) => respondAsync(sr, async () => { await forwardToStremioTabWithRetry(m); return { ok: true }; }),
+  [WPConstants.ACTION.ROOM_CHAT_SEND]: (m, _s, sr) => respondAsync(sr, async () => { await forwardToStremioTabWithRetry(m); return { ok: true }; }),
+  [WPConstants.ACTION.ROOM_TYPING_SEND]: (m, _s, sr) => respondAsync(sr, async () => { await forwardToStremioTabWithRetry(m); return { ok: true }; }),
+  [WPConstants.ACTION.ROOM_REACTION_SEND]: (m, _s, sr) => respondAsync(sr, async () => { await forwardToStremioTabWithRetry(m); return { ok: true }; }),
+  [WPConstants.ACTION.ROOM_MEMBER_PRESENCE_PUBLISH]: (m, _s, sr) => respondAsync(sr, async () => { await forwardToStremioTabWithRetry(m); return { ok: true }; }),
+  [WPConstants.ACTION.ROOM_MEMBER_PLAYBACK_STATUS_PUBLISH]: (m, _s, sr) => respondAsync(sr, async () => { await forwardToStremioTabWithRetry(m); return { ok: true }; }),
+  [WPConstants.ACTION.ROOM_PLAYBACK_REQUEST_SYNC]: (m, _s, sr) => respondAsync(sr, async () => { await forwardToStremioTabWithRetry(m); return { ok: true }; }),
+  [WPConstants.ACTION.PROFILE_UPDATED]: (m) => broadcastToWatchParty({ action: WPConstants.ACTION.PROFILE_UPDATED, data: m.data }),
+  [WPConstants.ACTION.SURFACE_READY]: (m, sender, sendResponse) => {
     rememberSurfaceTab(sender?.tab ? (m.surface || null) : null, sender?.tab?.id ?? null);
     sendResponse?.({ ok: true, tabId: sender?.tab?.id ?? null });
     return true;
   },
-  'resume-room': (_m, _s, sendResponse) => respondAsync(sendResponse, () => resumeRoomInStremio()),
-  'open-options': (_m, _s, sendResponse) => respondAsync(sendResponse, async () => {
+  [WPConstants.ACTION.ROOM_RESUME]: (_m, _s, sendResponse) => respondAsync(sendResponse, () => resumeRoomInStremio()),
+  [WPConstants.ACTION.APP_OPTIONS_OPEN]: (_m, _s, sendResponse) => respondAsync(sendResponse, async () => {
     await chrome.runtime.openOptionsPage();
     return { ok: true };
   }),
-  'open-stremio': (m, _s, sendResponse) => respondAsync(sendResponse, async () => {
+  [WPConstants.ACTION.APP_STREMIO_OPEN]: (m, _s, sendResponse) => respondAsync(sendResponse, async () => {
     const result = await openOrFocusStremio(m.url);
     return { ok: true, openedStremio: result.opened };
   }),
-  'copy-to-clipboard': (m, _s, sendResponse) => respondAsync(sendResponse, async () => {
+  [WPConstants.ACTION.CLIPBOARD_COPY]: (m, _s, sendResponse) => respondAsync(sendResponse, async () => {
     return copyToClipboard(m.text);
   }),
-  'save-auth-key': (m) => {
+  [WPConstants.ACTION.AUTH_KEY_SAVE]: (m) => {
     if (m.authKey) { chrome.storage.session.set({ [WPConstants.STORAGE.SAVED_AUTH_KEY]: m.authKey }); tryProfileSync(); }
   },
 };
@@ -935,3 +1086,4 @@ chrome.storage.session?.setAccessLevel?.({ accessLevel: 'TRUSTED_AND_UNTRUSTED_C
 setInterval(checkStremio, POLL_INTERVAL_MS);
 // Dev-only: auto-reload on file changes (no update_url = unpacked/dev extension)
 if (!('update_url' in chrome.runtime.getManifest())) connectDevReload();
+

@@ -89,7 +89,7 @@
   }
 
   function getDirectStreamUrl(roomState) {
-    return WPDirectPlay.getDirectJoinUrl(roomState?.stream);
+    return WPUtils.getDirectJoinUrl(roomState);
   }
 
   function isMe(uid) {
@@ -155,25 +155,6 @@
     setTimeout(() => toast.classList.remove('visible'), 2000);
   }
 
-  function getStoredRoomKey(roomId, callback) {
-    if (!roomId) {
-      callback(null);
-      return;
-    }
-    const storageKey = WPConstants.STORAGE.roomKey(roomId);
-    chrome.storage.session.get(storageKey, (result) => {
-      if (result?.[storageKey]) {
-        callback(result[storageKey]);
-        return;
-      }
-      chrome.storage.local.get(storageKey, (fallback) => {
-        const decoded = WPConstants.ROOM_KEYS.decodeFromLocal(fallback?.[storageKey]);
-        if (decoded.expired) chrome.storage.local.remove(storageKey).catch(() => {});
-        callback(decoded.value || null);
-      });
-    });
-  }
-
   function copyInvite(roomState) {
     WPUtils.copyTextDeferred(() => new Promise((resolve) => {
       getExtensionState([
@@ -185,9 +166,7 @@
           result[WPConstants.STORAGE.BACKEND_MODE],
           result[WPConstants.STORAGE.ACTIVE_BACKEND]
         );
-        getStoredRoomKey(roomState.id, (roomKey) => {
-          resolve(roomKey ? `${inviteUrl}#key=${roomKey}` : inviteUrl);
-        });
+        WPRoomKeys.appendToInviteUrl(roomState.id, inviteUrl).then(resolve);
       });
     }))
       .then((copied) => showToast(copied ? 'Invite copied' : 'Copy failed'))
@@ -268,7 +247,7 @@
     }
     if (typingSent) {
       typingSent = false;
-      sendAction({ action: 'send-typing', typing: false });
+      sendAction({ action: WPConstants.ACTION.ROOM_TYPING_SEND, typing: false });
     }
   }
 
@@ -288,7 +267,7 @@
     }
     if (!typingSent) {
       typingSent = true;
-      sendAction({ action: 'send-typing', typing: true });
+      sendAction({ action: WPConstants.ACTION.ROOM_TYPING_SEND, typing: true });
     }
     scheduleTypingStop();
   }
@@ -314,7 +293,7 @@
     div.className = 'bookmark-msg';
     div.innerHTML = `Pinned by <span class="chat-name" style="color:${getUserColor(currentSessionId || msg.user)}">${escapeHtml(msg.userName || 'Unknown')}</span> at <button class="bookmark-time" type="button">${mins}:${secs}</button>`;
     div.querySelector('.bookmark-time')?.addEventListener('click', () => {
-      sendAction({ action: 'seek-bookmark', time: msg.time });
+      sendAction({ action: WPConstants.ACTION.ROOM_BOOKMARK_SEEK, time: msg.time });
       showToast(`Seeking to ${mins}:${secs}`);
     });
     container.appendChild(div);
@@ -326,7 +305,7 @@
     const input = document.getElementById('chat-input');
     const content = input?.value.trim();
     if (!content) return;
-    sendAction({ action: 'send-chat', content });
+    sendAction({ action: WPConstants.ACTION.ROOM_CHAT_SEND, content });
     appendChat(currentSessionId || currentUserId, 'You', content);
     input.value = '';
     stopTypingSignal();
@@ -482,15 +461,15 @@
 
     document.getElementById('sp-copy-invite')?.addEventListener('click', () => copyInvite(roomState));
     document.getElementById('sp-ready-check')?.addEventListener('click', () => {
-      sendAction({ action: 'ready-check', readyAction: 'initiate' });
+      sendAction({ action: WPConstants.ACTION.ROOM_READY_CHECK_UPDATE, readyAction: 'initiate' });
       showToast('Ready check started');
     });
     document.getElementById('sp-bookmark')?.addEventListener('click', () => {
-      sendAction({ action: 'send-bookmark' });
+      sendAction({ action: WPConstants.ACTION.ROOM_BOOKMARK_ADD });
       showToast('Bookmark sent');
     });
     document.getElementById('sp-leave')?.addEventListener('click', () => {
-      sendAction({ action: 'leave-room' });
+      sendAction({ action: WPConstants.ACTION.ROOM_LEAVE });
     });
 
     if (!isHost && roomState.player) {
@@ -533,7 +512,7 @@
 
   function loadCoordinatorState() {
     chrome.runtime.sendMessage(
-      { type: 'watchparty-ext', action: 'get-status' },
+      { type: 'watchparty-ext', action: WPConstants.ACTION.STATUS_GET },
       (response) => {
         if (!response) return;
         applyCoordinatorUpdate({
@@ -549,11 +528,11 @@
   chrome.runtime.onMessage.addListener((message) => {
     if (message.type !== 'watchparty-ext') return false;
 
-    if (message.action === 'status-updated') {
+    if (message.action === WPConstants.ACTION.STATUS_UPDATED) {
       applyCoordinatorUpdate(message.payload);
     }
 
-    if (message.action === 'chat-message' && message.payload) {
+    if (message.action === WPConstants.ACTION.ROOM_CHAT_EVENT && message.payload) {
       const msg = message.payload;
       const sender = currentRoomState?.users?.find((entry) => entry.id === msg.user);
       const name = sender?.name || msg.userName || 'Unknown';
@@ -562,11 +541,11 @@
       }
     }
 
-    if (message.action === 'bookmark' && message.payload) {
+    if (message.action === WPConstants.ACTION.ROOM_BOOKMARK_EVENT && message.payload) {
       appendBookmark(message.payload);
     }
 
-    if (message.action === 'typing' && message.payload) {
+    if (message.action === WPConstants.ACTION.ROOM_TYPING_EVENT && message.payload) {
       handleTypingUpdate(message.payload.user, message.payload.typing, message.payload.userName);
     }
 
@@ -588,3 +567,4 @@
   bindChat();
   loadLocalPreferences(loadCoordinatorState);
 })();
+

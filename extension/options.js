@@ -3,11 +3,11 @@
 const $ = (id) => document.getElementById(id);
 
 let lastStatus = null;
+let lastServerDiagnostics = null;
 let refreshTimer = null;
 let backendMutationInFlight = false;
 let recoveryMutationInFlight = false;
 let didInit = false;
-const ROOM_KEY_PREFIX = 'wpRoomKey:';
 const RECOVERY_RESET_LOCAL_KEYS = [
   WPConstants.STORAGE.USERNAME,
   WPConstants.STORAGE.SESSION_ID,
@@ -57,14 +57,7 @@ function removeExtensionState(keys) {
 }
 
 function collectRoomKeyStorageKeys() {
-  return Promise.all([
-    chrome.storage.local.get(null).catch(() => ({})),
-    chrome.storage.session.get(null).catch(() => ({})),
-  ]).then(([localValues, sessionValues]) => {
-    const localKeys = Object.keys(localValues).filter((key) => key.startsWith(ROOM_KEY_PREFIX));
-    const sessionKeys = Object.keys(sessionValues).filter((key) => key.startsWith(ROOM_KEY_PREFIX));
-    return { localKeys, sessionKeys };
-  });
+  return WPRoomKeys.collectStorageKeys();
 }
 
 function copyTextToClipboard(text) {
@@ -72,7 +65,7 @@ function copyTextToClipboard(text) {
   if (!value) return Promise.resolve(false);
   return chrome.runtime.sendMessage({
     type: 'watchparty-ext',
-    action: 'copy-to-clipboard',
+    action: WPConstants.ACTION.CLIPBOARD_COPY,
     text: value,
   }).then((response) => response?.ok === true).catch(async () => {
     try {
@@ -148,6 +141,7 @@ function renderSession(status) {
 
 function renderStatus(status) {
   lastStatus = status || null;
+  lastServerDiagnostics = status?.serverDiagnostics || null;
   const extensionVersion = chrome.runtime.getManifest().version;
   setText('diag-extension', extensionVersion);
   setText('diag-bg-version', status?.bgVersion || '-');
@@ -155,8 +149,18 @@ function renderStatus(status) {
   setText('diag-backend-url', status?.activeBackendUrl || '-');
   setText('diag-stremio', status?.stremioRunning ? 'Detected' : 'Not detected');
   setText('diag-surface', status?.hasStremioTab ? 'Stremio tab available' : 'No Stremio tab');
-  setText('diag-room-service', status?.bootstrapPending ? 'Pending until Stremio opens' : 'Idle');
-  setText('diag-room-error', 'Stremio tabs own live room connections');
+  const controllerPhase = status?.controllerRuntime?.phase || '-';
+  const adapterAvailability = status?.adapterState?.availability || '-';
+  const extensionIssues = Array.isArray(status?.invariants) ? status.invariants.length : 0;
+  const serverIssues = status?.serverDiagnostics?.summary?.issues ?? 0;
+  setText(
+    'diag-room-service',
+    `${status?.coordinatorMode || '-'}${status?.bootstrapPending ? ' | pending handoff' : ''}`
+  );
+  setText(
+    'diag-room-error',
+    `${controllerPhase} | ${adapterAvailability} | ext ${extensionIssues} / server ${serverIssues} issues`
+  );
 
   setPill('pill-extension', status?.stremioRunning ? 'Extension ready' : 'Extension active', status?.stremioRunning ? 'success' : '');
   const backendKey = WPConstants.BACKEND.resolveKey(status?.backendMode, status?.activeBackend);
@@ -183,14 +187,45 @@ async function refreshStatus() {
     const status = await Promise.race([
       chrome.runtime.sendMessage({
         type: 'watchparty-ext',
-        action: 'get-status',
+        action: WPConstants.ACTION.STATUS_GET,
       }),
       new Promise((_, reject) => setTimeout(() => reject(new Error('status-timeout')), 2500)),
     ]);
-    renderStatus(status);
+    const serverDiagnostics = await fetchServerDiagnostics(status).catch(() => null);
+    renderStatus({
+      ...status,
+      serverDiagnostics,
+    });
   } catch {
     renderStatus(null);
   }
+}
+
+async function fetchServerDiagnostics(status) {
+  const backendKey = WPConstants.BACKEND.resolveKey(status?.backendMode, status?.activeBackend);
+  const httpUrl = status?.activeBackendHttpUrl || WPConstants.BACKEND.getInfo(backendKey).httpUrl;
+  if (!httpUrl) return null;
+  if (status?.wsConnected !== true && backendKey !== WPConstants.BACKEND.MODES.LOCAL) return null;
+  try {
+    const res = await Promise.race([
+      fetch(`${httpUrl}/diagnostics`),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('diagnostics-timeout')), 2500)),
+    ]);
+    if (!res?.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+function formatInvariantList(title, issues) {
+  if (!Array.isArray(issues) || issues.length === 0) return `${title}: none`;
+  const lines = [`${title}: ${issues.length}`];
+  for (const issue of issues.slice(0, 8)) {
+    lines.push(`- [${issue.severity || 'info'}] ${issue.code || 'unknown'}: ${issue.message || ''}`.trim());
+  }
+  if (issues.length > 8) lines.push(`- ... ${issues.length - 8} more`);
+  return lines.join('\n');
 }
 
 function buildDiagnosticsText(status) {
@@ -203,10 +238,15 @@ function buildDiagnosticsText(status) {
     `Backend mode: ${WPConstants.BACKEND.normalizeMode(status?.backendMode)}`,
     `Active backend: ${status?.activeBackend || '-'}`,
     `Backend URL: ${status?.activeBackendUrl || '-'}`,
+    `Backend HTTP URL: ${status?.activeBackendHttpUrl || '-'}`,
     `WebSocket connected: ${status?.wsConnected ? 'yes' : 'no'}`,
     `Stremio detected: ${status?.stremioRunning ? 'yes' : 'no'}`,
     `Stremio tab available: ${status?.hasStremioTab ? 'yes' : 'no'}`,
     `Bootstrap pending: ${status?.bootstrapPending ? 'yes' : 'no'}`,
+    `Coordinator mode: ${status?.coordinatorMode || '-'}`,
+    `Controller phase: ${status?.controllerRuntime?.phase || '-'}`,
+    `Adapter route: ${status?.adapterState?.route || '-'}`,
+    `Adapter availability: ${status?.adapterState?.availability || '-'}`,
     `Room active: ${room ? 'yes' : 'no'}`,
   ];
   if (room) {
@@ -217,6 +257,10 @@ function buildDiagnosticsText(status) {
       `Room users: ${Array.isArray(room.users) ? room.users.length : 0}`
     );
   }
+  lines.push('');
+  lines.push(formatInvariantList('Extension invariants', status?.invariants));
+  lines.push('');
+  lines.push(formatInvariantList('Server invariants', status?.serverDiagnostics?.invariants));
   return lines.join('\n');
 }
 
@@ -238,7 +282,6 @@ async function runRecoveryAction(buttonId, work, messages) {
         : (messages.successMessage || 'Recovery action complete.'),
       'success'
     );
-    await refreshStatus();
   } catch {
     setRecoveryFeedback(messages.errorMessage || 'Recovery action failed.', 'warn');
   } finally {
@@ -248,6 +291,7 @@ async function runRecoveryAction(buttonId, work, messages) {
       button.textContent = originalLabel;
     }
   }
+  refreshStatus().catch(() => {});
 }
 
 async function clearBootstrapHandoff() {
@@ -342,7 +386,7 @@ function openWatchParty() {
 
 function openStremio() {
   chrome.runtime.sendMessage(
-    { type: 'watchparty-ext', action: 'open-stremio', url: 'https://web.stremio.com' },
+    { type: 'watchparty-ext', action: WPConstants.ACTION.APP_STREMIO_OPEN, url: 'https://web.stremio.com' },
     (response) => {
       if (chrome.runtime.lastError || response?.ok === false) {
         chrome.tabs.create({ url: 'https://web.stremio.com' });
@@ -354,7 +398,7 @@ function openStremio() {
 async function resumeRoom() {
   await chrome.runtime.sendMessage({
     type: 'watchparty-ext',
-    action: 'resume-room',
+    action: WPConstants.ACTION.ROOM_RESUME,
   });
 }
 
@@ -444,7 +488,11 @@ function init() {
     if (!document.hidden) refreshStatus().catch(() => {});
   });
 
-  renderStatus(null);
+  chrome.storage.local.get([WPConstants.STORAGE.BACKEND_MODE], (result) => {
+    renderStatus({
+      backendMode: WPConstants.BACKEND.normalizeMode(result?.[WPConstants.STORAGE.BACKEND_MODE]),
+    });
+  });
   startAutoRefresh();
   refreshStatus().catch(() => {});
 }

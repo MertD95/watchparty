@@ -17,22 +17,78 @@ function ok(condition, label) {
   }
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function createFakeClock() {
+  let now = 10000;
+  let nextId = 1;
+  const timers = new Map();
+
+  function schedule(callback, delay, interval) {
+    const id = nextId++;
+    timers.set(id, {
+      id,
+      callback,
+      due: now + Math.max(0, Number(delay) || 0),
+      interval,
+    });
+    return id;
+  }
+
+  function runDueTimers(targetNow) {
+    while (true) {
+      let nextTimer = null;
+      for (const timer of timers.values()) {
+        if (timer.due > targetNow) continue;
+        if (!nextTimer || timer.due < nextTimer.due || (timer.due === nextTimer.due && timer.id < nextTimer.id)) {
+          nextTimer = timer;
+        }
+      }
+      if (!nextTimer) break;
+      now = nextTimer.due;
+      if (!timers.has(nextTimer.id)) continue;
+      if (nextTimer.interval === null) timers.delete(nextTimer.id);
+      else nextTimer.due += nextTimer.interval;
+      nextTimer.callback();
+    }
+    now = targetNow;
+  }
+
+  return {
+    get now() {
+      return now;
+    },
+    Date: {
+      now: () => now,
+    },
+    setTimeout(callback, delay = 0) {
+      return schedule(callback, delay, null);
+    },
+    setInterval(callback, delay = 0) {
+      return schedule(callback, delay, Math.max(0, Number(delay) || 0));
+    },
+    clearTimeout(id) {
+      timers.delete(id);
+    },
+    clearInterval(id) {
+      timers.delete(id);
+    },
+    advance(ms) {
+      runDueTimers(now + Math.max(0, Number(ms) || 0));
+    },
+  };
 }
 
-function loadSyncEngine() {
+function loadSyncEngine(clock = createFakeClock()) {
   const source = `${fs.readFileSync(SYNC_PATH, 'utf8')}\n;globalThis.__WPSync = WPSync;`;
   const context = vm.createContext({
     console,
-    setInterval,
-    setTimeout,
-    clearInterval,
-    clearTimeout,
-    Date,
+    setInterval: clock.setInterval,
+    setTimeout: clock.setTimeout,
+    clearInterval: clock.clearInterval,
+    clearTimeout: clock.clearTimeout,
+    Date: clock.Date,
   });
   new vm.Script(source, { filename: SYNC_PATH }).runInContext(context);
-  return context.__WPSync;
+  return { WPSync: context.__WPSync, clock };
 }
 
 class FakeVideo {
@@ -83,7 +139,7 @@ class FakeVideo {
 
 async function testHostReportsPlaybackChanges() {
   console.log('\n-- Host reports playback changes --');
-  const WPSync = loadSyncEngine();
+  const { WPSync, clock } = loadSyncEngine();
   const events = [];
   const video = new FakeVideo({ paused: true, currentTime: 0, playbackRate: 1 });
 
@@ -97,11 +153,11 @@ async function testHostReportsPlaybackChanges() {
   video.dispatch('seeked');
   video.playbackRate = 1.5;
   video.dispatch('ratechange');
-  await sleep(550);
+  clock.advance(550);
   video.currentTime = 43;
   video.dispatch('timeupdate');
   video.pause();
-  await sleep(0);
+  await Promise.resolve();
 
   const actions = events.map((event) => event.action);
   ok(actions.includes('play'), 'host emits a play action');
@@ -115,12 +171,12 @@ async function testHostReportsPlaybackChanges() {
 
 async function testPeerHardSeekAndPlayPause() {
   console.log('\n-- Peer applies remote seek and play or pause --');
-  const WPSync = loadSyncEngine();
+  const { WPSync } = loadSyncEngine();
   const video = new FakeVideo({ paused: true, currentTime: 0, readyState: 4, playbackRate: 1 });
 
   WPSync.attach(video, { isHost: false });
   WPSync.applyRemote({ paused: false, buffering: false, time: 10, speed: 1 });
-  await sleep(0);
+  await Promise.resolve();
 
   ok(video.paused === false, 'remote play resumes the peer video');
   ok(video.currentTime === 10, 'large drift triggers a hard seek to the host time');
@@ -135,7 +191,7 @@ async function testPeerHardSeekAndPlayPause() {
 
 async function testHostPausedHeartbeat() {
   console.log('\n-- Host reasserts pause while paused --');
-  const WPSync = loadSyncEngine();
+  const { WPSync, clock } = loadSyncEngine();
   const events = [];
   const video = new FakeVideo({ paused: true, currentTime: 21, playbackRate: 1 });
 
@@ -144,7 +200,7 @@ async function testHostPausedHeartbeat() {
     onSync: (state) => events.push(state),
   });
 
-  await sleep(1700);
+  clock.advance(1700);
 
   ok(events.some((event) => event.action === 'tick' && event.paused === true), 'paused host emits heartbeat syncs');
 
@@ -153,7 +209,7 @@ async function testHostPausedHeartbeat() {
 
 async function testPeerSoftCorrectionAndExit() {
   console.log('\n-- Peer soft-corrects drift and exits cleanly --');
-  const WPSync = loadSyncEngine();
+  const { WPSync } = loadSyncEngine();
   const video = new FakeVideo({ paused: false, currentTime: 8.5, readyState: 4, playbackRate: 1 });
 
   WPSync.attach(video, { isHost: false });
@@ -170,7 +226,7 @@ async function testPeerSoftCorrectionAndExit() {
 
 async function testPeerPausedDriftSeeksImmediately() {
   console.log('\n-- Peer seeks immediately when paused drift is meaningful --');
-  const WPSync = loadSyncEngine();
+  const { WPSync } = loadSyncEngine();
   const video = new FakeVideo({ paused: true, currentTime: 0.1, readyState: 4, playbackRate: 1 });
 
   WPSync.attach(video, { isHost: false });
@@ -183,7 +239,7 @@ async function testPeerPausedDriftSeeksImmediately() {
 
 async function testInvalidRemoteStateIsIgnored() {
   console.log('\n-- Invalid remote state is ignored --');
-  const WPSync = loadSyncEngine();
+  const { WPSync } = loadSyncEngine();
   const video = new FakeVideo({ paused: false, currentTime: 5, readyState: 4, playbackRate: 1 });
 
   WPSync.attach(video, { isHost: false });
@@ -198,7 +254,7 @@ async function testInvalidRemoteStateIsIgnored() {
 
 async function testRemotePlaybackKeepsLocalOnlyControlsUntouched() {
   console.log('\n-- Remote playback leaves local-only controls untouched --');
-  const WPSync = loadSyncEngine();
+  const { WPSync } = loadSyncEngine();
   const video = new FakeVideo({ paused: false, currentTime: 5, readyState: 4, playbackRate: 1 });
 
   WPSync.attach(video, { isHost: false });
@@ -223,7 +279,7 @@ async function testRemotePlaybackKeepsLocalOnlyControlsUntouched() {
 
 async function testClockOffsetAffectsSeekTarget() {
   console.log('\n-- Clock offset contributes to drift correction --');
-  const WPSync = loadSyncEngine();
+  const { WPSync } = loadSyncEngine();
   const video = new FakeVideo({ paused: false, currentTime: 0, readyState: 4, playbackRate: 1 });
 
   WPSync.attach(video, { isHost: false });

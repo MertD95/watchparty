@@ -5,6 +5,7 @@ import path from 'path';
 import os from 'os';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import { expectPass, gotoWithRetry } from './assertions.mjs';
 import { createBrowserDiagnostics } from './browser-diagnostics.mjs';
 import { getExtensionId, launchExtensionContext } from './extension-context.mjs';
 import { injectSeekableTestVideo } from './seekable-video.mjs';
@@ -57,14 +58,41 @@ async function launchWithExtension() {
     userDataDir: dir,
     args: CHROME_FLAGS,
     viewport: { width: 1440, height: 900 },
+    backendMode: 'local',
   });
+}
+
+async function waitForPopupReady(page) {
+  await page.waitForFunction(() => {
+    const wsText = document.getElementById('ws-status')?.textContent || '';
+    return !!document.getElementById('username-input')
+      && !!document.getElementById('btn-create')
+      && wsText.trim().length > 0;
+  }, { timeout: TIMEOUT });
+}
+
+async function waitForStremioReady(page) {
+  await page.waitForFunction(() => (
+    !!document.getElementById('wp-overlay')
+    && !!document.getElementById('wp-sidebar')
+    && !!document.getElementById('wp-toggle-host')
+  ), { timeout: TIMEOUT });
+}
+
+async function waitForSidebarPanel(page, panelName) {
+  await page.waitForFunction((nextPanel) => {
+    const button = document.querySelector(`[data-panel="${nextPanel}"]`);
+    return !!button
+      && button.classList.contains('wp-tab-active')
+      && button.getAttribute('aria-selected') === 'true';
+  }, panelName, { timeout: TIMEOUT });
 }
 
 async function openPopup(context, extId) {
   const page = await context.newPage();
   trackPageDiagnostics(page, 'popup');
   await page.goto(`chrome-extension://${extId}/popup.html`, { waitUntil: 'domcontentloaded' });
-  await page.waitForTimeout(1000);
+  await waitForPopupReady(page);
   return page;
 }
 
@@ -72,16 +100,15 @@ async function openSidepanel(context, extId) {
   const page = await context.newPage();
   trackPageDiagnostics(page, 'sidepanel');
   await page.goto(`chrome-extension://${extId}/sidepanel.html`, { waitUntil: 'domcontentloaded' });
-  await page.waitForTimeout(1000);
+  await page.waitForFunction(() => !!document.getElementById('status') && !!document.getElementById('hero-copy'), { timeout: TIMEOUT });
   return page;
 }
 
 async function openStremio(context) {
   const page = await context.newPage();
   trackPageDiagnostics(page, 'stremio');
-  await page.goto(STREMIO_URL, { waitUntil: 'domcontentloaded' });
-  await page.waitForFunction(() => document.getElementById('wp-overlay') !== null, { timeout: TIMEOUT });
-  await page.waitForTimeout(1000);
+  await gotoWithRetry(page, STREMIO_URL);
+  await waitForStremioReady(page);
   return page;
 }
 
@@ -91,7 +118,10 @@ async function openSidebarIfHidden(page) {
   );
   if (sidebarHidden) {
     await page.evaluate(() => document.getElementById('wp-toggle-host')?.click());
-    await page.waitForTimeout(500);
+    await page.waitForFunction(() => {
+      const sidebar = document.getElementById('wp-sidebar');
+      return !!sidebar && !sidebar.classList.contains('wp-sidebar-hidden');
+    }, { timeout: TIMEOUT });
   }
 }
 
@@ -120,7 +150,7 @@ async function setupTwoUsers() {
   await popup2.fill('#room-id-input', roomId);
   await popup2.click('#btn-join');
   await popup2.waitForFunction(() => !document.getElementById('view-room').classList.contains('hidden'), { timeout: TIMEOUT });
-  await stremio1.waitForTimeout(1500);
+  await stremio1.waitForFunction(() => !document.getElementById('wp-sidebar')?.innerText?.includes('Not in a room'), { timeout: TIMEOUT });
 
   await openSidebarIfHidden(stremio1);
   await openSidebarIfHidden(stremio2);
@@ -142,96 +172,89 @@ async function testSidepanelChatAndBookmarks() {
 
   try {
     env.sidepanel = await openSidepanel(env.ctx2, env.extId2);
-    const roomStateReady = await env.sidepanel.waitForFunction(
+    const roomStateReady = await expectPass(assert, 'sidepanel loads the joined room state from storage', () => env.sidepanel.waitForFunction(
       () => !document.getElementById('chat-container')?.classList.contains('hidden') && !!document.getElementById('sp-bookmark'),
       { timeout: TIMEOUT }
-    ).then(() => true).catch(() => false);
-    assert(roomStateReady, 'sidepanel loads the joined room state from storage');
+    ));
 
-    if (roomStateReady) {
+    if (roomStateReady.ok) {
       const statusText = await env.sidepanel.evaluate(() => document.getElementById('status')?.innerText || '');
       assert(statusText.includes('Synced to host'), 'peer sidepanel reflects the non-host role');
 
       await env.stremio1.evaluate(() => document.querySelector('[data-panel="chat"]')?.click());
-      await env.stremio1.waitForTimeout(250);
+      await waitForSidebarPanel(env.stremio1, 'chat');
       await env.stremio1.focus('#wp-chat-input');
       await env.stremio1.keyboard.type('T');
-      const sidepanelSawTyping = await env.sidepanel.waitForFunction(
+      await expectPass(assert, 'sidepanel shows typing indicators from the page overlay', () => env.sidepanel.waitForFunction(
         () => {
           const el = document.getElementById('typing-indicator');
           return el && !el.classList.contains('hidden') && el.textContent.includes('Alice is typing');
         },
         { timeout: 5000 }
-      ).then(() => true).catch(() => false);
-      assert(sidepanelSawTyping, 'sidepanel shows typing indicators from the page overlay');
+      ));
       await env.stremio1.keyboard.type('yping from Alice');
       await env.stremio1.keyboard.press('Enter');
-      const sidepanelTypingCleared = await env.sidepanel.waitForFunction(
+      await expectPass(assert, 'sidepanel typing indicator clears after send', () => env.sidepanel.waitForFunction(
         () => document.getElementById('typing-indicator')?.classList.contains('hidden'),
         { timeout: 5000 }
-      ).then(() => true).catch(() => false);
-      assert(sidepanelTypingCleared, 'sidepanel typing indicator clears after send');
+      ));
 
       await env.sidepanel.focus('#chat-input');
       await env.sidepanel.keyboard.type('Hello from the sidepanel');
       await env.sidepanel.keyboard.press('Enter');
-      await env.sidepanel.waitForTimeout(1200);
 
-      const aliceSawChat = await env.stremio1.waitForFunction(
+      await expectPass(assert, 'sidepanel chat send reaches the other user overlay', () => env.stremio1.waitForFunction(
         () => document.getElementById('wp-chat-messages')?.innerText?.includes('Hello from the sidepanel'),
         { timeout: 5000 }
-      ).then(() => true).catch(() => false);
-      assert(aliceSawChat, 'sidepanel chat send reaches the other user overlay');
+      ));
 
-      const sidepanelInputCleared = await env.sidepanel.waitForFunction(
+      await expectPass(assert, 'sidepanel chat input clears after send', () => env.sidepanel.waitForFunction(
         () => (document.getElementById('chat-input')?.value || '') === '',
         { timeout: 5000 }
-      ).then(() => true).catch(() => false);
-      assert(sidepanelInputCleared, 'sidepanel chat input clears after send');
+      ));
 
-      const sidepanelSingleEcho = await env.sidepanel.waitForFunction(
+      await expectPass(assert, 'sidepanel keeps a single local echo for its own chat send', () => env.sidepanel.waitForFunction(
         () => [...document.querySelectorAll('#chat-messages .chat-msg')]
           .filter((el) => (el.innerText || '').includes('Hello from the sidepanel')).length === 1,
         { timeout: 5000 }
-      ).then(() => true).catch(() => false);
-      assert(sidepanelSingleEcho, 'sidepanel keeps a single local echo for its own chat send');
+      ));
 
       await injectMockVideo(env.stremio2, 2);
       await env.sidepanel.click('#sp-bookmark');
-      const aliceSawBobBookmark = await env.stremio1.waitForFunction(
+      await expectPass(assert, 'sidepanel bookmark send uses the peer video time and reaches the host', () => env.stremio1.waitForFunction(
         () => [...document.querySelectorAll('.wp-bookmark-msg')].some((el) => {
           const text = el.innerText || '';
           return text.includes('Bob') && text.includes('0:02');
         }),
         { timeout: 5000 }
-      ).then(() => true).catch(() => false);
-      assert(aliceSawBobBookmark, 'sidepanel bookmark send uses the peer video time and reaches the host');
+      ));
 
       await injectMockVideo(env.stremio1, 2);
       await env.stremio1.evaluate(() => document.querySelector('[data-panel="room"]')?.click());
-      await env.stremio1.waitForTimeout(300);
-      const hostBookmarkReady = await env.stremio1.waitForFunction(
+      await waitForSidebarPanel(env.stremio1, 'room');
+      const hostBookmarkReady = await expectPass(assert, 'host overlay shows the bookmark action when the room panel is active', () => env.stremio1.waitForFunction(
         () => {
           const button = document.getElementById('wp-bookmark-btn');
           return !!button && button.offsetParent !== null;
         },
         { timeout: TIMEOUT }
-      ).then(() => true).catch(() => false);
-      assert(hostBookmarkReady, 'host overlay shows the bookmark action when the room panel is active');
+      ));
       await env.stremio1.evaluate(() => document.getElementById('wp-bookmark-btn')?.click());
-      const bobSidepanelSawBookmark = await env.sidepanel.waitForFunction(
+      const bobSidepanelSawBookmark = await expectPass(assert, 'sidepanel receives bookmarks created by the other user', () => env.sidepanel.waitForFunction(
         () => [...document.querySelectorAll('.bookmark-msg')].some((el) => (el.innerText || '').includes('Alice') && (el.innerText || '').includes('0:02')),
         { timeout: 5000 }
-      ).then(() => true).catch(() => false);
-      assert(bobSidepanelSawBookmark, 'sidepanel receives bookmarks created by the other user');
+      ));
 
-      if (bobSidepanelSawBookmark) {
+      if (bobSidepanelSawBookmark.ok) {
         await env.stremio2.evaluate(() => {
           const video = document.querySelector('video');
           if (video) video.currentTime = 0.1;
         });
         await env.sidepanel.click('.bookmark-time');
-        await env.sidepanel.waitForTimeout(300);
+        await env.stremio2.waitForFunction(() => {
+          const video = document.querySelector('video');
+          return !!video && Math.abs(video.currentTime - 2) < 0.1;
+        }, { timeout: 5000 });
         const peerVideoTime = await env.stremio2.evaluate(() => document.querySelector('video')?.currentTime || 0);
         assert(Math.abs(peerVideoTime - 2) < 0.1, `sidepanel bookmark seek updates the page video (${peerVideoTime.toFixed(1)}s)`);
       }
