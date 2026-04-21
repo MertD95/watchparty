@@ -7,11 +7,6 @@ let refreshTimer = null;
 let backendMutationInFlight = false;
 let recoveryMutationInFlight = false;
 let didInit = false;
-const SESSION_RUNTIME_KEYS = new Set([
-  ...WPConstants.STORAGE_CONTRACT.SESSION_RUNTIME,
-  ...WPConstants.STORAGE_CONTRACT.BOOTSTRAP_SESSION,
-  ...WPConstants.STORAGE_CONTRACT.SENSITIVE_SESSION,
-]);
 const ROOM_KEY_PREFIX = 'wpRoomKey:';
 const RECOVERY_RESET_LOCAL_KEYS = [
   WPConstants.STORAGE.USERNAME,
@@ -53,43 +48,12 @@ function setRecoveryFeedback(message = '', tone = '') {
   if (tone) el.classList.add(tone);
 }
 
-function normalizeStorageKeyList(keys) {
-  return Array.isArray(keys) ? keys.filter(Boolean) : [keys].filter(Boolean);
-}
-
 function getExtensionState(keys) {
-  const keyList = normalizeStorageKeyList(keys);
-  if (keyList.length === 0) return Promise.resolve({});
-
-  const sessionKeys = keyList.filter((key) => SESSION_RUNTIME_KEYS.has(key));
-  const localKeys = keyList.filter((key) => !SESSION_RUNTIME_KEYS.has(key));
-
-  return Promise.all([
-    sessionKeys.length > 0 ? chrome.storage.session.get(sessionKeys).catch(() => ({})) : Promise.resolve({}),
-    localKeys.length > 0 ? chrome.storage.local.get(localKeys).catch(() => ({})) : Promise.resolve({}),
-    sessionKeys.length > 0 ? chrome.storage.local.get(sessionKeys).catch(() => ({})) : Promise.resolve({}),
-  ]).then(([sessionValues, localValues, fallbackValues]) => {
-    const migratedValues = {};
-    for (const key of sessionKeys) {
-      if (sessionValues[key] !== undefined || fallbackValues[key] === undefined) continue;
-      migratedValues[key] = fallbackValues[key];
-    }
-    if (Object.keys(migratedValues).length > 0) {
-      chrome.storage.session.set(migratedValues).catch(() => {});
-      chrome.storage.local.remove(Object.keys(migratedValues)).catch(() => {});
-    }
-    return { ...localValues, ...fallbackValues, ...sessionValues };
-  });
+  return WPRuntimeState.get(keys);
 }
 
 function removeExtensionState(keys) {
-  const keyList = normalizeStorageKeyList(keys);
-  if (keyList.length === 0) return Promise.resolve();
-  const sessionKeys = keyList.filter((key) => SESSION_RUNTIME_KEYS.has(key));
-  return Promise.all([
-    chrome.storage.local.remove(keyList).catch(() => {}),
-    sessionKeys.length > 0 ? chrome.storage.session.remove(sessionKeys).catch(() => {}) : Promise.resolve(),
-  ]).then(() => undefined);
+  return WPRuntimeState.remove(keys);
 }
 
 function collectRoomKeyStorageKeys() {

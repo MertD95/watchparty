@@ -56,6 +56,8 @@ const WPConstants = (() => {
 
   const ROOM_KEY_LOCAL_TTL_MS = 14 * 24 * 60 * 60 * 1000;
   const BOOTSTRAP_ROOM_INTENT_TTL_MS = 3 * 60 * 1000;
+  const CONTROLLER_TAB_LEASE_TTL_MS = 15 * 1000;
+  const CONTROLLER_TAB_LEASE_RENEW_INTERVAL_MS = 5 * 1000;
   const VIDEO_TAB_LEASE_TTL_MS = 15 * 1000;
   const VIDEO_TAB_LEASE_RENEW_INTERVAL_MS = 5 * 1000;
 
@@ -86,6 +88,7 @@ const WPConstants = (() => {
     SAVED_AUTH_KEY: 'savedAuthKey',
     BOOTSTRAP_ROOM_INTENT: 'wpBootstrapRoomIntent',
     DEFERRED_LEAVE_ROOM: 'wpDeferredLeaveRoom',
+    CONTROLLER_TAB: 'wpControllerTab', // controller-tab lease { leaseId, tabId, sessionId, claimedAt }
     ACTIVE_VIDEO_TAB: 'wpActiveVideoTab', // active video-tab lease { leaseId, tabId, sessionId, claimedAt }
     // Dynamic key helper for per-room encryption keys
     roomKey(roomId) { return `wpRoomKey:${roomId}`; },
@@ -111,6 +114,7 @@ const WPConstants = (() => {
       STORAGE.ACTIVE_BACKEND,
       STORAGE.ACTIVE_BACKEND_URL,
       STORAGE.CURRENT_ROOM,
+      STORAGE.CONTROLLER_TAB,
       STORAGE.ACTIVE_VIDEO_TAB,
     ]),
     BOOTSTRAP_SESSION: Object.freeze([
@@ -125,6 +129,7 @@ const WPConstants = (() => {
       'pendingRoomJoinCommand',
       'pendingJoinOptions',
       'deferredLeaveIntent',
+      'controllerLease',
       'activeVideoLease',
     ]),
   });
@@ -169,6 +174,42 @@ const WPConstants = (() => {
         return this.isExpired(normalized.requestedAt, now) ? null : normalized;
       }
       return null;
+    },
+  });
+
+  const CONTROLLER_TAB_LEASE = Object.freeze({
+    TTL_MS: CONTROLLER_TAB_LEASE_TTL_MS,
+    RENEW_INTERVAL_MS: CONTROLLER_TAB_LEASE_RENEW_INTERVAL_MS,
+    build({ leaseId, tabId, sessionId, claimedAt = Date.now() }) {
+      if (typeof leaseId !== 'string' || !leaseId.trim()) return null;
+      return {
+        leaseId: leaseId.trim(),
+        tabId: normalizeTabId(tabId),
+        sessionId: typeof sessionId === 'string' && sessionId.trim() ? sessionId.trim() : null,
+        claimedAt: Number.isFinite(claimedAt) && claimedAt > 0 ? claimedAt : Date.now(),
+      };
+    },
+    normalize(value) {
+      if (!value || typeof value !== 'object') return null;
+      if (typeof value.leaseId !== 'string' || !value.leaseId.trim()) return null;
+      return {
+        leaseId: value.leaseId.trim(),
+        tabId: normalizeTabId(value.tabId),
+        sessionId: typeof value.sessionId === 'string' && value.sessionId.trim() ? value.sessionId.trim() : null,
+        claimedAt: Number.isFinite(value.claimedAt) && value.claimedAt > 0 ? value.claimedAt : Date.now(),
+      };
+    },
+    isOwner(value, leaseId) {
+      const normalized = this.normalize(value);
+      return !!normalized && normalized.leaseId === leaseId;
+    },
+    isExpired(value, now = Date.now()) {
+      const normalized = this.normalize(value);
+      return !normalized || (now - normalized.claimedAt) > CONTROLLER_TAB_LEASE_TTL_MS;
+    },
+    shouldRenew(value, now = Date.now()) {
+      const normalized = this.normalize(value);
+      return !normalized || (now - normalized.claimedAt) >= CONTROLLER_TAB_LEASE_RENEW_INTERVAL_MS;
     },
   });
 
@@ -251,5 +292,5 @@ const WPConstants = (() => {
     buildInviteUrl,
   });
 
-  return { STORAGE, STORAGE_CONTRACT, BACKEND, ROOM_KEYS, VIDEO_TAB_LEASE, BOOTSTRAP_ROOM_INTENT };
+  return { STORAGE, STORAGE_CONTRACT, BACKEND, ROOM_KEYS, CONTROLLER_TAB_LEASE, VIDEO_TAB_LEASE, BOOTSTRAP_ROOM_INTENT };
 })();

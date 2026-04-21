@@ -262,8 +262,8 @@ async function testPublicPlayerRoomAppearsWithDirectJoinEnabled() {
   });
 }
 
-async function testPrivateRoomAppearsOnWebsite() {
-  console.log('\n-- Live Smoke: private room listed --');
+async function testPrivateRoomStaysOffWebsite() {
+  console.log('\n-- Live Smoke: private room hidden from public listing --');
   await withLiveExtension(async ({ context }) => {
     const suffix = Date.now().toString().slice(-6);
     const username = `Private${suffix}`;
@@ -278,23 +278,15 @@ async function testPrivateRoomAppearsOnWebsite() {
       const attached = await waitForRoomAttached(stremio);
       assert(attached, 'existing detail page attaches the private room after website create');
 
-      const apiRoom = await waitForRoomByOwner(username);
-      assert(!!apiRoom, 'private room appears in live /rooms', username);
-      assert(apiRoom?.public === false, 'private room keeps its private flag in /rooms', JSON.stringify(apiRoom));
-
-      const siteSeen = await waitForSiteUser(site, username);
-      assert(siteSeen, 'private room appears on website without refresh', username);
-
+      await site.waitForTimeout(1500);
+      const publicSnapshot = await fetchPublicRooms();
+      const apiRoom = publicSnapshot?.rooms?.find((entry) => entry.owner === username) || null;
+      assert(!apiRoom, 'private room stays out of live /rooms', username);
       const siteCards = await getSiteCards(site);
       const card = siteCards.find((entry) => entry.text.includes(username)) || null;
-      assert(!!card, 'private room card exists on website', JSON.stringify(siteCards));
-      assert(card?.text.includes('Private'), 'private room card shows the private badge', JSON.stringify(card));
+      assert(!card, 'private room card stays off the website room list', JSON.stringify(siteCards));
 
       await leaveRoomViaOverlay(stremio);
-      const removedFromApi = await waitForRoomGoneInApi(apiRoom?.id);
-      assert(removedFromApi, 'private room disappears from /rooms after leave', apiRoom?.id);
-      const removedFromSite = await waitForSiteUserGone(site, username);
-      assert(removedFromSite, 'private room disappears from website without refresh', username);
     } finally {
       await Promise.allSettled([lobby.close(), stremio.close(), site.close()]);
     }
@@ -348,7 +340,7 @@ async function main() {
   const tests = [
     testPublicDetailRoomAppearsWithReadableTitle,
     testPublicPlayerRoomAppearsWithDirectJoinEnabled,
-    testPrivateRoomAppearsOnWebsite,
+    testPrivateRoomStaysOffWebsite,
     testLatePageLoadStillSeesRoom,
   ];
 

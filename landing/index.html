@@ -964,7 +964,7 @@
           </div>
           <ul class="hero-list">
             <li>Each person plays the content locally, so WatchParty only syncs timing and room activity.</li>
-            <li>Private rooms stay visible on the site, but still require the invite key to join.</li>
+            <li>Private rooms stay off the public room list and still require the invite key to join.</li>
             <li>Direct Join can open the host stream when the shared Stremio route is portable.</li>
           </ul>
           <div class="hero-summary">
@@ -1012,7 +1012,7 @@
           <div class="section-heading-copy">
             <div class="section-kicker">Live Discovery</div>
             <h2>Active Rooms</h2>
-            <p class="rooms-subtitle">Public rooms join instantly. Private rooms stay listed, but require an invite or room key.</p>
+            <p class="rooms-subtitle">Public rooms join instantly. Private rooms require an invite or room key and stay off the public list.</p>
           </div>
           <button class="btn btn-secondary" id="rooms-private-btn" type="button">Join via Invite</button>
         </div>
@@ -1565,8 +1565,20 @@
       if (revision !== null) lastRoomsRevision = revision;
       lastRoomsUpdateAt = Date.now();
 
-      const rooms = Array.isArray(data?.rooms) ? data.rooms : [];
-      updateLandingStats(data);
+      const rooms = Array.isArray(data?.rooms) ? data.rooms.filter((room) => room?.public !== false) : [];
+      updateLandingStats({
+        ...data,
+        rooms,
+        total: rooms.length,
+        summary: data?.summary && typeof data.summary === 'object'
+          ? {
+              ...data.summary,
+              rooms: rooms.length,
+              users: rooms.reduce((sum, room) => sum + (Number(room?.users) || 0), 0),
+              identifiedTitles: new Set(rooms.map(getRecognizedTitleKey).filter(Boolean)).size,
+            }
+          : undefined,
+      });
       const nextRoomIds = new Set();
       let anchor = empty;
       empty.style.display = rooms.length === 0 ? 'block' : 'none';

@@ -14,6 +14,7 @@
   let isHost = false;
   let userId = null;
   let roomState = null;
+  let sessionWsConnected = false;
   let prevPlayerTime = 0;
   let chatMessages = [];
   let observer = null;
@@ -38,13 +39,14 @@
   let reconnectNoticeTimer = null;
   let reconnectNoticeShown = false;
   let surfaceTabId = null;
+  let isControllerTab = false;
+  let controllerLeaseInterval = null;
   let activeVideoLeaseInterval = null;
+  let resumeRoomPending = false;
+  let pendingIntentWakeTimer = null;
+  const controllerLeaseId = crypto.randomUUID();
   const activeVideoLeaseId = crypto.randomUUID();
   const cinemetaTitleCache = new Map();
-  const SESSION_RUNTIME_KEYS = new Set([
-    ...WPConstants.STORAGE_CONTRACT.SESSION_RUNTIME,
-    ...WPConstants.STORAGE_CONTRACT.BOOTSTRAP_SESSION,
-  ]);
 
   const PLACEHOLDER_ROOM_NAME = 'WatchParty Session';
   const PLACEHOLDER_STREAM_URL = 'https://watchparty.mertd.me/sync';
@@ -68,45 +70,58 @@
     }, 2500);
   }
 
+  function sendBackgroundMessage(message) {
+    if (!extOk()) return Promise.resolve(null);
+    return chrome.runtime.sendMessage({
+      type: 'watchparty-ext',
+      ...message,
+    }).catch(() => null);
+  }
+
   function claimActiveTab() {
-    if (!extOk()) return;
-    isActiveVideoTab = true;
     const lease = WPConstants.VIDEO_TAB_LEASE.build({
       leaseId: activeVideoLeaseId,
       tabId: surfaceTabId,
       sessionId,
     });
-    if (!lease) return;
-    setExtensionState({ [WPConstants.STORAGE.ACTIVE_VIDEO_TAB]: lease }).catch(() => {});
+    if (!lease) return Promise.resolve(false);
+    return sendBackgroundMessage({
+      action: 'claim-active-video-lease',
+      lease,
+    }).then((response) => {
+      isActiveVideoTab = response?.claimed === true;
+      return isActiveVideoTab;
+    });
   }
 
   function releaseActiveTab() {
-    if (!extOk()) return;
+    if (!extOk()) return Promise.resolve(false);
     isActiveVideoTab = false;
-    // Only clear if we currently own it
-    getExtensionState(WPConstants.STORAGE.ACTIVE_VIDEO_TAB).then((result) => {
-      if (WPConstants.VIDEO_TAB_LEASE.isOwner(result[WPConstants.STORAGE.ACTIVE_VIDEO_TAB], activeVideoLeaseId)) {
-        removeExtensionState(WPConstants.STORAGE.ACTIVE_VIDEO_TAB).catch(() => {});
-      }
-    });
+    return sendBackgroundMessage({
+      action: 'release-active-video-lease',
+      leaseId: activeVideoLeaseId,
+    }).then((response) => response?.released === true);
   }
 
   function refreshActiveVideoLease(options = {}) {
     if (!extOk() || !video || !inRoom) return Promise.resolve(false);
-    const force = options.force === true;
-    return getExtensionState(WPConstants.STORAGE.ACTIVE_VIDEO_TAB).then((result) => {
-      const currentLease = result[WPConstants.STORAGE.ACTIVE_VIDEO_TAB];
-      const ownsLease = WPConstants.VIDEO_TAB_LEASE.isOwner(currentLease, activeVideoLeaseId);
-      const leaseIsExpired = WPConstants.VIDEO_TAB_LEASE.isExpired(currentLease);
-      const shouldClaim = force || ownsLease || leaseIsExpired || !currentLease;
-      if (!shouldClaim) {
-        isActiveVideoTab = false;
-        return false;
+    const lease = WPConstants.VIDEO_TAB_LEASE.build({
+      leaseId: activeVideoLeaseId,
+      tabId: surfaceTabId,
+      sessionId,
+    });
+    if (!lease) return Promise.resolve(false);
+    return sendBackgroundMessage({
+      action: 'claim-active-video-lease',
+      lease,
+      force: options.force === true,
+    }).then((response) => {
+      isActiveVideoTab = response?.claimed === true;
+      if (isActiveVideoTab && video && inRoom && shouldShareHostContent()) {
+        shareContentLink();
       }
-      if (!force && ownsLease && !WPConstants.VIDEO_TAB_LEASE.shouldRenew(currentLease)) return true;
-      claimActiveTab();
-      return true;
-    }).catch(() => false);
+      return isActiveVideoTab;
+    });
   }
 
   function startActiveVideoLeaseHeartbeat() {
@@ -124,66 +139,147 @@
     }, WPConstants.VIDEO_TAB_LEASE.RENEW_INTERVAL_MS);
   }
 
+  function shouldOwnController() {
+    return !!sessionId && (
+      resumeRoomPending
+      || !!pendingRoomCreateCommand
+      || !!pendingRoomJoinCommand
+      || !!deferredLeaveIntent
+      || !!roomState?.id
+      || inRoom
+      || WPWS.isConnected()
+      || (!!video && isActiveVideoTab)
+    );
+  }
+
+  function schedulePendingIntentWake() {
+    if (pendingIntentWakeTimer || !extOk()) return;
+    pendingIntentWakeTimer = setTimeout(() => {
+      pendingIntentWakeTimer = null;
+      if (!sessionId) {
+        schedulePendingIntentWake();
+        return;
+      }
+      refreshControllerLease().then((claimed) => {
+        if (!claimed) return;
+        if (WPWS.isReady()) processPendingActions();
+        else ensureControllerConnection();
+      }).catch(() => {});
+    }, 250);
+  }
+
+  function claimControllerTab() {
+    const lease = WPConstants.CONTROLLER_TAB_LEASE.build({
+      leaseId: controllerLeaseId,
+      tabId: surfaceTabId,
+      sessionId,
+    });
+    if (!lease) return Promise.resolve(false);
+    return sendBackgroundMessage({
+      action: 'claim-controller-lease',
+      lease,
+    }).then((response) => {
+      isControllerTab = response?.claimed === true;
+      return isControllerTab;
+    });
+  }
+
+  function publishControllerRelease() {
+    sessionWsConnected = false;
+    if (!extOk()) return;
+    notifyBackground({
+      action: 'controller-released',
+      payload: {
+        room: buildProjectedRoomState(roomState),
+        userId,
+        sessionId,
+      },
+    });
+  }
+
+  function disconnectControllerSocket(options = {}) {
+    if (!WPWS.isConnected() && options.force !== true) return;
+    WPWS.disconnect();
+    WPSync.detach();
+    sessionWsConnected = false;
+    refreshOverlay();
+  }
+
+  function releaseControllerTab() {
+    if (!extOk()) return Promise.resolve(false);
+    const wasController = isControllerTab;
+    if (wasController) publishControllerRelease();
+    isControllerTab = false;
+    if (wasController) disconnectControllerSocket();
+    return sendBackgroundMessage({
+      action: 'release-controller-lease',
+      leaseId: controllerLeaseId,
+    }).then((response) => response?.released === true);
+  }
+
+  function ensureControllerConnection() {
+    if (!isControllerTab || WPWS.isConnected()) return;
+    WPWS.connect();
+  }
+
+  function refreshControllerLease(options = {}) {
+    if (!extOk() || !sessionId) return Promise.resolve(false);
+    if (!shouldOwnController()) {
+      if (isControllerTab) {
+        return releaseControllerTab().then(() => false);
+      }
+      return Promise.resolve(false);
+    }
+    const lease = WPConstants.CONTROLLER_TAB_LEASE.build({
+      leaseId: controllerLeaseId,
+      tabId: surfaceTabId,
+      sessionId,
+    });
+    if (!lease) return Promise.resolve(false);
+    return sendBackgroundMessage({
+      action: 'claim-controller-lease',
+      lease,
+      force: options.force === true,
+    }).then((response) => {
+      isControllerTab = response?.claimed === true;
+      if (isControllerTab) {
+        ensureControllerConnection();
+        if (video && inRoom && shouldShareHostContent()) {
+          shareContentLink();
+        }
+      }
+      return isControllerTab;
+    });
+  }
+
+  function startControllerLeaseHeartbeat() {
+    if (controllerLeaseInterval) return;
+    controllerLeaseInterval = setInterval(() => {
+      if (!extOk()) {
+        clearInterval(controllerLeaseInterval);
+        controllerLeaseInterval = null;
+        return;
+      }
+      refreshControllerLease({ force: !!video && inRoom && isActiveVideoTab }).catch(() => {});
+    }, WPConstants.CONTROLLER_TAB_LEASE.RENEW_INTERVAL_MS);
+  }
+
   // --- Extension context guard (WS survives extension reloads, but chrome APIs don't) ---
   function extOk() { return !!chrome.runtime?.id; }
 
-  function normalizeStorageKeyList(keys) {
-    return Array.isArray(keys) ? keys.filter(Boolean) : [keys].filter(Boolean);
-  }
-
   function getExtensionState(keys) {
-    const keyList = normalizeStorageKeyList(keys);
-    if (!extOk() || keyList.length === 0) return Promise.resolve({});
-
-    const sessionKeys = keyList.filter((key) => SESSION_RUNTIME_KEYS.has(key));
-    const localKeys = keyList.filter((key) => !SESSION_RUNTIME_KEYS.has(key));
-
-    return Promise.all([
-      sessionKeys.length > 0 ? chrome.storage.session.get(sessionKeys).catch(() => ({})) : Promise.resolve({}),
-      localKeys.length > 0 ? chrome.storage.local.get(localKeys).catch(() => ({})) : Promise.resolve({}),
-      sessionKeys.length > 0 ? chrome.storage.local.get(sessionKeys).catch(() => ({})) : Promise.resolve({}),
-    ]).then(([sessionValues, localValues, fallbackValues]) => {
-      const migratedValues = {};
-      for (const key of sessionKeys) {
-        if (sessionValues[key] !== undefined || fallbackValues[key] === undefined) continue;
-        migratedValues[key] = fallbackValues[key];
-      }
-
-      if (Object.keys(migratedValues).length > 0) {
-        chrome.storage.session.set(migratedValues).catch(() => {});
-        chrome.storage.local.remove(Object.keys(migratedValues)).catch(() => {});
-      }
-
-      return { ...localValues, ...fallbackValues, ...sessionValues };
-    });
+    if (!extOk()) return Promise.resolve({});
+    return WPRuntimeState.get(keys);
   }
 
   function setExtensionState(values) {
-    if (!extOk() || !values || typeof values !== 'object') return Promise.resolve();
-    const sessionValues = {};
-    const localValues = {};
-    for (const [key, value] of Object.entries(values)) {
-      if (SESSION_RUNTIME_KEYS.has(key)) sessionValues[key] = value;
-      else localValues[key] = value;
-    }
-    return Promise.all([
-      Object.keys(localValues).length > 0 ? chrome.storage.local.set(localValues).catch(() => {}) : Promise.resolve(),
-      Object.keys(sessionValues).length > 0 ? chrome.storage.session.set(sessionValues).catch(() => {}) : Promise.resolve(),
-    ]).then(() => {
-      if (Object.keys(sessionValues).length > 0) {
-        chrome.storage.local.remove(Object.keys(sessionValues)).catch(() => {});
-      }
-    });
+    if (!extOk()) return Promise.resolve();
+    return WPRuntimeState.set(values);
   }
 
   function removeExtensionState(keys) {
-    const keyList = normalizeStorageKeyList(keys);
-    if (!extOk() || keyList.length === 0) return Promise.resolve();
-    const sessionKeys = keyList.filter((key) => SESSION_RUNTIME_KEYS.has(key));
-    return Promise.all([
-      chrome.storage.local.remove(keyList).catch(() => {}),
-      sessionKeys.length > 0 ? chrome.storage.session.remove(sessionKeys).catch(() => {}) : Promise.resolve(),
-    ]).then(() => undefined);
+    if (!extOk()) return Promise.resolve();
+    return WPRuntimeState.remove(keys);
   }
 
   function isPlaceholderMeta(meta) {
@@ -231,11 +327,13 @@
   function stagePendingRoomCreateCommand(command) {
     pendingRoomCreateCommand = command ? { ...command } : null;
     pendingRoomJoinCommand = null;
+    resumeRoomPending = !!pendingRoomCreateCommand;
   }
 
   function stagePendingRoomJoinCommand(command) {
     pendingRoomJoinCommand = command ? { ...command } : null;
     pendingRoomCreateCommand = null;
+    resumeRoomPending = !!pendingRoomJoinCommand;
   }
 
   function cacheRoomKeyForRoom(roomId, roomKey) {
@@ -298,6 +396,7 @@
 
   function syncDeferredLeaveIntent(value) {
     deferredLeaveIntent = normalizeDeferredLeaveIntent(value);
+    if (deferredLeaveIntent) resumeRoomPending = true;
     return deferredLeaveIntent;
   }
 
@@ -309,6 +408,7 @@
       requestedAt: Date.now(),
     };
     deferredLeaveIntent = nextIntent;
+    resumeRoomPending = true;
     if (extOk()) {
       setExtensionState({ [WPConstants.STORAGE.DEFERRED_LEAVE_ROOM]: nextIntent }).catch(() => { });
     }
@@ -318,6 +418,7 @@
   function clearDeferredLeaveIntent(roomId) {
     if (roomId && deferredLeaveIntent?.roomId && deferredLeaveIntent.roomId !== roomId) return;
     deferredLeaveIntent = null;
+    resumeRoomPending = !!roomState?.id || !!pendingRoomCreateCommand || !!pendingRoomJoinCommand;
     if (!extOk()) return;
     removeExtensionState(WPConstants.STORAGE.DEFERRED_LEAVE_ROOM).catch(() => { });
   }
@@ -328,6 +429,7 @@
     inRoom = false;
     roomState = null;
     isHost = false;
+    resumeRoomPending = false;
     releaseActiveTab();
     WPSync.detach();
     WPCrypto.clear();
@@ -335,11 +437,7 @@
     refreshOverlay();
     persistState();
     if (!extOk()) return;
-    removeExtensionState([
-      WPConstants.STORAGE.CURRENT_ROOM,
-      WPConstants.STORAGE.ROOM_STATE,
-      WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT,
-    ]).catch(() => { });
+    removeExtensionState(WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT).catch(() => { });
     if (leavingRoomId) {
       chrome.storage.session.remove(WPConstants.STORAGE.roomKey(leavingRoomId)).catch(() => { });
     }
@@ -354,7 +452,7 @@
     } else {
       rememberDeferredLeaveIntent(leavingRoomId);
       if (!WPWS.isConnected()) {
-        WPWS.connect();
+        ensureControllerConnection();
       }
     }
     applyLocalLeaveState(leavingRoomId);
@@ -408,8 +506,16 @@
     ].join('::');
   }
 
+  async function normalizeSharedStreamPayload(stream) {
+    const normalizedStream = await WPDirectPlay.normalizeSharedStream(stream);
+    return {
+      stream: normalizedStream,
+      joinHint: WPDirectPlay.buildJoinHint(normalizedStream),
+    };
+  }
+
   function shouldShareHostContent() {
-    return inRoom && isActiveVideoTab && amIHost();
+    return inRoom && isControllerTab && isActiveVideoTab && amIHost();
   }
 
   function requestLatestHostSync() {
@@ -564,23 +670,15 @@
 
   // --- Persist state to storage for popup queries ---
   function persistState() {
-    if (!extOk()) return;
-    setExtensionState({
-      [WPConstants.STORAGE.ROOM_STATE]: roomState,
-      [WPConstants.STORAGE.USER_ID]: userId,
-      [WPConstants.STORAGE.WS_CONNECTED]: WPWS.isConnected(),
-      [WPConstants.STORAGE.ACTIVE_BACKEND]: WPWS.getActiveBackend(),
-      [WPConstants.STORAGE.ACTIVE_BACKEND_URL]: WPWS.getActiveWsUrl(),
-    }).catch(() => { });
+    if (!extOk() || !isControllerTab) return;
+    sessionWsConnected = WPWS.isConnected();
+    publishSessionState();
   }
 
   function persistConnectionState() {
-    if (!extOk()) return;
-    setExtensionState({
-      [WPConstants.STORAGE.WS_CONNECTED]: WPWS.isConnected(),
-      [WPConstants.STORAGE.ACTIVE_BACKEND]: WPWS.getActiveBackend(),
-      [WPConstants.STORAGE.ACTIVE_BACKEND_URL]: WPWS.getActiveWsUrl(),
-    }).catch(() => { });
+    if (!extOk() || !isControllerTab) return;
+    sessionWsConnected = WPWS.isConnected();
+    publishSessionState();
   }
 
   function notifyBackground(data) {
@@ -605,16 +703,36 @@
     };
   }
 
+  function buildProjectedRoomState(room) {
+    const snapshot = cloneRoomSnapshot(room);
+    if (!snapshot) return null;
+    delete snapshot.messages;
+    return snapshot;
+  }
+
+  function publishSessionState() {
+    if (!isControllerTab) return;
+    notifyBackground({
+      action: 'session-state',
+      payload: {
+        room: buildProjectedRoomState(roomState),
+        userId,
+        sessionId,
+        wsConnected: WPWS.isConnected(),
+        activeBackend: WPWS.getActiveBackend(),
+        activeBackendUrl: WPWS.getActiveWsUrl(),
+      },
+    });
+  }
+
   function commitRoomState(nextRoom, options = {}) {
     if (!nextRoom?.id) return false;
     roomState = nextRoom;
+    resumeRoomPending = true;
     lastJoinAttemptRoomId = null;
     if (pendingCreatedRoomKey && roomState.id) {
       cacheRoomKeyForRoom(roomState.id, pendingCreatedRoomKey);
       pendingCreatedRoomKey = null;
-    }
-    if (extOk()) {
-      setExtensionState({ [WPConstants.STORAGE.CURRENT_ROOM]: roomState.id }).catch(() => {});
     }
     persistState();
     if (options.lifecycle === 'joined') {
@@ -643,15 +761,10 @@
 
   // --- WS callbacks ---
   WPWS.onConnect(() => {
+    if (!isControllerTab) return;
     const shouldAnnounceReconnect = reconnectNoticeShown;
     clearReconnectNotice();
     persistConnectionState();
-    notifyBackground({
-      action: 'ws-status-changed',
-      connected: true,
-      activeBackend: WPWS.getActiveBackend(),
-      activeBackendUrl: WPWS.getActiveWsUrl(),
-    });
     WPSync.resetCorrection();
     refreshOverlay();
     if (shouldAnnounceReconnect && inRoom) {
@@ -688,14 +801,9 @@
   });
 
   WPWS.onDisconnect(() => {
+    if (!isControllerTab) return;
     scheduleReconnectNotice();
     persistConnectionState();
-    notifyBackground({
-      action: 'ws-status-changed',
-      connected: false,
-      activeBackend: WPWS.getActiveBackend(),
-      activeBackendUrl: WPWS.getActiveWsUrl(),
-    });
     refreshOverlay();
   });
 
@@ -765,10 +873,10 @@
         }
         if (p?.code === WPProtocol.ERROR_CODE.ROOM_NOT_FOUND) {
           const wasInRoom = inRoom;
-          clearPendingJoinOptions();
-          inRoom = false; roomState = null;
-          WPSync.detach();
-        if (extOk()) removeExtensionState([WPConstants.STORAGE.CURRENT_ROOM, WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT]).catch(() => {});
+      clearPendingJoinOptions();
+      inRoom = false; roomState = null;
+      WPSync.detach();
+        if (extOk()) removeExtensionState(WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT).catch(() => {});
           refreshOverlay();
           persistState();
           if (wasInRoom || p?.code === WPProtocol.ERROR_CODE.ROOM_NOT_FOUND) {
@@ -802,6 +910,7 @@
       case WPProtocol.S2C.REACTION:
         if (!p?.user || !p?.emoji) return;
         WPOverlay.showReaction(p.user, p.emoji, roomState);
+        notifyBackground({ action: 'reaction', payload: p });
         break;
 
       case WPProtocol.S2C.AUTOPAUSE:
@@ -861,25 +970,36 @@
 
   // Wire up: active tab processes WS events and broadcasts to passive tabs
   WPWS.onMessage((msg) => {
+    if (!isControllerTab) return;
     processWsEvent(msg);
   });
 
   // --- Process pending create/join actions from storage ---
   async function createRoomFromCommand(command) {
+    if (!isControllerTab) return;
     clearPendingJoinOptions();
     if (inRoom) {
       WPWS.send({ type: WPProtocol.C2S.ROOM_LEAVE, payload: {} });
       inRoom = false; roomState = null; isHost = false;
     }
-    removeExtensionState(WPConstants.STORAGE.CURRENT_ROOM).catch(() => {});
     if (command?.username) {
       WPWS.send({ type: WPProtocol.C2S.USER_UPDATE, payload: { username: command.username, sessionId } });
     }
     const context = getCurrentContentContext();
     const seedMeta = (isPlaceholderMeta(command?.meta) && context.meta) ? context.meta : command?.meta;
     const meta = await enrichContentMeta(seedMeta, context.launchUrl);
-    const stream = (isPlaceholderStream(command?.stream) && context.launchUrl) ? { url: context.launchUrl } : command?.stream;
-    const payload = { meta, stream, public: command?.public || false };
+    const rawStream = (isPlaceholderStream(command?.stream) && context.launchUrl)
+      ? { url: context.launchUrl }
+      : command?.stream;
+    const { stream, joinHint } = await normalizeSharedStreamPayload(rawStream);
+    const isPublic = command?.public === true;
+    const payload = {
+      meta,
+      stream,
+      joinHint,
+      public: isPublic,
+      visibility: WPRoomDomain.visibilityFromPublic(isPublic),
+    };
     if (payload.public === false) {
       pendingCreatedRoomKey = command?.roomKey || await generatePrivateRoomKey();
       if (!pendingCreatedRoomKey) {
@@ -896,6 +1016,7 @@
   }
 
   async function joinRoomFromCommand(command, stored = {}) {
+    if (!isControllerTab) return;
     const roomToJoin = command?.roomId;
     if (!roomToJoin || !extOk() || !WPWS.isReady()) return;
     const joinOptions = command?.preferDirectJoin === true
@@ -916,7 +1037,7 @@
   }
 
   function processPendingActions() {
-    if (!WPWS.isReady() || !extOk()) return;
+    if (!WPWS.isReady() || !extOk() || !isControllerTab) return;
     // sessionId MUST be loaded before sending any room messages — otherwise server can't dedup
     if (!sessionId) return;
     getExtensionState([
@@ -1125,6 +1246,62 @@
     notifyBackground({ action: 'typing', payload: { user, typing, userName } });
   }
 
+  function applyPassiveChatMessage(message) {
+    if (!message || isControllerTab) return;
+    chatMessages.push(message);
+    if (chatMessages.length > 200) chatMessages.shift();
+    WPOverlay.appendChatMessage(message, roomState, userId);
+  }
+
+  function applyPassiveBookmark(message) {
+    if (!message || isControllerTab) return;
+    WPOverlay.appendBookmark(message);
+  }
+
+  function applyPassiveReaction(message) {
+    if (!message || isControllerTab) return;
+    WPOverlay.showReaction(message.user, message.emoji, roomState);
+  }
+
+  function applyPassiveTyping(message) {
+    if (!message || isControllerTab) return;
+    if (message.typing) {
+      const existing = typingUsers.get(message.user);
+      if (existing) clearTimeout(existing);
+      typingUsers.set(message.user, setTimeout(() => {
+        typingUsers.delete(message.user);
+        WPOverlay.updateTypingIndicator(typingUsers, userId, roomState);
+      }, 3000));
+    } else {
+      const existing = typingUsers.get(message.user);
+      if (existing) clearTimeout(existing);
+      typingUsers.delete(message.user);
+    }
+    WPOverlay.updateTypingIndicator(typingUsers, userId, roomState);
+  }
+
+  function applySharedRuntimeProjection(payload = {}) {
+    if (payload.userId !== undefined) userId = payload.userId || null;
+    if (payload.sessionId !== undefined && payload.sessionId) sessionId = payload.sessionId;
+    if (payload.wsConnected !== undefined) sessionWsConnected = payload.wsConnected === true;
+    if (payload.room !== undefined) {
+      roomState = payload.room || null;
+      inRoom = !!roomState?.id;
+      isHost = amIHost();
+      resumeRoomPending = !!roomState?.id || !!pendingRoomCreateCommand || !!pendingRoomJoinCommand || !!deferredLeaveIntent;
+      if (!inRoom) {
+        clearReconnectNotice();
+        WPSync.detach();
+        releaseActiveTab();
+        typingUsers.clear();
+        WPOverlay.updateTypingIndicator(typingUsers, userId, roomState);
+      } else if (!isControllerTab && video && isActiveVideoTab) {
+        refreshControllerLease({ force: true }).catch(() => {});
+      }
+    }
+    refreshOverlay();
+  }
+
   // --- Content link sharing ---
   async function shareContentLink() {
     if (shareContentLinkInFlight) return;
@@ -1133,16 +1310,17 @@
       const context = getCurrentContentContext();
       if (!context.meta && !context.launchUrl) return;
 
-      const stream = context.launchUrl
+      const rawStream = context.launchUrl
         ? { url: context.launchUrl }
         : { url: PLACEHOLDER_STREAM_URL };
+      const { stream, joinHint } = await normalizeSharedStreamPayload(rawStream);
       if (!shouldShareHostContent()) return;
 
       if (!context.meta) {
         const streamOnlyKey = `stream:::${buildSharedStreamKey(stream)}`;
         if (lastSharedContentKey === streamOnlyKey) return;
         lastSharedContentKey = streamOnlyKey;
-        WPWS.send({ type: WPProtocol.C2S.ROOM_UPDATE_STREAM, payload: { stream } });
+        WPWS.send({ type: WPProtocol.C2S.ROOM_UPDATE_STREAM, payload: { stream, joinHint } });
         return;
       }
 
@@ -1150,7 +1328,7 @@
       const shareKey = `${meta.type}:${meta.id}:${meta.name || ''}:${buildSharedStreamKey(stream)}`;
       if (lastSharedContentKey === shareKey) return;
       lastSharedContentKey = shareKey;
-      WPWS.send({ type: WPProtocol.C2S.ROOM_UPDATE_STREAM, payload: { stream, meta } });
+      WPWS.send({ type: WPProtocol.C2S.ROOM_UPDATE_STREAM, payload: { stream, meta, joinHint } });
     } finally {
       shareContentLinkInFlight = false;
     }
@@ -1194,6 +1372,7 @@
           video = v;
           if (inRoom) {
             refreshActiveVideoLease({ force: true }).catch(() => {}); // This tab now owns sync
+            refreshControllerLease({ force: true }).catch(() => {});
             attachSync();
             if (!isHost) schedulePeerVideoResync(v);
             if (shouldShareHostContent()) shareContentLink();
@@ -1213,6 +1392,7 @@
       video = v;
       if (inRoom) {
         refreshActiveVideoLease({ force: true }).catch(() => {});
+        refreshControllerLease({ force: true }).catch(() => {});
         attachSync();
         if (!isHost) schedulePeerVideoResync(v);
       }
@@ -1342,7 +1522,8 @@
 
   // --- Overlay state refresh ---
   function refreshOverlay() {
-    WPOverlay.updateState({ inRoom, isHost, userId, sessionId, roomState, hasVideo: !!video, wsConnected: WPWS.isConnected() });
+    const wsConnected = isControllerTab ? WPWS.isConnected() : sessionWsConnected;
+    WPOverlay.updateState({ inRoom, isHost, userId, sessionId, roomState, hasVideo: !!video, wsConnected });
     if (inRoom && !isHost) {
       WPOverlay.updateSyncIndicator(isHost, WPSync.getLastDrift());
     }
@@ -1367,16 +1548,84 @@
     activeVideo.currentTime = Math.max(0, targetTime);
   }
 
+  const CONTROLLER_ACTIONS = new Set([
+    'create-room',
+    'join-room',
+    'leave-room',
+    'toggle-public',
+    'update-room-settings',
+    'transfer-ownership',
+    'update-username',
+    'ready-check',
+    'send-bookmark',
+    'send-chat',
+    'send-typing',
+    'send-reaction',
+    'send-presence',
+    'send-playback-status',
+    'request-sync',
+  ]);
+
+  function relayActionToController(message) {
+    if (!extOk()) return Promise.resolve({ ok: false });
+    return chrome.runtime.sendMessage({
+      type: 'watchparty-ext',
+      ...message,
+    }).catch(() => ({ ok: false }));
+  }
+
   // --- Action dispatch (from overlay events + background/popup messages) ---
-  document.addEventListener('wp-action', (e) => handleAction(e.detail));
+  document.addEventListener('wp-action', (e) => {
+    handleAction(e.detail, { source: 'local' }).catch(() => {});
+  });
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (message.type !== 'watchparty-ext') return;
+    if (message.type !== 'watchparty-ext') return false;
     if (message.action === 'probe-surface') {
       sendResponse({ surface: 'stremio' });
       return true;
     }
-    handleAction(message);
-    return false;
+    if (message.action === 'chat-message') {
+      applyPassiveChatMessage(message.payload);
+      sendResponse({ handled: true });
+      return true;
+    }
+    if (message.action === 'typing') {
+      applyPassiveTyping(message.payload);
+      sendResponse({ handled: true });
+      return true;
+    }
+    if (message.action === 'bookmark') {
+      applyPassiveBookmark(message.payload);
+      sendResponse({ handled: true });
+      return true;
+    }
+    if (message.action === 'reaction') {
+      applyPassiveReaction(message.payload);
+      sendResponse({ handled: true });
+      return true;
+    }
+    if (message.action === 'bootstrap-pending') {
+      if (!sessionId) {
+        schedulePendingIntentWake();
+      } else {
+        refreshControllerLease().then((claimed) => {
+          if (!claimed) return;
+          if (WPWS.isReady()) processPendingActions();
+          else ensureControllerConnection();
+        }).catch(() => {});
+      }
+      sendResponse({ handled: true });
+      return true;
+    }
+    if (message.action === 'status-updated') {
+      if (!isControllerTab) applySharedRuntimeProjection(message.payload || {});
+      sendResponse({ handled: true });
+      return true;
+    }
+    Promise.resolve(handleAction(message, { source: 'runtime' }))
+      .then((result) => sendResponse(result || { handled: false }))
+      .catch(() => sendResponse({ handled: false }));
+    return true;
   });
 
   // Action handler map — replaces monolithic switch for testability and clarity
@@ -1393,9 +1642,9 @@
           roomName: m.roomName,
           roomKey: m.roomKey,
         });
-        WPWS.connect();
+        ensureControllerConnection();
       } else {
-        WPWS.connect();
+        ensureControllerConnection();
       }
     },
     'join-room': (m) => {
@@ -1408,9 +1657,9 @@
           roomKey: m.roomKey,
           preferDirectJoin: m.preferDirectJoin === true,
         });
-        WPWS.connect();
+        ensureControllerConnection();
       } else {
-        WPWS.connect();
+        ensureControllerConnection();
       }
     },
     'open-sidebar': (m) => { WPOverlay.openSidebar(m.panel); },
@@ -1441,12 +1690,25 @@
             await WPCrypto.importKey(roomKey);
           } catch { }
         }
-        WPWS.send({ type: WPProtocol.C2S.ROOM_UPDATE_PUBLIC, payload: { public: false, roomKey } });
+        WPWS.send({
+          type: WPProtocol.C2S.ROOM_UPDATE_PUBLIC,
+          payload: {
+            public: false,
+            visibility: WPRoomDomain.ROOM_VISIBILITY.INVITE_ONLY,
+            roomKey,
+          },
+        });
         return;
       }
       await clearRoomKeyForRoom(roomState?.id);
       WPCrypto.clear();
-      WPWS.send({ type: WPProtocol.C2S.ROOM_UPDATE_PUBLIC, payload: { public: true } });
+      WPWS.send({
+        type: WPProtocol.C2S.ROOM_UPDATE_PUBLIC,
+        payload: {
+          public: true,
+          visibility: WPRoomDomain.ROOM_VISIBILITY.PUBLIC,
+        },
+      });
     },
     'update-room-settings': (m) => WPWS.send({ type: WPProtocol.C2S.ROOM_UPDATE_SETTINGS, payload: m.settings }),
     'transfer-ownership': (m) => WPWS.send({ type: WPProtocol.C2S.ROOM_UPDATE_OWNERSHIP, payload: { userId: m.targetUserId } }),
@@ -1466,9 +1728,21 @@
     'request-sync': () => { requestLatestHostSync(); },
   };
 
-  function handleAction(message) {
+  async function handleAction(message, options = {}) {
+    const action = message?.action;
+    if (!action) return { handled: false };
+    if (CONTROLLER_ACTIONS.has(action) && !isControllerTab) {
+      const claimed = await refreshControllerLease({ force: !!video && inRoom && isActiveVideoTab });
+      if (!claimed) {
+        if (options.source === 'runtime') return { handled: false };
+        await relayActionToController(message);
+        return { handled: true, relayed: true };
+      }
+    }
     const handler = actionHandlers[message.action];
-    if (handler) handler(message);
+    if (!handler) return { handled: false };
+    await handler(message);
+    return { handled: true, controller: CONTROLLER_ACTIONS.has(action) ? isControllerTab : undefined };
   }
 
   // --- Presence (only from tab with video to avoid multi-tab conflicts) ---
@@ -1476,7 +1750,7 @@
   document.addEventListener('visibilitychange', () => {
     if (!inRoom) return;
     // Only the active video tab reports presence — prevents away/active flicker
-    if (!isActiveVideoTab) return;
+    if (!isActiveVideoTab || !isControllerTab) return;
     clearTimeout(presenceTimeout);
     if (document.visibilityState === 'hidden') {
       presenceTimeout = setTimeout(() => {
@@ -1491,7 +1765,7 @@
   let lastPlaybackStatus = '';
   let lastPlaybackSecond = -1;
   const playbackInterval = setInterval(() => {
-    if (!inRoom || !video || !isActiveVideoTab) {
+    if (!inRoom || !video || !isActiveVideoTab || !isControllerTab) {
       lastPlaybackStatus = '';
       lastPlaybackSecond = -1;
       return;
@@ -1530,26 +1804,65 @@
   if (extOk()) {
     chrome.storage.onChanged.addListener((changes, areaName) => {
       if (areaName === 'session' && changes[WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT]) {
-        if (!sessionId) return;
-        if (WPWS.isReady()) { processPendingActions(); }
-        else { WPWS.connect(); }
+        resumeRoomPending = true;
+        if (!sessionId) {
+          schedulePendingIntentWake();
+          return;
+        }
+        refreshControllerLease().then((claimed) => {
+          if (!claimed) return;
+          if (WPWS.isReady()) processPendingActions();
+          else ensureControllerConnection();
+        }).catch(() => {});
       }
       if (areaName === 'session' && changes[WPConstants.STORAGE.DEFERRED_LEAVE_ROOM]) {
         syncDeferredLeaveIntent(changes[WPConstants.STORAGE.DEFERRED_LEAVE_ROOM].newValue);
+        if (!sessionId) {
+          schedulePendingIntentWake();
+          return;
+        }
+        refreshControllerLease().then((claimed) => {
+          if (!claimed) return;
+          if (WPWS.isReady()) processPendingActions();
+          else ensureControllerConnection();
+        }).catch(() => {});
+      }
+      if (areaName === 'session' && changes[WPConstants.STORAGE.CONTROLLER_TAB]) {
+        const nextLease = changes[WPConstants.STORAGE.CONTROLLER_TAB].newValue;
+        const nextIsController = WPConstants.CONTROLLER_TAB_LEASE.isOwner(nextLease, controllerLeaseId);
+        if (nextIsController !== isControllerTab) {
+          const wasController = isControllerTab;
+          isControllerTab = nextIsController;
+          if (isControllerTab) {
+            if (WPWS.isReady()) processPendingActions();
+            else ensureControllerConnection();
+          } else {
+            if (wasController) publishControllerRelease();
+            disconnectControllerSocket({ force: true });
+          }
+          refreshOverlay();
+        }
       }
       if (areaName === 'local' && changes[WPConstants.STORAGE.BACKEND_MODE]) {
         const nextMode = WPConstants.BACKEND.normalizeMode(changes[WPConstants.STORAGE.BACKEND_MODE].newValue);
         if (WPWS.setBackendMode(nextMode)) {
-          WPWS.disconnect({ resetReplay: true });
-          persistConnectionState();
-          WPWS.connect();
+          if (isControllerTab) {
+            WPWS.disconnect({ resetReplay: true });
+            persistConnectionState();
+            ensureControllerConnection();
+          } else {
+            sessionWsConnected = false;
+            refreshOverlay();
+          }
         }
       }
       // Active video tab election — another tab claimed active status
       if (areaName === 'session' && changes[WPConstants.STORAGE.ACTIVE_VIDEO_TAB]) {
         const nextLease = changes[WPConstants.STORAGE.ACTIVE_VIDEO_TAB].newValue;
         isActiveVideoTab = WPConstants.VIDEO_TAB_LEASE.isOwner(nextLease, activeVideoLeaseId);
-        if (!isActiveVideoTab && video && inRoom && WPConstants.VIDEO_TAB_LEASE.isExpired(nextLease)) {
+        if (isActiveVideoTab && inRoom) {
+          refreshControllerLease({ force: true }).catch(() => {});
+        } else if (!isActiveVideoTab && video && inRoom && WPConstants.VIDEO_TAB_LEASE.isExpired(nextLease)) {
           refreshActiveVideoLease({ force: true }).catch(() => {});
         }
       }
@@ -1560,8 +1873,11 @@
   window.addEventListener('beforeunload', () => {
     clearInterval(playbackInterval);
     clearInterval(hostShareInterval);
+    if (controllerLeaseInterval) clearInterval(controllerLeaseInterval);
     if (activeVideoLeaseInterval) clearInterval(activeVideoLeaseInterval);
+    if (pendingIntentWakeTimer) clearTimeout(pendingIntentWakeTimer);
     releaseActiveTab();
+    releaseControllerTab();
     WPProfile.stop();
   });
 
@@ -1574,21 +1890,31 @@
       const nextTabId = Number.isInteger(response?.tabId) ? response.tabId : null;
       if (nextTabId == null || nextTabId === surfaceTabId) return;
       surfaceTabId = nextTabId;
-      if (isActiveVideoTab || (inRoom && video)) {
+      if (isControllerTab || isActiveVideoTab || (inRoom && video)) {
+        refreshControllerLease({ force: !!video && inRoom }).catch(() => {});
         refreshActiveVideoLease({ force: true }).catch(() => {});
       }
     }).catch(() => {});
     chrome.runtime.sendMessage({
       type: 'watchparty-ext',
       action: 'get-status',
+    }).then((response) => {
+      if (!response || isControllerTab) return;
+      applySharedRuntimeProjection({
+        room: response.room || null,
+        userId: response.userId || null,
+        sessionId: response.sessionId || null,
+        wsConnected: response.wsConnected === true,
+      });
     }).catch(() => {});
     WPOverlay.create();
     WPOverlay.initKeyboardShortcuts();
     WPOverlay.bindTypingIndicator(
-      () => { if (inRoom) WPWS.send({ type: WPProtocol.C2S.ROOM_TYPING, payload: { typing: true } }); },
-      () => { WPWS.send({ type: WPProtocol.C2S.ROOM_TYPING, payload: { typing: false } }); }
+      () => { if (inRoom) handleAction({ action: 'send-typing', typing: true }, { source: 'local' }).catch(() => {}); },
+      () => { handleAction({ action: 'send-typing', typing: false }, { source: 'local' }).catch(() => {}); }
     );
     startVideoObserver();
+    startControllerLeaseHeartbeat();
     startActiveVideoLeaseHeartbeat();
     updateKnownContentMeta();
     WPProfile.start();
@@ -1599,7 +1925,11 @@
       WPConstants.STORAGE.SESSION_ID,
       WPConstants.STORAGE.BACKEND_MODE,
       WPConstants.STORAGE.ACTIVE_BACKEND,
+      WPConstants.STORAGE.ROOM_STATE,
+      WPConstants.STORAGE.USER_ID,
+      WPConstants.STORAGE.WS_CONNECTED,
       WPConstants.STORAGE.CURRENT_ROOM,
+      WPConstants.STORAGE.CONTROLLER_TAB,
       WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT,
       WPConstants.STORAGE.DEFERRED_LEAVE_ROOM,
     ]).then((result) => {
@@ -1619,21 +1949,36 @@
       if (!bootstrapIntent && result[WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT] !== undefined) {
         clearBootstrapRoomIntent().catch(() => {});
       }
+      isControllerTab = WPConstants.CONTROLLER_TAB_LEASE.isOwner(result[WPConstants.STORAGE.CONTROLLER_TAB], controllerLeaseId);
+      applySharedRuntimeProjection({
+        userId: result[WPConstants.STORAGE.USER_ID] || null,
+        room: result[WPConstants.STORAGE.ROOM_STATE] || null,
+        wsConnected: result[WPConstants.STORAGE.WS_CONNECTED] === true,
+      });
       const hasRoomBootstrap = !!result[WPConstants.STORAGE.CURRENT_ROOM]
-        || !!bootstrapIntent;
+        || !!bootstrapIntent
+        || !!deferredLeaveIntent
+        || !!result[WPConstants.STORAGE.ROOM_STATE]?.id;
+      resumeRoomPending = hasRoomBootstrap;
       WPWS.setBackendMode(
         backendMode === WPConstants.BACKEND.MODES.AUTO && hasRoomBootstrap && activeBackend
           ? activeBackend
           : backendMode
       );
-      persistConnectionState();
-      // Every tab connects its own WS independently (like Twitch).
-      // The server deduplicates by sessionId — multiple connections, one user.
-      if (WPWS.isReady()) {
-        processPendingActions();
-      } else {
-        WPWS.connect();
-      }
+      // Only the elected controller tab owns the shared room socket.
+      refreshControllerLease({ force: !!video && !!result[WPConstants.STORAGE.ROOM_STATE]?.id }).then((claimed) => {
+        if (!claimed) {
+          refreshOverlay();
+          return;
+        }
+        if (WPWS.isReady()) {
+          processPendingActions();
+        } else {
+          ensureControllerConnection();
+        }
+      }).catch(() => {
+        refreshOverlay();
+      });
     });
   }
 

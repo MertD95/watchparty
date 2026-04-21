@@ -1,6 +1,8 @@
 const WPDirectPlay = (() => {
   'use strict';
 
+  const DirectPlayDomain = WPDirectPlayDomain;
+
   const TRUSTED_ORIGINS = new Set([
     'https://web.stremio.com',
     'https://web.strem.io',
@@ -8,15 +10,6 @@ const WPDirectPlay = (() => {
   ]);
   const PLAYER_HASH_RE = /^#\/player\/([^/?#]+)(?:\/([^/?#]+)\/([^/?#]+)\/([^/?#]+)\/([^/?#]+)\/([^/?#]+))?/;
   const INFO_HASH_RE = /^[a-fA-F0-9]{40}$/;
-  const DEBRID_HINTS = [
-    'real-debrid',
-    'premiumize',
-    'alldebrid',
-    'debrid-link',
-    'debrid',
-    'torbox',
-    'easydebrid',
-  ];
 
   function isHttpUrl(value) {
     if (typeof value !== 'string' || !value) return false;
@@ -149,19 +142,6 @@ const WPDirectPlay = (() => {
     }
   }
 
-  function looksLikeDebridUrl() {
-    return Array.from(arguments).some((candidate) => {
-      if (!candidate || !isHttpUrl(candidate)) return false;
-      try {
-        const url = new URL(candidate);
-        const haystack = `${url.hostname} ${url.pathname} ${url.search}`.toLowerCase();
-        return DEBRID_HINTS.some((hint) => haystack.includes(hint));
-      } catch {
-        return false;
-      }
-    });
-  }
-
   async function normalizeSharedStream(stream) {
     const normalized = { ...(stream || {}) };
     const playerUrl = parsePlayerUrl(normalized.url);
@@ -227,83 +207,35 @@ const WPDirectPlay = (() => {
 
   function classifyStream(stream) {
     const playerUrl = parsePlayerUrl(stream?.url);
-    if (!playerUrl) {
-      return {
-        hasDirectJoin: false,
-        directJoinType: null,
-        failureReason: 'Host has not opened a Stremio player yet.',
-        url: null,
-      };
-    }
-
-    if (stream?.externalUrl) {
-      return {
-        hasDirectJoin: false,
-        directJoinType: 'external',
-        failureReason: 'Host stream opens through an external provider.',
-        url: playerUrl.url.toString(),
-      };
-    }
-
-    const hasProxyHeaders = !!stream?.behaviorHints?.proxyHeaders
-      && Object.keys(stream.behaviorHints.proxyHeaders).length > 0;
-    if (stream?.behaviorHints?.notWebReady || hasProxyHeaders) {
-      return {
-        hasDirectJoin: false,
-        directJoinType: 'not-web-ready',
-        failureReason: 'Host stream needs extra headers or local preparation.',
-        url: playerUrl.url.toString(),
-      };
-    }
-
-    if (stream?.infoHash) {
-      return {
-        hasDirectJoin: true,
-        directJoinType: 'torrent-portable',
-        failureReason: null,
-        url: playerUrl.url.toString(),
-      };
-    }
-
-    if (stream?.resolvedUrl) {
-      const isDebridUrl = looksLikeDebridUrl(
-        stream.resolvedUrl,
-        stream.addonTransportUrl,
-        stream.streamTransportUrl,
-      );
-      return {
-        hasDirectJoin: !isDebridUrl,
-        directJoinType: isDebridUrl ? 'debrid-url' : 'direct-url',
-        failureReason: isDebridUrl
-          ? 'Host is using a debrid stream. Choose your own stream for this title.'
-          : null,
-        url: isDebridUrl ? null : playerUrl.url.toString(),
-      };
-    }
-
-    if (stream?.ytId) {
-      return {
-        hasDirectJoin: true,
-        directJoinType: 'direct-url',
-        failureReason: null,
-        url: playerUrl.url.toString(),
-      };
-    }
-
+    const classification = DirectPlayDomain.classifyDirectPlayContext({
+      ...(stream || {}),
+      hasTrustedPlayerUrl: !!playerUrl,
+    });
     return {
-      hasDirectJoin: true,
-      directJoinType: 'direct-url',
-      failureReason: null,
-      url: playerUrl.url.toString(),
+      ...classification,
+      url: classification.hasDirectJoin ? DirectPlayDomain.getDirectJoinUrlForContext({
+        ...(stream || {}),
+        hasTrustedPlayerUrl: !!playerUrl,
+      }) : null,
     };
   }
 
+  function buildJoinHint(stream) {
+    return DirectPlayDomain.buildJoinHintForDirectPlayContext({
+      ...(stream || {}),
+      hasTrustedPlayerUrl: !!parsePlayerUrl(stream?.url),
+    });
+  }
+
   function getDirectJoinUrl(stream) {
-    const directJoin = classifyStream(stream);
-    return directJoin.hasDirectJoin ? directJoin.url : null;
+    return DirectPlayDomain.getDirectJoinUrlForContext({
+      ...(stream || {}),
+      hasTrustedPlayerUrl: !!parsePlayerUrl(stream?.url),
+    });
   }
 
   return {
+    buildJoinHint,
     classifyStream,
     getDirectJoinUrl,
     getPlayerTitleHint,

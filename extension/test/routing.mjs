@@ -160,18 +160,28 @@ console.log(`  popup.js sends:            ${[...popupSends].sort().join(', ')}`)
 // These are handled entirely in background.js and don't need a content.js case.
 const BG_ONLY_ACTIONS = new Set([
   'get-status',         // Responds with status from storage, no forwarding
-  'ws-status-changed',  // Badge update from content→background, no forwarding
+  'session-state',      // Projected room/session state from content→background
   'profile-updated',    // Broadcasts to WatchParty tabs, not Stremio tabs
   'copy-to-clipboard',  // Shared utility action handled entirely in background/offscreen
   'save-auth-key',      // Stores auth key + triggers profile sync
   'resume-room',        // Website/popup intent handled fully in background
   'open-stremio',       // Focuses or opens the Stremio tab entirely in background
   'open-options',       // Opens extension settings page from website/popup
-  'proxy-fetch',        // CORS proxy handled entirely in background
+  'claim-controller-lease',
+  'release-controller-lease',
+  'claim-active-video-lease',
+  'release-active-video-lease',
 ]);
 
 // ── Actions that content.js handles but aren't sent by overlay/popup ──
 // These originate from background.js broadcasts or internal logic.
+const BG_LEASE_ACTIONS = new Set([
+  'claim-controller-lease',
+  'release-controller-lease',
+  'claim-active-video-lease',
+  'release-active-video-lease',
+]);
+
 const CONTENT_INTERNAL_ACTIONS = new Set([
   'get-ws-status',      // Background queries content script WS status
   'stremio-status',     // Background broadcasts Stremio detection changes
@@ -210,20 +220,21 @@ for (const action of allSenderActions) {
 // These are excluded from the "dead case" check because they have legitimate senders.
 console.log('\n── Test 4: No dead cases in background.js ──');
 const BG_NON_UI_SENDERS = new Set([
-  'ws-status-changed',     // content script → background (notifyBackground)
+  'controller-released',   // controller tab → background during handoff/teardown
+  'session-state',         // content script → background (projected coordinator state)
   'profile-updated',       // content.js WPProfile → background
   'copy-to-clipboard',     // utils.js shared clipboard helper → background/offscreen
   'save-auth-key',         // content.js (landing page) → background
   'resume-room',           // content.js (landing page) → background
   'open-stremio',          // content.js/options/popup → background tab handoff
   'open-options',          // content.js (landing page) → background
-  'proxy-fetch',           // content.js → background (CORS proxy for localhost)
   'send-presence',         // content.js programmatic (visibility change)
   'send-playback-status',  // content.js programmatic (periodic status)
   'update-username',       // content.js processPendingActions (username from storage)
   'chat-message',          // content.js → background (relay to sidepanel)
   'typing',                // content.js → background (relay typing indicator to sidepanel)
   'bookmark',              // content.js → background (relay to sidepanel)
+  'reaction',              // content.js → background (relay floating reactions to passive tabs)
   'surface-ready',         // content.js / stremio-content.js → background (tab registration)
   // Overlay actions now use DOM events directly — background.js cases kept for popup relay
   'send-chat', 'send-typing', 'send-reaction', 'send-bookmark', 'seek-bookmark',
@@ -232,7 +243,7 @@ const BG_NON_UI_SENDERS = new Set([
   'toggle-public', 'update-room-settings',
 ]);
 for (const action of bgCases) {
-  if (BG_NON_UI_SENDERS.has(action)) continue;
+  if (BG_NON_UI_SENDERS.has(action) || BG_LEASE_ACTIONS.has(action)) continue;
   ok(allSenderActions.has(action), `background.js case '${action}' is sent by overlay or popup`);
 }
 
@@ -254,6 +265,8 @@ ok(constantsSource.includes('STORAGE_CONTRACT'), 'constants.js documents the sto
 ok(constantsSource.includes('SESSION_RUNTIME'), 'constants.js defines session-backed runtime storage keys');
 ok(constantsSource.includes('BOOTSTRAP_SESSION'), 'constants.js defines session-backed bootstrap storage keys');
 ok(constantsSource.includes('BOOTSTRAP_ROOM_INTENT_TTL_MS'), 'constants.js defines a bootstrap intent expiry');
+ok(constantsSource.includes('CONTROLLER_TAB_LEASE'), 'constants.js defines the controller-tab lease contract');
+ok(constantsSource.includes('CONTROLLER_TAB_LEASE_TTL_MS'), 'constants.js defines a controller-tab lease expiry');
 ok(constantsSource.includes('VIDEO_TAB_LEASE'), 'constants.js defines the active video-tab lease contract');
 ok(constantsSource.includes('VIDEO_TAB_LEASE_TTL_MS'), 'constants.js defines an active video-tab lease expiry');
 ok(constantsSource.includes('RENEW_INTERVAL_MS'), 'constants.js defines active video-tab lease renewal timing');

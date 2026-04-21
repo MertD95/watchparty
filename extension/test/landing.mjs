@@ -550,7 +550,7 @@ async function main() {
         paused: true,
         time: 3520,
         bookmarks: 0,
-        public: false,
+        public: true,
         listingState: 'reconnecting',
         graceRemainingMs: 180000,
       },
@@ -604,14 +604,12 @@ async function main() {
     ]);
     servers.broadcastRooms();
 
-    const privateReady = await page.waitForFunction(
-      () => {
-        const text = (document.querySelector('.room-card')?.innerText || '').toLowerCase();
-        return text.includes('neo') && text.includes('private') && text.includes('invite required');
-      },
-      { timeout: 5000 }
-    ).then(() => true).catch(() => false);
-    ok(privateReady, 'landing renders private rooms in the active room list with an invite-required hint');
+    await page.waitForTimeout(400);
+    const privateHidden = await page.evaluate(() => {
+      const text = (document.getElementById('rooms-list')?.innerText || '').toLowerCase();
+      return !text.includes('neo') && !text.includes('the matrix');
+    });
+    ok(privateHidden, 'landing keeps private rooms out of the public room list');
 
     await page.evaluate(() => {
       window.__joinMessages = [];
@@ -620,13 +618,13 @@ async function main() {
       window.__alerts = [];
       window.__watchpartyExtStatus = { hasStremioTab: true };
     });
-    await page.click('.room-card .room-join-btn');
+    await page.click('#hero-private-btn');
     const privateJoinModalReady = await page.waitForFunction(
       () => getComputedStyle(document.getElementById('uuid-modal')).display !== 'none' && window.__joinMessages.length === 0,
       { timeout: 3000 }
     ).then(() => true).catch(() => false);
-    ok(privateJoinModalReady, 'private room Join Room opens the key modal before posting a join');
-    await page.fill('#uuid-input', 'invite-private-room-key');
+    ok(privateJoinModalReady, 'private invite flow opens the key modal before posting a join');
+    await page.fill('#uuid-input', `http://localhost:${PAGE_PORT}/r/room-private#key=invite-private-room-key`);
     await page.click('#uuid-submit-btn');
     await page.waitForFunction(() => window.__joinMessages.length > 0 && window.__bridgeMessages.some((entry) => entry.type === 'watchparty-open-stremio'), { timeout: 3000 });
     const privateJoinAction = await page.evaluate(() => ({
@@ -634,37 +632,10 @@ async function main() {
       openMessage: window.__bridgeMessages.find((entry) => entry.type === 'watchparty-open-stremio') || null,
       navTarget: window.__navTargets[0] || null,
     }));
-    ok(privateJoinAction.joinMessage?.roomId === 'room-private', 'private room Join Room posts the listed room ID after key entry');
-    ok(privateJoinAction.joinMessage?.roomKey === 'invite-private-room-key', 'private room Join Room forwards the entered room key');
-    ok(privateJoinAction.openMessage?.url === 'https://web.stremio.com/#/detail/movie/tt0133093', 'private room Join Room asks the extension background to open or focus the Stremio title page');
-    ok(privateJoinAction.navTarget == null, 'private room Join Room keeps the landing page in place during the handoff');
-
-    await page.evaluate(() => {
-      window.__joinMessages = [];
-      window.__bridgeMessages = [];
-      window.__navTargets = [];
-      window.__alerts = [];
-      window.__watchpartyExtStatus = { hasStremioTab: true };
-    });
-    await page.click('.room-card .room-direct-btn');
-    const privateDirectJoinModalReady = await page.waitForFunction(
-      () => getComputedStyle(document.getElementById('uuid-modal')).display !== 'none' && window.__joinMessages.length === 0,
-      { timeout: 3000 }
-    ).then(() => true).catch(() => false);
-    ok(privateDirectJoinModalReady, 'private room Direct Join also waits for the room key');
-    await page.fill('#uuid-input', `http://localhost:${PAGE_PORT}/r/room-private#key=invite-private-room-key`);
-    await page.click('#uuid-submit-btn');
-    await page.waitForFunction(() => window.__joinMessages.length > 0, { timeout: 3000 });
-    const privateDirectJoinAction = await page.evaluate(() => ({
-      joinMessage: window.__joinMessages[0] || null,
-      openMessage: window.__bridgeMessages.find((entry) => entry.type === 'watchparty-open-stremio') || null,
-      navTarget: window.__navTargets[0] || null,
-    }));
-    ok(privateDirectJoinAction.joinMessage?.roomId === 'room-private', 'private room Direct Join posts the listed room ID after key entry');
-    ok(privateDirectJoinAction.joinMessage?.roomKey === 'invite-private-room-key', 'private room Direct Join forwards the entered room key');
-    ok(privateDirectJoinAction.joinMessage?.preferDirectJoin === true, 'private room Direct Join keeps the direct-play preference');
-    ok(privateDirectJoinAction.openMessage?.url === 'https://web.stremio.com', 'private room Direct Join asks the extension background to open or focus Stremio Web');
-    ok(privateDirectJoinAction.navTarget == null, 'private room Direct Join stays on the landing page when the extension has a Stremio tab');
+    ok(privateJoinAction.joinMessage?.roomId === 'room-private', 'private invite flow posts the invite room ID after key entry');
+    ok(privateJoinAction.joinMessage?.roomKey === 'invite-private-room-key', 'private invite flow forwards the entered room key');
+    ok(privateJoinAction.openMessage?.url === 'https://web.stremio.com', 'private invite flow asks the extension background to open or focus Stremio Web');
+    ok(privateJoinAction.navTarget == null, 'private invite flow keeps the landing page in place during the handoff');
 
     const sseReady = await page.waitForFunction(
       () => window.__sseEvents.some((event) => event.type === 'message'),

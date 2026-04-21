@@ -202,9 +202,10 @@ async function testPopupLoadsWithStatus() {
     const lobbyVisible = await popup.evaluate(() => !document.getElementById('view-lobby').classList.contains('hidden'));
     assert(lobbyVisible, 'Lobby view visible');
 
-    // WS status should show connected (server is running)
+    // Without an active controller session, the popup now reports the backend as idle
+    // instead of pretending the room socket is already connected.
     const wsText = await popup.evaluate(() => document.getElementById('ws-status').textContent);
-    assert(/Connected to (Local|Live) server/.test(wsText), `WS status: "${wsText}"`);
+    assert(/(Connected to (Local|Live) server|(Local|Live) server disconnected)/.test(wsText), `WS status: "${wsText}"`);
 
     const backendNote = await popup.evaluate(() => document.getElementById('backend-note')?.textContent || '');
     assert(

@@ -9,10 +9,6 @@ let currentUserId = null;
 let currentSessionId = null;
 let currentLobbyMode = 'create';
 let suppressedRoomId = null;
-const SESSION_RUNTIME_KEYS = new Set([
-  ...WPConstants.STORAGE_CONTRACT.SESSION_RUNTIME,
-  ...WPConstants.STORAGE_CONTRACT.BOOTSTRAP_SESSION,
-]);
 
 function getErrorMessage(errorLike, fallback) {
   if (!errorLike) return fallback;
@@ -41,54 +37,14 @@ function getBrowseUrl() {
   return WPConstants.BACKEND.getBrowseUrl(currentBackendMode, currentActiveBackend);
 }
 
-function normalizeStorageKeyList(keys) {
-  return Array.isArray(keys) ? keys.filter(Boolean) : [keys].filter(Boolean);
-}
-
 function getExtensionState(keys, callback) {
-  const keyList = normalizeStorageKeyList(keys);
-  if (keyList.length === 0) {
-    callback?.({});
-    return Promise.resolve({});
-  }
-  const sessionKeys = keyList.filter((key) => SESSION_RUNTIME_KEYS.has(key));
-  const localKeys = keyList.filter((key) => !SESSION_RUNTIME_KEYS.has(key));
-  const work = Promise.all([
-    sessionKeys.length > 0 ? chrome.storage.session.get(sessionKeys).catch(() => ({})) : Promise.resolve({}),
-    localKeys.length > 0 ? chrome.storage.local.get(localKeys).catch(() => ({})) : Promise.resolve({}),
-    sessionKeys.length > 0 ? chrome.storage.local.get(sessionKeys).catch(() => ({})) : Promise.resolve({}),
-  ]).then(([sessionValues, localValues, fallbackValues]) => {
-    const migratedValues = {};
-    for (const key of sessionKeys) {
-      if (sessionValues[key] !== undefined || fallbackValues[key] === undefined) continue;
-      migratedValues[key] = fallbackValues[key];
-    }
-    if (Object.keys(migratedValues).length > 0) {
-      chrome.storage.session.set(migratedValues).catch(() => {});
-      chrome.storage.local.remove(Object.keys(migratedValues)).catch(() => {});
-    }
-    return { ...localValues, ...fallbackValues, ...sessionValues };
-  });
+  const work = WPRuntimeState.get(keys);
   if (typeof callback === 'function') work.then(callback);
   return work;
 }
 
 function setExtensionState(values) {
-  if (!values || typeof values !== 'object') return Promise.resolve();
-  const sessionValues = {};
-  const localValues = {};
-  for (const [key, value] of Object.entries(values)) {
-    if (SESSION_RUNTIME_KEYS.has(key)) sessionValues[key] = value;
-    else localValues[key] = value;
-  }
-  return Promise.all([
-    Object.keys(localValues).length > 0 ? chrome.storage.local.set(localValues).catch(() => {}) : Promise.resolve(),
-    Object.keys(sessionValues).length > 0 ? chrome.storage.session.set(sessionValues).catch(() => {}) : Promise.resolve(),
-  ]).then(() => {
-    if (Object.keys(sessionValues).length > 0) {
-      chrome.storage.local.remove(Object.keys(sessionValues)).catch(() => {});
-    }
-  });
+  return WPRuntimeState.set(values);
 }
 
 function openWatchPartyTab() {
@@ -319,9 +275,31 @@ function applyStatusResponse(response) {
   currentActiveBackend = getKnownBackendKey(response.activeBackend);
   currentActiveBackendUrl = response.activeBackendUrl || null;
   currentWsConnected = !!response.wsConnected;
+  currentUserId = response.userId || currentUserId || null;
+  currentSessionId = response.sessionId || currentSessionId || null;
   updateStatusHint(!!response.hasStremioTab, !!response.stremioRunning, !!response.bootstrapPending);
   renderBackendControls();
   setWsStatus(currentWsConnected);
+}
+
+function applyCoordinatorUpdate(payload) {
+  if (!payload || typeof payload !== 'object') return;
+  if ('userId' in payload) currentUserId = payload.userId || null;
+  if ('sessionId' in payload) currentSessionId = payload.sessionId || null;
+  if ('activeBackend' in payload) currentActiveBackend = getKnownBackendKey(payload.activeBackend);
+  if ('activeBackendUrl' in payload) currentActiveBackendUrl = payload.activeBackendUrl || null;
+  if ('wsConnected' in payload) currentWsConnected = payload.wsConnected === true;
+  renderBackendControls();
+  setWsStatus(currentWsConnected);
+  if (!('room' in payload)) return;
+  const nextRoom = payload.room || null;
+  if (nextRoom) {
+    if (suppressedRoomId && nextRoom.id === suppressedRoomId) return;
+    suppressedRoomId = null;
+    showRoomView(nextRoom, currentUserId);
+    return;
+  }
+  showLobbyView();
 }
 
 function setBackendMode(mode) {
@@ -360,7 +338,7 @@ function waitForRoomState({ onRoom, onError, onTimeout }) {
   const timeoutId = setTimeout(() => {
     if (resolved) return;
     resolved = true;
-    chrome.storage.onChanged.removeListener(listener);
+    chrome.runtime.onMessage.removeListener(listener);
     onTimeout();
   }, 20000);
 
@@ -368,29 +346,24 @@ function waitForRoomState({ onRoom, onError, onTimeout }) {
     if (resolved) return;
     resolved = true;
     clearTimeout(timeoutId);
-    chrome.storage.onChanged.removeListener(listener);
+    chrome.runtime.onMessage.removeListener(listener);
     callback?.();
   }
 
-  function listener(changes, areaName) {
+  function listener(message) {
     if (resolved) return;
-    if (areaName !== 'session') return;
-    if (changes[WPConstants.STORAGE.ROOM_STATE]?.newValue) {
-      finish(() => {
-        getExtensionState(WPConstants.STORAGE.USER_ID, (result) => {
-          onRoom(changes[WPConstants.STORAGE.ROOM_STATE].newValue, result[WPConstants.STORAGE.USER_ID]);
-        });
-      });
-      return;
-    }
+    if (message.type !== 'watchparty-ext' || message.action !== 'status-updated') return;
+    const nextRoom = message.payload?.room || null;
+    if (!nextRoom) return;
+    finish(() => onRoom(nextRoom, message.payload?.userId || null));
   }
 
-  chrome.storage.onChanged.addListener(listener);
+  chrome.runtime.onMessage.addListener(listener);
   return () => {
     if (resolved) return;
     resolved = true;
     clearTimeout(timeoutId);
-    chrome.storage.onChanged.removeListener(listener);
+    chrome.runtime.onMessage.removeListener(listener);
   };
 }
 
@@ -453,34 +426,6 @@ chrome.runtime.sendMessage(
 );
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
-  if (areaName === 'session') {
-    if (changes[WPConstants.STORAGE.USER_ID]) {
-      currentUserId = changes[WPConstants.STORAGE.USER_ID].newValue || null;
-    }
-    if (changes[WPConstants.STORAGE.ROOM_STATE]) {
-      const nextRoom = changes[WPConstants.STORAGE.ROOM_STATE].newValue || null;
-      if (nextRoom) {
-        if (suppressedRoomId && nextRoom.id === suppressedRoomId) return;
-        suppressedRoomId = null;
-        showRoomView(nextRoom, currentUserId);
-      } else {
-        showLobbyView();
-      }
-    }
-    if (changes[WPConstants.STORAGE.WS_CONNECTED]) {
-      currentWsConnected = !!changes[WPConstants.STORAGE.WS_CONNECTED].newValue;
-    }
-    if (changes[WPConstants.STORAGE.ACTIVE_BACKEND]) {
-      currentActiveBackend = getKnownBackendKey(changes[WPConstants.STORAGE.ACTIVE_BACKEND].newValue);
-    }
-    if (changes[WPConstants.STORAGE.ACTIVE_BACKEND_URL]) {
-      currentActiveBackendUrl = changes[WPConstants.STORAGE.ACTIVE_BACKEND_URL].newValue || null;
-    }
-    renderBackendControls();
-    setWsStatus(currentWsConnected);
-    return;
-  }
-
   if (areaName === 'local') {
     if (changes[WPConstants.STORAGE.SESSION_ID]) {
       currentSessionId = changes[WPConstants.STORAGE.SESSION_ID].newValue || null;
@@ -491,6 +436,14 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
       setWsStatus(currentWsConnected);
     }
   }
+});
+
+chrome.runtime.onMessage.addListener((message) => {
+  if (message.type !== 'watchparty-ext') return false;
+  if (message.action === 'status-updated') {
+    applyCoordinatorUpdate(message.payload);
+  }
+  return false;
 });
 
 document.querySelectorAll('#backend-toggle .backend-btn').forEach((btn) => {
@@ -625,7 +578,7 @@ $('btn-create').addEventListener('click', () => {
       stopWaiting,
       setCreateError,
     )) return;
-    if (response?.staged === true) {
+    if (response?.staged === true && response?.needsStremio === true) {
       stopWaiting();
       $('btn-create').textContent = 'Opening Stremio...';
       openStremioTab();
@@ -668,7 +621,7 @@ $('btn-join').addEventListener('click', () => {
       stopWaiting,
       setJoinError,
     )) return;
-    if (response?.staged === true) {
+    if (response?.staged === true && response?.needsStremio === true) {
       stopWaiting();
       $('btn-join').textContent = 'Opening Stremio...';
       openStremioTab();

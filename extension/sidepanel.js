@@ -18,10 +18,6 @@
   };
   let typingIdleTimer = null;
   let typingSent = false;
-  const SESSION_RUNTIME_KEYS = new Set([
-    ...WPConstants.STORAGE_CONTRACT.SESSION_RUNTIME,
-    ...WPConstants.STORAGE_CONTRACT.BOOTSTRAP_SESSION,
-  ]);
 
   function normalizeHexColor(value, fallback = '#6366f1') {
     const trimmed = typeof value === 'string' ? value.trim() : '';
@@ -71,34 +67,8 @@
     });
   }
 
-  function normalizeStorageKeyList(keys) {
-    return Array.isArray(keys) ? keys.filter(Boolean) : [keys].filter(Boolean);
-  }
-
   function getExtensionState(keys, callback) {
-    const keyList = normalizeStorageKeyList(keys);
-    if (keyList.length === 0) {
-      callback?.({});
-      return Promise.resolve({});
-    }
-    const sessionKeys = keyList.filter((key) => SESSION_RUNTIME_KEYS.has(key));
-    const localKeys = keyList.filter((key) => !SESSION_RUNTIME_KEYS.has(key));
-    const work = Promise.all([
-      sessionKeys.length > 0 ? chrome.storage.session.get(sessionKeys).catch(() => ({})) : Promise.resolve({}),
-      localKeys.length > 0 ? chrome.storage.local.get(localKeys).catch(() => ({})) : Promise.resolve({}),
-      sessionKeys.length > 0 ? chrome.storage.local.get(sessionKeys).catch(() => ({})) : Promise.resolve({}),
-    ]).then(([sessionValues, localValues, fallbackValues]) => {
-      const migratedValues = {};
-      for (const key of sessionKeys) {
-        if (sessionValues[key] !== undefined || fallbackValues[key] === undefined) continue;
-        migratedValues[key] = fallbackValues[key];
-      }
-      if (Object.keys(migratedValues).length > 0) {
-        chrome.storage.session.set(migratedValues).catch(() => {});
-        chrome.storage.local.remove(Object.keys(migratedValues)).catch(() => {});
-      }
-      return { ...localValues, ...fallbackValues, ...sessionValues };
-    });
+    const work = WPRuntimeState.get(keys);
     if (typeof callback === 'function') work.then(callback);
     return work;
   }
@@ -552,26 +522,36 @@
     updateTypingIndicator();
   }
 
-  function pollState() {
-    getExtensionState(
-      [
-        WPConstants.STORAGE.ROOM_STATE,
-        WPConstants.STORAGE.USER_ID,
-        WPConstants.STORAGE.SESSION_ID,
-        WPConstants.STORAGE.WS_CONNECTED,
-      ],
-      (result) => {
-        currentUserId = result[WPConstants.STORAGE.USER_ID] || null;
-        currentSessionId = result[WPConstants.STORAGE.SESSION_ID] || null;
-        currentRoomState = result[WPConstants.STORAGE.ROOM_STATE] || null;
-        currentWsConnected = result[WPConstants.STORAGE.WS_CONNECTED] === true;
-        render(currentRoomState);
+  function applyCoordinatorUpdate(payload) {
+    if (!payload || typeof payload !== 'object') return;
+    if ('userId' in payload) currentUserId = payload.userId || null;
+    if ('sessionId' in payload) currentSessionId = payload.sessionId || null;
+    if ('room' in payload) currentRoomState = payload.room || null;
+    if ('wsConnected' in payload) currentWsConnected = payload.wsConnected === true;
+    render(currentRoomState);
+  }
+
+  function loadCoordinatorState() {
+    chrome.runtime.sendMessage(
+      { type: 'watchparty-ext', action: 'get-status' },
+      (response) => {
+        if (!response) return;
+        applyCoordinatorUpdate({
+          room: response.room || null,
+          userId: response.userId || null,
+          sessionId: response.sessionId || null,
+          wsConnected: response.wsConnected === true,
+        });
       }
     );
   }
 
   chrome.runtime.onMessage.addListener((message) => {
-    if (message.type !== 'watchparty-ext') return;
+    if (message.type !== 'watchparty-ext') return false;
+
+    if (message.action === 'status-updated') {
+      applyCoordinatorUpdate(message.payload);
+    }
 
     if (message.action === 'chat-message' && message.payload) {
       const msg = message.payload;
@@ -589,6 +569,8 @@
     if (message.action === 'typing' && message.payload) {
       handleTypingUpdate(message.payload.user, message.payload.typing, message.payload.userName);
     }
+
+    return false;
   });
 
   chrome.storage.onChanged.addListener((changes, areaName) => {
@@ -600,25 +582,9 @@
       localPreferences.compactChat = !!changes[WPConstants.STORAGE.COMPACT_CHAT].newValue;
       applyLocalPreferences();
     }
-    if (areaName === 'session') {
-      if (changes[WPConstants.STORAGE.USER_ID]) currentUserId = changes[WPConstants.STORAGE.USER_ID].newValue || null;
-      if (changes[WPConstants.STORAGE.ROOM_STATE]) currentRoomState = changes[WPConstants.STORAGE.ROOM_STATE].newValue || null;
-      if (changes[WPConstants.STORAGE.WS_CONNECTED]) currentWsConnected = changes[WPConstants.STORAGE.WS_CONNECTED].newValue === true;
-      if (
-        changes[WPConstants.STORAGE.ROOM_STATE] ||
-        changes[WPConstants.STORAGE.USER_ID] ||
-        changes[WPConstants.STORAGE.WS_CONNECTED]
-      ) {
-        render(currentRoomState);
-      }
-    }
-    if (areaName === 'local' && changes[WPConstants.STORAGE.SESSION_ID]) {
-      currentSessionId = changes[WPConstants.STORAGE.SESSION_ID].newValue || null;
-      if (currentRoomState) render(currentRoomState);
-    }
   });
 
   bindStaticActions();
   bindChat();
-  loadLocalPreferences(pollState);
+  loadLocalPreferences(loadCoordinatorState);
 })();
