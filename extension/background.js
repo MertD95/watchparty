@@ -14,9 +14,9 @@ const STREMIO_BASE = 'http://localhost:11470';
 const STREMIO_API = 'https://api.strem.io';
 const POLL_INTERVAL_MS = 5000;
 const STREMIO_WEB_URLS = ['https://web.stremio.com/*', 'https://web.strem.io/*', 'https://app.strem.io/*'];
-const WATCHPARTY_URLS = ['https://watchparty.mertd.me/*', 'http://localhost:8080/*', 'http://localhost:8090/*'];
+const WATCHPARTY_URLS = ['https://watchparty.mertd.me/*', 'http://localhost:8080/*', 'http://localhost:8090/*', 'http://127.0.0.1:8080/*', 'http://127.0.0.1:8090/*'];
 const STREMIO_WEB_ORIGINS = new Set(['https://web.stremio.com', 'https://web.strem.io', 'https://app.strem.io']);
-const WATCHPARTY_ORIGINS = new Set(['https://watchparty.mertd.me', 'http://localhost:8080', 'http://localhost:8090']);
+const WATCHPARTY_ORIGINS = new Set(['https://watchparty.mertd.me', 'http://localhost:8080', 'http://localhost:8090', 'http://127.0.0.1:8080', 'http://127.0.0.1:8090']);
 
 // --- State ---
 let stremioRunning = false;

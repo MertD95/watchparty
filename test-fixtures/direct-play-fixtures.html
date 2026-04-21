@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WatchParty DirectPlay Fixtures</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 24px; background: #0f172a; color: #e2e8f0; }
+    h1 { margin-bottom: 8px; }
+    p { color: #94a3b8; }
+    table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+    th, td { border: 1px solid #334155; padding: 10px; text-align: left; vertical-align: top; }
+    th { background: #1e293b; }
+    code, pre { font-family: ui-monospace, monospace; }
+    .ok { color: #4ade80; }
+    .warn { color: #fbbf24; }
+  </style>
+</head>
+<body>
+  <h1>WatchParty DirectPlay Fixtures</h1>
+  <p>Loads the real browser-side DirectPlay classifier from the extension and exposes deterministic fixture cases for local Playwright/MCP verification.</p>
+  <table>
+    <thead>
+      <tr>
+        <th>Case</th>
+        <th>Classification</th>
+        <th>Join hint</th>
+        <th>Direct URL</th>
+      </tr>
+    </thead>
+    <tbody id="results"></tbody>
+  </table>
+
+  <script src="/__extension/wp-room-domain.js"></script>
+  <script src="/__extension/wp-direct-play-domain.js"></script>
+  <script src="/__extension/direct-play.js"></script>
+  <script src="/__fixtures/direct-play-cases.js"></script>
+  <script>
+    (() => {
+      const cases = window.WPDirectPlayFixtureCases || {};
+      const results = {};
+
+      function render() {
+        const tbody = document.getElementById('results');
+        tbody.replaceChildren();
+        for (const [key, value] of Object.entries(results)) {
+          const row = document.createElement('tr');
+          row.innerHTML = `
+            <td><strong>${key}</strong><div>${value.label}</div></td>
+            <td><pre>${JSON.stringify(value.classification, null, 2)}</pre></td>
+            <td><pre>${JSON.stringify(value.joinHint, null, 2)}</pre></td>
+            <td><code>${value.directJoinUrl || ''}</code></td>
+          `;
+          tbody.appendChild(row);
+        }
+      }
+
+      window.fixtureApi = {
+        evaluateCase(name) {
+          const fixture = cases[name];
+          if (!fixture) return null;
+          const classification = WPDirectPlay.classifyStream(fixture.stream);
+          const joinHint = WPDirectPlay.buildJoinHint(fixture.stream);
+          const directJoinUrl = WPDirectPlay.getDirectJoinUrl(fixture.stream);
+          const result = {
+            label: fixture.label,
+            stream: fixture.stream,
+            classification,
+            joinHint,
+            directJoinUrl,
+          };
+          results[name] = result;
+          render();
+          return result;
+        },
+        evaluateAll() {
+          const all = {};
+          for (const name of Object.keys(cases)) {
+            all[name] = this.evaluateCase(name);
+          }
+          return all;
+        },
+        getResults() {
+          return structuredClone(results);
+        },
+      };
+
+      window.fixtureApi.evaluateAll();
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WatchParty Media Sync Fixture</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 24px; background: #020617; color: #e2e8f0; }
+    h1 { margin-bottom: 8px; }
+    p { color: #94a3b8; }
+    video { width: 480px; max-width: 100%; background: black; border-radius: 12px; display: block; margin: 20px 0; }
+    .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+    .card { border: 1px solid #334155; border-radius: 12px; padding: 12px; background: #0f172a; }
+    code, pre { font-family: ui-monospace, monospace; }
+    button { margin-right: 8px; margin-bottom: 8px; }
+  </style>
+</head>
+<body>
+  <h1>WatchParty Media Sync Fixture</h1>
+  <p>Creates a deterministic local video clip in-browser, attaches the real <code>WPSync</code> engine, and exposes a browser-level API for Playwright/MCP timing verification.</p>
+
+  <video id="fixture-video" controls muted playsinline></video>
+
+  <div>
+    <button id="btn-play" type="button">Play</button>
+    <button id="btn-pause" type="button">Pause</button>
+    <button id="btn-seek" type="button">Seek 1.5s</button>
+    <button id="btn-speed" type="button">Speed 1.25x</button>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <strong>State</strong>
+      <pre id="state"></pre>
+    </div>
+    <div class="card">
+      <strong>Reports</strong>
+      <pre id="reports"></pre>
+    </div>
+  </div>
+
+  <script src="/__extension/stremio-sync.js"></script>
+  <script>
+    (() => {
+      const video = document.getElementById('fixture-video');
+      const stateEl = document.getElementById('state');
+      const reportsEl = document.getElementById('reports');
+      const reports = [];
+      let readyResolve = null;
+      let readyPromise = new Promise((resolve) => { readyResolve = resolve; });
+
+      function render() {
+        stateEl.textContent = JSON.stringify(window.fixtureApi.getState(), null, 2);
+        reportsEl.textContent = JSON.stringify(reports.slice(-12), null, 2);
+      }
+
+      async function buildFixtureVideo() {
+        const canvas = document.createElement('canvas');
+        canvas.width = 640;
+        canvas.height = 360;
+        const context = canvas.getContext('2d');
+        const stream = canvas.captureStream(30);
+        const recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp8' });
+        const chunks = [];
+        recorder.ondataavailable = (event) => {
+          if (event.data && event.data.size > 0) chunks.push(event.data);
+        };
+
+        recorder.start();
+        const start = performance.now();
+        while (performance.now() - start < 2200) {
+          const elapsed = (performance.now() - start) / 1000;
+          context.fillStyle = '#020617';
+          context.fillRect(0, 0, canvas.width, canvas.height);
+          context.fillStyle = '#38bdf8';
+          context.font = 'bold 48px monospace';
+          context.fillText(`t=${elapsed.toFixed(2)}s`, 120, 180);
+          await new Promise((resolve) => setTimeout(resolve, 33));
+        }
+        await new Promise((resolve) => {
+          recorder.onstop = resolve;
+          recorder.stop();
+        });
+        const blob = new Blob(chunks, { type: 'video/webm' });
+        const url = URL.createObjectURL(blob);
+        video.src = url;
+        video.loop = true;
+        await video.play().catch(() => {});
+        await video.pause();
+      }
+
+      async function init() {
+        await buildFixtureVideo();
+        WPSync.attach(video, {
+          isHost: false,
+          onSync(state) {
+            reports.push({ at: Date.now(), state });
+            render();
+          },
+        });
+        render();
+        readyResolve();
+      }
+
+      window.fixtureApi = {
+        ready() {
+          return readyPromise;
+        },
+        getState() {
+          return {
+            paused: video.paused,
+            time: Number(video.currentTime.toFixed(3)),
+            playbackRate: video.playbackRate,
+            readyState: video.readyState,
+            lastDrift: WPSync.getLastDrift(),
+          };
+        },
+        getReports() {
+          return structuredClone(reports);
+        },
+        clearReports() {
+          reports.length = 0;
+          render();
+        },
+        async play() { await video.play(); render(); return this.getState(); },
+        async pause() { await video.pause(); render(); return this.getState(); },
+        async seek(time) { video.currentTime = Math.max(0, Number(time) || 0); render(); return this.getState(); },
+        async setSpeed(speed) { video.playbackRate = Number(speed) || 1; render(); return this.getState(); },
+        applyRemote(player) { WPSync.applyRemote(player); render(); return this.getState(); },
+        setClockOffset(offset) { WPSync.setClockOffset(Number(offset) || 0); render(); return this.getState(); },
+      };
+
+      document.getElementById('btn-play').addEventListener('click', () => { void window.fixtureApi.play(); });
+      document.getElementById('btn-pause').addEventListener('click', () => { void window.fixtureApi.pause(); });
+      document.getElementById('btn-seek').addEventListener('click', () => { void window.fixtureApi.seek(1.5); });
+      document.getElementById('btn-speed').addEventListener('click', () => { void window.fixtureApi.setSpeed(1.25); });
+
+      void init();
+    })();
+  </script>
+</body>
+</html>
