@@ -1079,6 +1079,7 @@
     const ROOMS_API = IS_DEV ? 'http://localhost:8181/rooms' : 'https://ws.mertd.me/rooms';
     const CHROME_WEB_STORE_URL = 'https://chromewebstore.google.com/detail/watchparty-for-stremio';
     const WEBSITE_USERNAME_KEY = 'watchparty.website.username';
+    let extStatusRequestSeq = 0;
 
     // --- Routing ---
     const path = location.pathname;
@@ -1364,7 +1365,6 @@
       }, location.origin);
     }
 
-    let extStatusRequestSeq = 0;
     function requestExtensionStatus(timeoutMs = 1200) {
       if (!document.documentElement.hasAttribute('data-watchparty-ext')) {
         return Promise.resolve(null);
