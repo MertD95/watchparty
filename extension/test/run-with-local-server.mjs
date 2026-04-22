@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import { spawn } from 'node:child_process';
 import net from 'node:net';
 import path from 'node:path';
@@ -7,7 +8,15 @@ import { delay, pollUntil } from './assertions.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const WATCHPARTY_ROOT = path.resolve(__dirname, '..', '..');
-const SERVER_ROOT = path.resolve(WATCHPARTY_ROOT, '..', 'watchparty-server');
+const SERVER_ROOT = [
+  process.env.WATCHPARTY_SERVER_ROOT,
+  path.resolve(WATCHPARTY_ROOT, '..', 'watchparty-server'),
+  path.resolve(WATCHPARTY_ROOT, 'watchparty-server'),
+]
+  .filter(Boolean)
+  .map(candidate => path.resolve(candidate))
+  .find(candidate => fs.existsSync(path.join(candidate, 'src', 'index.ts')))
+  || path.resolve(WATCHPARTY_ROOT, '..', 'watchparty-server');
 const LOCAL_SERVER_PORT = Number(process.env.WATCHPARTY_TEST_SERVER_PORT || 8181);
 const LOCAL_READY_URL = `http://localhost:${LOCAL_SERVER_PORT}/ready`;
 const LOCAL_HEALTH_URL = `http://localhost:${LOCAL_SERVER_PORT}/health`;
@@ -84,6 +93,12 @@ function createLineReader(stream, onLine) {
 }
 
 async function startManagedServer() {
+  if (!fs.existsSync(path.join(SERVER_ROOT, 'src', 'index.ts'))) {
+    throw new Error(
+      `Could not locate watchparty-server for managed tests. Checked: ${SERVER_ROOT}. `
+      + 'Set WATCHPARTY_SERVER_ROOT to the backend repo path if needed.'
+    );
+  }
   const stdoutLines = [];
   const stderrLines = [];
   const child = spawn(process.execPath, ['src/index.ts'], {

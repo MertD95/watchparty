@@ -51,3 +51,4 @@ npm run gen:icons
 - `extension/wp-protocol.js` is generated from `../watchparty-server/tools/gen-protocol.js`
 - The extension and landing page both depend on `watchparty-server` for live room flows
 - The website can auto-deploy through Cloudflare Pages Git integration, but the browser extension is not published to the Chrome Web Store by a normal push
+- Deployment and external-service hardening notes live in `SECURITY.md`

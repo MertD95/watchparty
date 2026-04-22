@@ -4,57 +4,93 @@ on:
   push:
     branches: ['**']
     tags-ignore: ['**']
+  pull_request:
+    branches: ['**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '24'
+  SERVER_REPO: MertD95/watchparty-server
+  SERVER_CHECKOUT_PATH: watchparty-server
 
 jobs:
-  check:
+  fast:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
-          node-version: 24
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
 
-      - run: npm install
-      - run: npm audit --audit-level=high
+      - name: Install dependencies
+        run: npm ci
 
-      # Syntax-check all extension JS files (no build step — plain JS)
-      - name: Syntax check extension
-        run: |
-          for f in extension/*.js; do
-            echo "Checking $f..."
-            node -e "new Function(require('fs').readFileSync('$f','utf8'))" || exit 1
-          done
-          echo "All files OK"
+      - name: Run maintained fast suite
+        run: npm run test:fast
 
-      # Routing + protocol completeness test (no server needed)
-      - name: Routing test
-        run: npm run test:routing
+  runtime:
+    needs: fast
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
 
-      # E2E tests require the WS server — run them if server repo token is available
-      - name: Checkout server
-        if: ${{ env.SERVER_TOKEN != '' }}
-        uses: actions/checkout@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
-          repository: MertD95/watchparty-server
-          token: ${{ env.SERVER_TOKEN }}
-          path: watchparty-server
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install extension repo dependencies
+        run: npm ci
+
+      - name: Checkout backend repo
         env:
           SERVER_TOKEN: ${{ secrets.SERVER_REPO_TOKEN }}
-
-      - name: Verify wp-protocol.js is up-to-date
-        if: ${{ env.SERVER_TOKEN != '' }}
-        run: node watchparty-server/tools/gen-protocol.js --check
-        env:
-          SERVER_TOKEN: ${{ secrets.SERVER_REPO_TOKEN }}
-
-      - name: Start server & run E2E tests
-        if: ${{ env.SERVER_TOKEN != '' }}
+          SERVER_REPO_REF: ${{ vars.SERVER_REPO_REF }}
         run: |
-          cd watchparty-server && npm install && node src/index.ts &
-          for i in $(seq 1 10); do curl -s http://localhost:8181/rooms && break; sleep 1; done
-          cd "$GITHUB_WORKSPACE" && npm install && npm test
+          set -euo pipefail
+          REMOTE="https://github.com/${SERVER_REPO}.git"
+          if [ -n "${SERVER_TOKEN:-}" ]; then
+            REMOTE="https://x-access-token:${SERVER_TOKEN}@github.com/${SERVER_REPO}.git"
+          fi
+          if [ -n "${SERVER_REPO_REF:-}" ]; then
+            git clone --depth 1 --branch "${SERVER_REPO_REF}" "${REMOTE}" "${SERVER_CHECKOUT_PATH}"
+          else
+            git clone --depth 1 "${REMOTE}" "${SERVER_CHECKOUT_PATH}"
+          fi
+
+      - name: Install backend repo dependencies
+        run: npm ci
+        working-directory: ${{ env.SERVER_CHECKOUT_PATH }}
+
+      - name: Verify generated protocol is current
+        run: |
+          node tools/gen-protocol.js --check
+          node tools/gen-room-domain.js --check
+          node tools/gen-direct-play-domain.js --check
+        working-directory: ${{ env.SERVER_CHECKOUT_PATH }}
         env:
-          SERVER_TOKEN: ${{ secrets.SERVER_REPO_TOKEN }}
-          NODE_ENV: test
-          LOG_LEVEL: warn
+          WATCHPARTY_EXTENSION_ROOT: ${{ github.workspace }}/extension
+
+      - name: Install Playwright browser runtime
+        run: npx playwright install --with-deps chromium
+
+      - name: Run maintained integration suite
+        run: npm run test:integration
+        env:
+          WATCHPARTY_SERVER_ROOT: ${{ github.workspace }}/${{ env.SERVER_CHECKOUT_PATH }}
+
+      - name: Run maintained browser suite
+        run: npm run test:browser
+        env:
+          WATCHPARTY_SERVER_ROOT: ${{ github.workspace }}/${{ env.SERVER_CHECKOUT_PATH }}
