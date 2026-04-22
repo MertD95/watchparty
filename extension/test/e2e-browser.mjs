@@ -882,7 +882,7 @@ async function testCreateRoomFlow() {
         && !!document.querySelector('[data-panel="room"]')
         && !!document.querySelector('[data-panel="prefs"]')
       );
-      assert(panelsReady, 'Sidebar exposes Chat, People, Room, and Prefs tabs');
+      assert(panelsReady, 'Sidebar exposes Chat, People, Room, and Settings tabs');
 
       await openSidebarPanel(stremio, 'people');
       const peopleText = await stremio.evaluate(() => document.getElementById('wp-users')?.innerText || '');
@@ -950,7 +950,7 @@ async function testCreateRoomFlow() {
       const prefsReady = await stremio.evaluate(() => ({
         soundToggle: !!document.getElementById('wp-settings-sound'),
       }));
-      assert(prefsReady.soundToggle, 'Prefs tab shows browser-level personal preferences');
+      assert(prefsReady.soundToggle, 'Settings tab shows browser-level personal preferences');
 
       // Test leave room
       await popup.bringToFront();
@@ -1085,7 +1085,7 @@ async function testPopupReloadReadsWrappedLocalRoomKeyFallback() {
     const rebuiltInviteHandle = await popup.waitForFunction(
       async (expected) => {
         const value = await buildInviteUrlWithKey(expected.roomId);
-        return value.endsWith(`#key=${expected.roomKey}`) ? value : null;
+        return (typeof value === 'string' && value.endsWith(`#key=${expected.roomKey}`)) ? value : null;
       },
       roomState,
       { timeout: TIMEOUT }
@@ -1583,7 +1583,7 @@ async function testHostVsPeerSettings() {
       row.click();
       return before !== after;
     });
-    assert(prefsToggleInteractive, 'Prefs toggle rows react to clicks');
+    assert(prefsToggleInteractive, 'Settings toggle rows react to clicks');
     const prefsToggleRow = await env.stremio1.$('label[for="wp-settings-sound"]');
     const prefsToggleBefore = await env.stremio1.evaluate(() => document.getElementById('wp-settings-sound')?.checked ?? false);
     await prefsToggleRow?.click();
@@ -1593,7 +1593,7 @@ async function testHostVsPeerSettings() {
     ), prefsToggleRow);
     await prefsToggleRow?.click();
     await waitForCheckboxToggle(env.stremio1, 'wp-settings-sound', !prefsToggleBefore);
-    assert(prefsToggleStable, 'Prefs toggle rows stay mounted while preferences update');
+    assert(prefsToggleStable, 'Settings toggle rows stay mounted while preferences update');
 
     await openSidebarPanel(env.stremio2, 'room');
     const bobSettings = await env.stremio2.evaluate(() => ({

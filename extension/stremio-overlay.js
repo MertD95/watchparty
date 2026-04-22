@@ -515,8 +515,8 @@ const WPOverlay = (() => {
       return;
     }
     detail.textContent = roomStateForHint?.public === false
-      ? 'Private-room messages stay encrypted. Say hi, share a GIF, or switch to Room for playback controls.'
-      : 'Say hi, share a GIF, or switch to Room for playback controls.';
+      ? 'Private-room messages stay encrypted. Send a message or GIF.'
+      : 'Send a message or GIF.';
     empty.classList.remove('wp-hidden-el');
   }
 
@@ -832,7 +832,7 @@ const WPOverlay = (() => {
             <span>Room</span>
           </button>
           <button class="wp-tab-btn" data-panel="prefs" role="tab" aria-selected="false">
-            <span>Prefs</span>
+            <span>Settings</span>
           </button>
         </div>
         <div id="wp-body">
@@ -849,11 +849,11 @@ const WPOverlay = (() => {
               <div id="wp-chat-input-row">
                 <button id="wp-emoji-btn" title="Insert emoji" aria-label="Insert emoji">&#x1F600;</button>
                 <button id="wp-gif-btn" title="Send GIF" aria-label="Send GIF">GIF</button>
-                <input id="wp-chat-input" type="text" placeholder="Type a message..." maxlength="300" autocomplete="off" aria-label="Chat message" />
+                <input id="wp-chat-input" type="text" placeholder="Message" maxlength="300" autocomplete="off" aria-label="Chat message" />
                 <button id="wp-chat-send">Send</button>
               </div>
               <div id="wp-gif-picker" class="wp-hidden-el">
-                <input id="wp-gif-search" type="text" placeholder="Search GIFs..." autocomplete="off" />
+                <input id="wp-gif-search" type="text" placeholder="Search GIFs" autocomplete="off" />
                 <div id="wp-gif-results"></div>
               </div>
               <div id="wp-emoji-picker" class="wp-hidden-el"></div>
@@ -1356,18 +1356,18 @@ const WPOverlay = (() => {
   function renderLocalSettingsCard(container) {
     if (!container.dataset.shellReady || !container.querySelector('#wp-settings-username')) {
       container.innerHTML = `
-        <div class="wp-card-title">Preferences</div>
-        <div class="wp-card-copy">These settings only affect this browser. Room controls stay shared with the host.</div>
+        <div class="wp-card-title">Settings</div>
+        <div class="wp-card-copy">Only for this browser.</div>
         <div class="wp-settings-subtitle">Display name</div>
         <div class="wp-name-row">
           <input id="wp-settings-username" class="wp-name-input" type="text" maxlength="25" placeholder="Display name" />
           <button class="wp-name-save" id="wp-settings-save-name" type="button">Save</button>
         </div>
-        <div class="wp-settings-subtitle">Sidebar behaviour</div>
+        <div class="wp-settings-subtitle">Sidebar</div>
         <div class="wp-setting-list">
-          ${buildToggleRow('wp-settings-compact', 'Compact chat', 'Show denser spacing in the WatchParty sidebar.', false)}
-          ${buildToggleRow('wp-settings-sound', 'Reaction sounds', 'Play short audio cues when reactions land.', false)}
-          ${buildToggleRow('wp-settings-floating', 'Floating reactions', 'Show emoji bursts over the video when reactions arrive.', false)}
+          ${buildToggleRow('wp-settings-compact', 'Compact chat', 'Denser chat spacing.', false)}
+          ${buildToggleRow('wp-settings-sound', 'Reaction sounds', 'Play a short sound for reactions.', false)}
+          ${buildToggleRow('wp-settings-floating', 'Floating reactions', 'Show reactions over the video.', false)}
         </div>
         <div class="wp-settings-subtitle">Accent color</div>
         <div class="wp-color-row">${buildAccentSwatchButtons()}</div>

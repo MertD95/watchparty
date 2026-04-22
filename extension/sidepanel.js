@@ -333,16 +333,16 @@
     const peopleCount = document.getElementById('people-count');
     const chatMessages = document.getElementById('chat-messages');
 
-    setHeroCopy('Create or join on WatchParty, then use this panel for quick room context while Stremio keeps the main session UI.');
+    setHeroCopy('Create or join on WatchParty, then use this panel for quick room context.');
     updateRoomCodeChip(null);
     status.innerHTML = `
       <div class="empty-state">
         <div class="eyebrow">No Active Room</div>
         <h2 class="status-title">Create or join from WatchParty first.</h2>
-        <p>The Chrome side panel now acts as a lightweight companion. Use it for quick chat, people, and bookmarks after the room is already live.</p>
+        <p>Use this panel after the room is live.</p>
         <div class="action-row">
           <button id="sp-open-watchparty-empty" class="action-btn primary" type="button">Open WatchParty</button>
-          <button id="sp-open-settings-empty" class="action-btn" type="button">Extension Settings</button>
+          <button id="sp-open-settings-empty" class="action-btn" type="button">Settings</button>
         </div>
       </div>
     `;
@@ -418,21 +418,21 @@
     const isHost = amIHost();
     const detailUrl = getDetailUrl(roomState);
     const directStreamUrl = getDirectStreamUrl(roomState);
-    const roleLabel = isHost ? 'You are the host' : 'Synced to host';
+    const roleLabel = isHost ? 'Host' : 'Synced';
     const privacyLabel = roomState.public === false ? 'Invite key required' : 'Open join';
     const wsLabel = currentWsConnected ? 'Connected' : 'Background reconnecting';
     const sessionCopy = roomState.public === false
-      ? `${roomState.listed === false ? 'This private room is hidden from WatchParty.' : 'This private room is listed on WatchParty.'} Use this panel for quick chat and room context while Stremio stays focused.`
-      : `${roomState.listed === false ? 'This open-join room is hidden from WatchParty.' : 'This open-join room is listed on WatchParty.'} Use the Stremio sidebar for the full live session controls.`;
+      ? `${roomState.listed === false ? 'Private room hidden from WatchParty.' : 'Private room listed on WatchParty.'}`
+      : `${roomState.listed === false ? 'Open-join room hidden from WatchParty.' : 'Open-join room listed on WatchParty.'}`;
 
     setHeroCopy(isHost
-      ? 'Use the Stremio sidebar for full host controls. Keep this panel nearby for quick chat, bookmarks, and invite copy.'
-      : 'Stay synced from Stremio while this panel keeps quick room context, people, and chat close at hand.');
+      ? 'Use the Stremio sidebar for host controls.'
+      : 'Stay synced with quick room context here.');
     updateRoomCodeChip(roomState);
 
     const linkHtml = [];
     if (detailUrl) {
-      linkHtml.push(`<a class="session-link" href="${detailUrl}" target="_blank" rel="noreferrer">Open "${escapeHtml(roomTitle)}" in Stremio</a>`);
+      linkHtml.push(`<a class="session-link" href="${detailUrl}" target="_blank" rel="noreferrer">Open title</a>`);
     }
     if (directStreamUrl) {
       linkHtml.push(`<a class="session-link" href="${directStreamUrl}" target="_blank" rel="noreferrer">Open host stream</a>`);
@@ -440,7 +440,7 @@
 
     status.innerHTML = `
       <div class="status-copy">
-        <div class="eyebrow">Room Companion</div>
+        <div class="eyebrow">Room</div>
         <h2 class="status-title">${escapeHtml(roomTitle)}</h2>
         <div class="pill-row">
           <span class="pill ${isHost ? 'success' : ''}">${escapeHtml(roleLabel)}</span>
