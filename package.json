@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "node dev-reload.mjs",
     "gen:actions": "node tools/gen-action-contract.mjs",
+    "gen:icons": "node tools/generate-icons.mjs",
     "test": "npm run test:fast",
     "test:fast": "npm run syntax && npm run test:routing && npm run test:landing && npm run test:sync-engine && npm run test:crypto",
     "test:integration": "npm run test:sidepanel",

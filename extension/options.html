@@ -64,6 +64,21 @@
       gap: 14px;
     }
 
+    .brand-lockup {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 4px;
+    }
+
+    .brand-icon {
+      width: 44px;
+      height: 44px;
+      border-radius: 14px;
+      box-shadow: 0 12px 28px rgba(99, 102, 241, 0.22);
+      flex: none;
+    }
+
     .kicker {
       font-size: 11px;
       text-transform: uppercase;
@@ -268,6 +283,29 @@
       font-size: 13px;
     }
 
+    .control-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr);
+      gap: 16px;
+    }
+
+    .control-block {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      padding: 16px;
+      border-radius: 18px;
+      border: 1px solid rgba(148, 163, 184, 0.12);
+      background: rgba(15, 23, 42, 0.4);
+      min-width: 0;
+    }
+
+    .control-title {
+      color: #f8fafc;
+      font-size: 16px;
+      font-weight: 700;
+    }
+
     .section-wide {
       grid-column: 1 / -1;
     }
@@ -386,6 +424,39 @@
       line-height: 1.5;
     }
 
+    .diag-advanced {
+      border-radius: 18px;
+      border: 1px solid rgba(148, 163, 184, 0.12);
+      background: rgba(15, 23, 42, 0.4);
+      padding: 14px 16px;
+    }
+
+    .diag-advanced > summary {
+      list-style: none;
+      cursor: pointer;
+      color: #f8fafc;
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .diag-advanced > summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .diag-advanced-copy {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .diag-advanced-body {
+      margin-top: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
     .mono {
       font-family: Consolas, Monaco, monospace;
       font-size: 12px;
@@ -412,6 +483,10 @@
       .section-head {
         flex-direction: column;
       }
+
+      .control-grid {
+        grid-template-columns: 1fr;
+      }
     }
   </style>
 </head>
@@ -419,7 +494,10 @@
   <div class="shell">
     <section class="card hero">
       <div class="hero-copy">
-        <div class="kicker">Extension Settings</div>
+        <div class="brand-lockup">
+          <img class="brand-icon" src="icons/icon48.png" alt="WatchParty" />
+          <div class="kicker">Extension Settings</div>
+        </div>
         <h1>WatchParty runs the room flow in the background now.</h1>
         <p>Room discovery and creation start on WatchParty. Live controls stay inside the WatchParty sidebar in Stremio. Use "Go to Room in Stremio" to focus the active room there. This page is only for extension-level connection and diagnostic settings.</p>
         <div class="actions">
@@ -444,17 +522,35 @@
     </section>
 
     <div class="grid">
-      <section class="card section">
-        <div class="kicker">Connection</div>
-        <h2>Backend Mode</h2>
-        <p class="card-copy">Use Auto for normal usage. Local and Live stay available here for development, debugging, and recovery.</p>
-        <div class="backend-toggle" id="backend-toggle">
-          <button class="backend-btn" id="backend-auto" data-mode="auto" type="button">Auto</button>
-          <button class="backend-btn" id="backend-local" data-mode="local" type="button">Local</button>
-          <button class="backend-btn" id="backend-live" data-mode="live" type="button">Live</button>
+      <section class="card section section-wide">
+        <div class="kicker">Connection & Recovery</div>
+        <h2>Runtime Controls</h2>
+        <p class="card-copy">Keep backend selection, local recovery actions, and diagnostics close together so this page stays compact while still exposing the full extension runtime state.</p>
+        <div class="control-grid">
+          <div class="control-block">
+            <div class="control-title">Backend Mode</div>
+            <p class="card-copy">Use Auto for normal usage. Local and Live remain available for development, debugging, and recovery.</p>
+            <div class="backend-toggle" id="backend-toggle">
+              <button class="backend-btn" id="backend-auto" data-mode="auto" type="button">Auto</button>
+              <button class="backend-btn" id="backend-local" data-mode="local" type="button">Local</button>
+              <button class="backend-btn" id="backend-live" data-mode="live" type="button">Live</button>
+            </div>
+            <p class="backend-feedback" id="backend-feedback" aria-live="polite"></p>
+            <p class="card-copy" id="backend-note">Loading backend details...</p>
+          </div>
+          <div class="control-block">
+            <div class="control-title">Local Recovery</div>
+            <p class="card-copy">These actions only reset browser-side WatchParty state. They do not delete rooms on the server, but they can clear stuck handoffs, cached invite keys, and stale runtime state after development or interrupted sessions.</p>
+            <div class="actions">
+              <button class="btn-secondary" id="btn-clear-bootstrap" type="button">Clear Staged Handoff</button>
+              <button class="btn-secondary" id="btn-clear-room-keys" type="button">Clear Room Keys</button>
+              <button class="btn-secondary" id="btn-reset-runtime" type="button">Reset WatchParty State</button>
+              <button class="btn-secondary" id="btn-copy-diagnostics" type="button">Copy Diagnostics</button>
+            </div>
+            <p class="backend-feedback" id="recovery-feedback" aria-live="polite"></p>
+            <p class="card-copy">Reset WatchParty State keeps backend mode and sidebar appearance preferences, but clears session identity, staged room handoffs, cached room snapshots, saved auth, and invite-key caches.</p>
+          </div>
         </div>
-        <p class="backend-feedback" id="backend-feedback" aria-live="polite"></p>
-        <p class="card-copy" id="backend-note">Loading backend details...</p>
       </section>
 
       <section class="card section section-wide">
@@ -481,12 +577,12 @@
             <div class="diag-stat-meta" id="diag-backend-mode">-</div>
           </div>
           <div class="diag-stat">
-            <div class="diag-stat-label">Resume Target</div>
+            <div class="diag-stat-label">Active Room</div>
             <div class="diag-stat-value" id="diag-room-target">-</div>
             <div class="diag-stat-meta" id="diag-room-service">-</div>
           </div>
           <div class="diag-stat">
-            <div class="diag-stat-label">Invariant Summary</div>
+            <div class="diag-stat-label">Health</div>
             <div class="diag-stat-value" id="diag-issue-summary">-</div>
             <div class="diag-stat-meta" id="diag-server-generated">-</div>
           </div>
@@ -510,67 +606,74 @@
           </div>
 
           <div class="diag-group">
-            <div class="diag-group-title">Runtime Model</div>
+            <div class="diag-group-title">Current Session</div>
             <div class="diag-row">
-              <div class="diag-row-label">Coordinator Mode</div>
+              <div class="diag-row-label">Resume Target</div>
               <div class="diag-row-value" id="diag-coordinator-mode">-</div>
             </div>
             <div class="diag-row">
-              <div class="diag-row-label">Controller Phase</div>
-              <div class="diag-row-value" id="diag-controller-phase">-</div>
-            </div>
-            <div class="diag-row">
-              <div class="diag-row-label">Adapter Route</div>
-              <div class="diag-row-value" id="diag-adapter-route">-</div>
-            </div>
-            <div class="diag-row">
-              <div class="diag-row-label">Adapter Availability</div>
-              <div class="diag-row-value" id="diag-adapter-availability">-</div>
-            </div>
-            <div class="diag-row">
-              <div class="diag-row-label">Room Snapshot</div>
+              <div class="diag-row-label">Room State</div>
               <div class="diag-row-value" id="diag-room-state">-</div>
+            </div>
+            <div class="diag-row">
+              <div class="diag-row-label">Content Handoff</div>
+              <div class="diag-row-value" id="diag-adapter-availability">-</div>
             </div>
             <div class="diag-note" id="diag-room-error">-</div>
           </div>
-
-          <div class="diag-group">
-            <div class="diag-group-title">Extension Invariants</div>
-            <div class="diag-row">
-              <div class="diag-row-label">Summary</div>
-              <div class="diag-row-value" id="diag-ext-issues">-</div>
-            </div>
-            <ul class="diag-list" id="diag-ext-issue-list">
-              <li class="diag-list-empty">No extension invariant issues.</li>
-            </ul>
-          </div>
-
-          <div class="diag-group">
-            <div class="diag-group-title">Backend Invariants</div>
-            <div class="diag-row">
-              <div class="diag-row-label">Summary</div>
-              <div class="diag-row-value" id="diag-server-issues">-</div>
-            </div>
-            <ul class="diag-list" id="diag-server-issue-list">
-              <li class="diag-list-empty">No backend invariant issues.</li>
-            </ul>
-          </div>
         </div>
+
+        <details class="diag-advanced">
+          <summary>Advanced diagnostics</summary>
+          <div class="diag-advanced-copy">Internal controller, adapter, and invariant detail for debugging direct-join, recovery, or runtime consistency problems. Most users should only need the health summary above.</div>
+          <div class="diag-advanced-body">
+            <div class="diag-detail-grid">
+              <div class="diag-group">
+                <div class="diag-group-title">Runtime Internals</div>
+                <div class="diag-row">
+                  <div class="diag-row-label">Coordinator Mode</div>
+                  <div class="diag-row-value" id="diag-advanced-coordinator-mode">-</div>
+                </div>
+                <div class="diag-row">
+                  <div class="diag-row-label">Controller Phase</div>
+                  <div class="diag-row-value" id="diag-controller-phase">-</div>
+                </div>
+                <div class="diag-row">
+                  <div class="diag-row-label">Adapter Route</div>
+                  <div class="diag-row-value" id="diag-adapter-route">-</div>
+                </div>
+                <div class="diag-row">
+                  <div class="diag-row-label">Raw Adapter Availability</div>
+                  <div class="diag-row-value" id="diag-advanced-adapter-availability">-</div>
+                </div>
+              </div>
+
+              <div class="diag-group">
+                <div class="diag-group-title">Extension Invariants</div>
+                <div class="diag-row">
+                  <div class="diag-row-label">Summary</div>
+                  <div class="diag-row-value" id="diag-ext-issues">-</div>
+                </div>
+                <ul class="diag-list" id="diag-ext-issue-list">
+                  <li class="diag-list-empty">No extension invariant issues.</li>
+                </ul>
+              </div>
+
+              <div class="diag-group">
+                <div class="diag-group-title">Backend Invariants</div>
+                <div class="diag-row">
+                  <div class="diag-row-label">Summary</div>
+                  <div class="diag-row-value" id="diag-server-issues">-</div>
+                </div>
+                <ul class="diag-list" id="diag-server-issue-list">
+                  <li class="diag-list-empty">No backend invariant issues.</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </details>
       </section>
 
-      <section class="card section">
-        <div class="kicker">Recovery</div>
-        <h2>Repair Local Extension State</h2>
-        <p class="card-copy">These actions only reset browser-side WatchParty state. They do not delete rooms on the server, but they can clear stuck handoffs, cached invite keys, and stale room/runtime state after development or interrupted sessions.</p>
-        <div class="actions">
-          <button class="btn-secondary" id="btn-clear-bootstrap" type="button">Clear Staged Handoff</button>
-          <button class="btn-secondary" id="btn-clear-room-keys" type="button">Clear Room Keys</button>
-          <button class="btn-secondary" id="btn-reset-runtime" type="button">Reset WatchParty State</button>
-          <button class="btn-secondary" id="btn-copy-diagnostics" type="button">Copy Diagnostics</button>
-        </div>
-        <p class="backend-feedback" id="recovery-feedback" aria-live="polite"></p>
-        <p class="card-copy">Reset WatchParty State keeps backend mode and sidebar appearance preferences, but clears session identity, staged room handoffs, cached room snapshots, saved auth, and invite-key caches.</p>
-      </section>
     </div>
   </div>
 

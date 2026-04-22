@@ -86,6 +86,20 @@
 
     .logo-wrap {
       display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .logo-mark {
+      width: 38px;
+      height: 38px;
+      border-radius: 12px;
+      box-shadow: 0 12px 28px rgba(99, 102, 241, 0.22);
+      flex: none;
+    }
+
+    .logo-copy {
+      display: flex;
       flex-direction: column;
       gap: 2px;
     }
@@ -144,9 +158,10 @@
     .hero-copy {
       display: flex;
       flex-direction: column;
-      justify-content: center;
+      justify-content: flex-start;
       gap: 18px;
       min-width: 0;
+      padding-top: 8px;
     }
 
     .hero-kicker {
@@ -258,7 +273,7 @@
     }
 
     .hero-list li::before {
-      content: "•";
+      content: "â€¢";
       color: var(--accent-hover);
       font-size: 16px;
       line-height: 1;
@@ -290,6 +305,43 @@
 
     .hero-guide-list strong {
       color: #f8fafc;
+    }
+
+    .hero-feature-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .hero-feature {
+      padding: 14px 16px;
+      border-radius: 18px;
+      border: 1px solid rgba(148, 163, 184, 0.12);
+      background: rgba(15, 23, 42, 0.46);
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .hero-feature-label {
+      color: #c7d2fe;
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      font-weight: 700;
+    }
+
+    .hero-feature-value {
+      color: #f8fafc;
+      font-size: 14px;
+      font-weight: 700;
+      line-height: 1.4;
+    }
+
+    .hero-feature-copy {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
     }
 
     .hero-summary {
@@ -906,6 +958,10 @@
         width: 100%;
       }
 
+      .hero-feature-grid {
+        grid-template-columns: 1fr;
+      }
+
       .room-card {
         grid-template-columns: 56px minmax(0, 1fr);
         grid-template-areas:
@@ -943,8 +999,11 @@
     <div class="page-shell">
       <div class="header surface">
         <div class="logo-wrap">
-          <div class="logo">Watch<span>Party</span></div>
-          <div class="logo-subtitle">Watch together on Stremio with live room discovery and synced playback.</div>
+          <img class="logo-mark" src="/favicon.svg" alt="WatchParty" />
+          <div class="logo-copy">
+            <div class="logo">Watch<span>Party</span></div>
+            <div class="logo-subtitle">Watch together on Stremio with live room discovery and synced playback.</div>
+          </div>
         </div>
         <nav class="nav">
           <a href="#rooms">Active Rooms</a>
@@ -962,6 +1021,23 @@
             <button class="btn btn-primary" id="hero-primary-btn" type="button">Install Extension</button>
             <a href="https://web.stremio.com" class="btn btn-secondary" id="hero-stremio-btn" target="_blank">Open Stremio Web</a>
             <button class="btn btn-secondary" id="hero-private-btn" type="button">Paste Invite Link</button>
+          </div>
+          <div class="hero-feature-grid">
+            <div class="hero-feature">
+              <div class="hero-feature-label">Local Playback</div>
+              <div class="hero-feature-value">Everyone streams on their own machine</div>
+              <div class="hero-feature-copy">WatchParty only coordinates timing, room state, and chat.</div>
+            </div>
+            <div class="hero-feature">
+              <div class="hero-feature-label">Join Access</div>
+              <div class="hero-feature-value">Open join or invite-key rooms</div>
+              <div class="hero-feature-copy">Hosts can choose who can enter without changing whether the room is listed.</div>
+            </div>
+            <div class="hero-feature">
+              <div class="hero-feature-label">Live Controls</div>
+              <div class="hero-feature-value">Playback, chat, reactions, and room controls stay in Stremio</div>
+              <div class="hero-feature-copy">Use WatchParty for discovery, room entry, and fast recovery.</div>
+            </div>
           </div>
         </div>
 
@@ -1250,7 +1326,7 @@
         roomPill.className = 'hero-status-pill is-ready';
         roomPill.textContent = room.public === false ? 'Invite key room active' : 'Open-join room active';
         roomTitle.textContent = room.name || room.meta?.name || 'Active room';
-        roomMeta.textContent = `${room.public === false ? 'Invite key required' : 'Open join'} � ${room.listed === false ? 'Hidden from WatchParty' : 'Listed on WatchParty'} � ${pluralize(room.users?.length || 0, 'person')} in the room`;
+        roomMeta.textContent = `${room.public === false ? 'Invite key required' : 'Open join'} • ${room.listed === false ? 'Hidden from WatchParty' : 'Listed on WatchParty'} • ${pluralize(room.users?.length || 0, 'person')} in the room`;
       } else {
         roomCard?.classList.add('hidden');
         if (roomPill) roomPill.classList.add('hidden');
@@ -1651,7 +1727,7 @@
         const data = await res.json();
         applyRoomsSnapshot(data);
       } catch {
-        // Server unavailable — show empty state
+        // Server unavailable â€” show empty state
       }
     }
 
@@ -1709,7 +1785,7 @@
           scheduleRoomsStreamReconnect();
         };
       } catch {
-        // EventSource not available — fall back to polling
+        // EventSource not available â€” fall back to polling
         startPollingFallback();
         scheduleRoomsStreamReconnect(3000);
       }
@@ -1955,7 +2031,7 @@
 
       // Check if extension is installed
       const extCheck = setTimeout(() => {
-        // Extension didn't respond — show warning
+        // Extension didn't respond â€” show warning
         document.getElementById('no-ext-warning').style.display = 'block';
         document.getElementById('redirect-status').textContent = 'Extension not detected.';
         document.getElementById('redirect-btn').style.display = 'inline-flex';
@@ -1994,7 +2070,7 @@
       d.textContent = str;
       return d.innerHTML;
     }
-    // escapeAttr removed — room cards now use DOM API (buildRoomCard), no innerHTML
+    // escapeAttr removed â€” room cards now use DOM API (buildRoomCard), no innerHTML
   </script>
 </body>
 </html>

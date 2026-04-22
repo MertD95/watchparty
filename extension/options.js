@@ -188,6 +188,31 @@ function formatDiagnosticTimestamp(value) {
   return `Server snapshot ${date.toLocaleString()}`;
 }
 
+function describeHealth(extensionIssues, serverIssues) {
+  const total = extensionIssues + serverIssues;
+  if (total === 0) return 'Healthy';
+  if (extensionIssues > 0 && serverIssues > 0) return 'Needs attention';
+  return total === 1 ? '1 warning' : `${total} warnings`;
+}
+
+function describeContentHandoff(status) {
+  const room = status?.room || null;
+  const availability = status?.adapterState?.availability || '';
+  if (!room) return 'No active room';
+  switch (availability) {
+    case WPConstants.ADAPTER_AVAILABILITY.DIRECT_JOIN_READY:
+      return 'Direct Join ready';
+    case WPConstants.ADAPTER_AVAILABILITY.MANUAL_JOIN_ONLY:
+      return 'Manual stream selection required';
+    case WPConstants.ADAPTER_AVAILABILITY.DETAIL_ONLY:
+      return 'Title known, waiting for player';
+    case WPConstants.ADAPTER_AVAILABILITY.PLAYER_PENDING:
+      return 'Player detected, still resolving';
+    default:
+      return 'No Stremio content context yet';
+  }
+}
+
 function renderStatus(status) {
   lastStatus = status || null;
   lastServerDiagnostics = status?.serverDiagnostics || null;
@@ -200,10 +225,13 @@ function renderStatus(status) {
   const adapterAvailability = status?.adapterState?.availability || '-';
   const extensionIssues = Array.isArray(status?.invariants) ? status.invariants.length : 0;
   const serverIssues = status?.serverDiagnostics?.summary?.issues ?? 0;
+  const room = status?.room || null;
   const roomUserCount = Array.isArray(status?.room?.users) ? status.room.users.length : 0;
   const roomTarget = status?.room
     ? getRoomDisplayName(status)
     : (status?.bootstrapPending ? 'Staged handoff' : (status?.currentRoomId ? `Resume ${status.currentRoomId.slice(0, 8)}` : 'No active room'));
+  const health = describeHealth(extensionIssues, serverIssues);
+  const contentHandoff = describeContentHandoff(status);
 
   setText('diag-extension', `v${extensionVersion}`);
   setText('diag-bg-version', `Runtime build v${status?.bgVersion || extensionVersion}`);
@@ -219,12 +247,19 @@ function renderStatus(status) {
       ? 'Bootstrap handoff pending'
       : `${coordinatorMode}${status?.currentRoomId && !status?.room ? ` | ${status.currentRoomId.slice(0, 8)}` : ''}`
   );
-  setText('diag-issue-summary', extensionIssues + serverIssues === 0 ? 'No issues' : `${extensionIssues + serverIssues} issue${extensionIssues + serverIssues === 1 ? '' : 's'}`);
-  setText('diag-server-generated', formatDiagnosticTimestamp(status?.serverDiagnostics?.generatedAt));
-  setText('diag-coordinator-mode', coordinatorMode);
+  setText('diag-issue-summary', health);
+  setText(
+    'diag-server-generated',
+    extensionIssues + serverIssues === 0
+      ? 'No runtime consistency issues detected'
+      : `${extensionIssues} extension / ${serverIssues} backend issue${extensionIssues + serverIssues === 1 ? '' : 's'}`
+  );
+  setText('diag-coordinator-mode', roomTarget);
+  setText('diag-advanced-coordinator-mode', coordinatorMode);
   setText('diag-controller-phase', controllerPhase);
   setText('diag-adapter-route', adapterRoute);
-  setText('diag-adapter-availability', adapterAvailability);
+  setText('diag-adapter-availability', contentHandoff);
+  setText('diag-advanced-adapter-availability', adapterAvailability);
   setText(
     'diag-room-state',
     status?.room
@@ -233,7 +268,9 @@ function renderStatus(status) {
   );
   setText(
     'diag-room-error',
-    `${status?.stremioRunning ? 'Stremio ready' : 'Waiting for Stremio'} | ${controllerPhase} controller | ${adapterRoute} route | ${adapterAvailability}`
+    room
+      ? `${status?.stremioRunning ? 'Stremio ready' : 'Waiting for Stremio'} | ${contentHandoff}`
+      : `${status?.stremioRunning ? 'Stremio ready' : 'Waiting for Stremio'} | Open or focus the room in Stremio to resume live controls`
   );
   setText(
     'diag-ext-issues',
