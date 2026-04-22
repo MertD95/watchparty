@@ -9,6 +9,8 @@ const ALLOWED_ORIGINS = new Set([
   'https://watchparty.mertd.me',
   'http://localhost:8080',
   'http://localhost:8090',
+  'http://127.0.0.1:8080',
+  'http://127.0.0.1:8090',
 ]);
 
 function sendRuntimeMessage(message) {
@@ -122,6 +124,7 @@ window.addEventListener('message', (event) => {
       meta: event.data.meta || { id: 'pending', type: 'movie', name: 'WatchParty Session' },
       stream: event.data.stream || { url: 'https://watchparty.mertd.me/sync' },
       public: event.data.public || false,
+      listed: event.data.listed !== false,
       roomName: event.data.roomName,
     });
   }

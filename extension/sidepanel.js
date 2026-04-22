@@ -419,11 +419,11 @@
     const detailUrl = getDetailUrl(roomState);
     const directStreamUrl = getDirectStreamUrl(roomState);
     const roleLabel = isHost ? 'You are the host' : 'Synced to host';
-    const privacyLabel = roomState.public === false ? 'Private room' : 'Public room';
+    const privacyLabel = roomState.public === false ? 'Invite key required' : 'Open join';
     const wsLabel = currentWsConnected ? 'Connected' : 'Background reconnecting';
-    const sessionCopy = roomState.public
-      ? 'This room is listed on WatchParty. Use the Stremio sidebar for the full live session controls.'
-      : 'This room stays invite-only. Use this panel for quick chat and room context while Stremio stays focused.';
+    const sessionCopy = roomState.public === false
+      ? `${roomState.listed === false ? 'This private room is hidden from WatchParty.' : 'This private room is listed on WatchParty.'} Use this panel for quick chat and room context while Stremio stays focused.`
+      : `${roomState.listed === false ? 'This open-join room is hidden from WatchParty.' : 'This open-join room is listed on WatchParty.'} Use the Stremio sidebar for the full live session controls.`;
 
     setHeroCopy(isHost
       ? 'Use the Stremio sidebar for full host controls. Keep this panel nearby for quick chat, bookmarks, and invite copy.'

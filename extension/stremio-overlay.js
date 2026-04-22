@@ -343,7 +343,11 @@ const WPOverlay = (() => {
       button.textContent = 'Updating...';
     }
 
-    dispatchAction(WPConstants.ACTION.ROOM_VISIBILITY_UPDATE, { public: false, roomKey: nextKey });
+    dispatchAction(WPConstants.ACTION.ROOM_VISIBILITY_UPDATE, {
+      public: false,
+      listed: roomState?.listed !== false,
+      roomKey: nextKey,
+    });
     showToast('Invite key updated for future room links.', 2200);
 
     setTimeout(() => {
@@ -1230,8 +1234,8 @@ const WPOverlay = (() => {
 
   function renderRoomControls(container, roomState, isHost) {
     const sessionSummary = roomState.public
-      ? 'Listed publicly on WatchParty.'
-      : 'Invite link required. Private-room messages stay encrypted.';
+      ? `${roomState.listed === false ? 'Hidden from WatchParty.' : 'Listed on WatchParty.'} Anyone who finds the room can join.`
+      : `${roomState.listed === false ? 'Hidden from WatchParty.' : 'Listed on WatchParty.'} Invite key required. Private-room messages stay encrypted.`;
     const autoPause = roomState.settings?.autoPauseOnDisconnect === true;
     const isPrivateRoom = roomState.public === false;
     const shellKey = isHost ? 'host' : 'guest';
@@ -1242,11 +1246,12 @@ const WPOverlay = (() => {
         ${isHost ? `
           <div class="wp-settings-subtitle">Shared with everyone</div>
           <div class="wp-setting-list">
-            ${buildToggleRow('wp-session-public', 'Listed publicly', 'Let people discover this room from WatchParty before they have the invite link.', false)}
+            ${buildToggleRow('wp-session-private', 'Require invite key', 'Only people with the invite key or full invite link can join this room.', false)}
+            ${buildToggleRow('wp-session-listed', 'Show on WatchParty', 'Display this room on the WatchParty website so people can discover it there.', true)}
             ${buildToggleRow('wp-session-autopause', 'Pause if someone drops', 'Pause playback if someone disconnects unexpectedly.', false)}
           </div>
         ` : `
-          <div class="wp-settings-note">Only the host can change privacy and playback safeguards. You can still copy the invite link and leave from here.</div>
+          <div class="wp-settings-note">Only the host can change join access, WatchParty listing, and playback safeguards. You can still copy the invite link and leave from here.</div>
         `}
         <div id="wp-room-key-section" class="wp-hidden-el">
           <div class="wp-settings-subtitle">Invite key</div>
@@ -1270,9 +1275,14 @@ const WPOverlay = (() => {
       summary.textContent = sessionSummary;
     }
 
-    const publicToggle = container.querySelector('#wp-session-public');
-    if (publicToggle && publicToggle.checked !== !!roomState.public) {
-      publicToggle.checked = !!roomState.public;
+    const privateToggle = container.querySelector('#wp-session-private');
+    if (privateToggle && privateToggle.checked !== (roomState.public === false)) {
+      privateToggle.checked = roomState.public === false;
+    }
+
+    const listedToggle = container.querySelector('#wp-session-listed');
+    if (listedToggle && listedToggle.checked !== (roomState.listed !== false)) {
+      listedToggle.checked = roomState.listed !== false;
     }
 
     const autoPauseToggle = container.querySelector('#wp-session-autopause');
@@ -1290,9 +1300,20 @@ const WPOverlay = (() => {
     container.querySelector('#wp-leave-room-btn').onclick = () => {
       dispatchAction(WPConstants.ACTION.ROOM_LEAVE);
     };
-    if (publicToggle) {
-      publicToggle.onchange = (event) => {
-        dispatchAction(WPConstants.ACTION.ROOM_VISIBILITY_UPDATE, { public: !!event.target.checked });
+    if (privateToggle) {
+      privateToggle.onchange = (event) => {
+        dispatchAction(WPConstants.ACTION.ROOM_VISIBILITY_UPDATE, {
+          public: !event.target.checked,
+          listed: listedToggle ? listedToggle.checked : (roomState.listed !== false),
+        });
+      };
+    }
+    if (listedToggle) {
+      listedToggle.onchange = (event) => {
+        dispatchAction(WPConstants.ACTION.ROOM_VISIBILITY_UPDATE, {
+          public: roomState.public !== false,
+          listed: !!event.target.checked,
+        });
       };
     }
     if (autoPauseToggle) {

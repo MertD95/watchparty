@@ -185,6 +185,7 @@ const WPConstants = (() => {
         meta: command.meta || null,
         stream: command.stream || null,
         public: command.public === true,
+        listed: command.listed !== false,
         roomName: typeof command.roomName === 'string' && command.roomName.trim() ? command.roomName.trim() : undefined,
         roomKey: typeof command.roomKey === 'string' && command.roomKey.trim() ? command.roomKey.trim() : undefined,
         requestedAt: normalizeRequestedAt(command.requestedAt),

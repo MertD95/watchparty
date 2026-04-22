@@ -801,7 +801,7 @@ async function testCreateRoomFlow() {
         hasBrowse: !!document.getElementById('browse-rooms-link'),
       }));
       assert(
-        /Private|Invite required/i.test(popupSummary.privacy),
+        /Invite.*required/i.test(popupSummary.privacy),
         `Popup summary shows private room badge: "${popupSummary.privacy}"`
       );
       assert(popupSummary.role.includes('Host'), `Popup summary shows host badge: "${popupSummary.role}"`);
@@ -837,10 +837,12 @@ async function testCreateRoomFlow() {
       assert(peopleText.includes('TestHost'), 'People tab shows TestHost');
       await openSidebarPanel(stremio, 'room');
       const sessionControlsReady = await stremio.evaluate(() => ({
-        publicToggle: !!document.getElementById('wp-session-public'),
+        privateToggle: !!document.getElementById('wp-session-private'),
+        listedToggle: !!document.getElementById('wp-session-listed'),
         autoPauseToggle: !!document.getElementById('wp-session-autopause'),
       }));
-      assert(sessionControlsReady.publicToggle, 'Room tab shows host privacy control');
+      assert(sessionControlsReady.privateToggle, 'Room tab shows host access control');
+      assert(sessionControlsReady.listedToggle, 'Room tab shows host listing control');
       assert(sessionControlsReady.autoPauseToggle, 'Room tab shows auto-pause safeguard');
       await stremio.click('#wp-room-code');
       await assertPass('Room code chip copies the invite link successfully', () => stremio.waitForFunction(
@@ -1163,7 +1165,7 @@ async function testJoinRoomWithoutStremioTabAttachesLater() {
           `Popup join summary shows the peer role: "${popupSummary.role}"`
         );
         assert(popupSummary.count.includes('2 watching'), `Popup join summary shows both room members: "${popupSummary.count}"`);
-        assert(popupSummary.privacy.includes('Public'), `Popup join summary shows room visibility: "${popupSummary.privacy}"`);
+        assert(popupSummary.privacy.includes('Open join'), `Popup join summary shows room visibility: "${popupSummary.privacy}"`);
       }
       await reopenedPopup.close().catch(() => {});
       await openSidebarPanel(stremio2, 'people');
@@ -1224,7 +1226,7 @@ async function testPopupFirstRoomControlsWithoutStremioTab() {
       }));
       assert(popupSummary.roomId.length > 10, `Popup fallback summary shows room ID: ${popupSummary.roomId.substring(0, 8)}...`);
       assert(
-        /Private|Invite required/i.test(popupSummary.privacy),
+        /Invite.*required/i.test(popupSummary.privacy),
         `Popup fallback summary shows private badge: "${popupSummary.privacy}"`
       );
       assert(popupSummary.role.includes('Host'), `Popup fallback summary shows host badge: "${popupSummary.role}"`);
@@ -1480,20 +1482,28 @@ async function testHostVsPeerSettings() {
   try {
     await openSidebarPanel(env.stremio1, 'room');
     const aliceSettings = await env.stremio1.evaluate(() => ({
-      publicVisible: !!document.getElementById('wp-session-public'),
+      privateVisible: !!document.getElementById('wp-session-private'),
+      listedVisible: !!document.getElementById('wp-session-listed'),
       autopauseVisible: !!document.getElementById('wp-session-autopause'),
     }));
-    assert(aliceSettings.publicVisible, 'Host sees Public toggle');
+    assert(aliceSettings.privateVisible, 'Host sees invite-key toggle');
+    assert(aliceSettings.listedVisible, 'Host sees WatchParty listing toggle');
     assert(aliceSettings.autopauseVisible, 'Host sees Auto-pause toggle');
     const roomToggleInteractive = await env.stremio1.evaluate(() => {
-      const row = document.querySelector('label[for="wp-session-public"]');
-      const input = document.getElementById('wp-session-public');
-      if (!row || !input) return false;
-      const before = input.checked;
-      row.click();
-      const after = input.checked;
-      row.click();
-      return before !== after;
+      const privateRow = document.querySelector('label[for="wp-session-private"]');
+      const privateInput = document.getElementById('wp-session-private');
+      const listedRow = document.querySelector('label[for="wp-session-listed"]');
+      const listedInput = document.getElementById('wp-session-listed');
+      if (!privateRow || !privateInput || !listedRow || !listedInput) return false;
+      const before = privateInput.checked;
+      const listedBefore = listedInput.checked;
+      privateRow.click();
+      const after = privateInput.checked;
+      listedRow.click();
+      const listedAfter = listedInput.checked;
+      privateRow.click();
+      listedRow.click();
+      return before !== after && listedBefore !== listedAfter;
     });
     assert(roomToggleInteractive, 'Room toggle rows react to clicks');
     const roomToggleRow = await env.stremio1.$('label[for="wp-session-autopause"]');
@@ -1535,10 +1545,12 @@ async function testHostVsPeerSettings() {
 
     await openSidebarPanel(env.stremio2, 'room');
     const bobSettings = await env.stremio2.evaluate(() => ({
-      publicVisible: !!document.getElementById('wp-session-public'),
+      privateVisible: !!document.getElementById('wp-session-private'),
+      listedVisible: !!document.getElementById('wp-session-listed'),
       autopauseVisible: !!document.getElementById('wp-session-autopause'),
     }));
-    assert(!bobSettings.publicVisible, 'Peer cannot see Public toggle');
+    assert(!bobSettings.privateVisible, 'Peer cannot see invite-key toggle');
+    assert(!bobSettings.listedVisible, 'Peer cannot see WatchParty listing toggle');
     assert(!bobSettings.autopauseVisible, 'Peer cannot see Auto-pause toggle');
     await openSidebarPanel(env.stremio2, 'prefs');
     const bobPrefs = await env.stremio2.evaluate(() => ({

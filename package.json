@@ -1,6 +1,7 @@
 {
   "name": "watchparty",
   "private": true,
+  "version": "1.0.0",
   "scripts": {
     "dev": "node dev-reload.mjs",
     "gen:actions": "node tools/gen-action-contract.mjs",

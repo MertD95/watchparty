@@ -3,9 +3,10 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>WatchParty â€” Watch Together on Stremio</title>
+  <title>WatchParty - Watch Together on Stremio</title>
   <meta name="description" content="Synchronized watching with friends on Stremio Web. Free, open-source browser extension.">
-  <link rel="icon" href="/favicon.ico">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="alternate icon" href="/favicon.svg">
   <style>
     :root {
       --bg: #09111f;
@@ -262,6 +263,33 @@
       font-size: 16px;
       line-height: 1;
       margin-top: 2px;
+    }
+
+    .hero-guide-card {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      border-radius: 18px;
+      padding: 16px 18px;
+      background: rgba(148, 163, 184, 0.08);
+      border: 1px solid rgba(148, 163, 184, 0.12);
+    }
+
+    .hero-guide-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .hero-guide-list li {
+      color: #dbe3f0;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .hero-guide-list strong {
+      color: #f8fafc;
     }
 
     .hero-summary {
@@ -958,19 +986,20 @@
               </div>
             </div>
           </div>
-          <div>
-            <h3>Start in under a minute</h3>
-            <p>Create or join from WatchParty, then continue in Stremio where the sidebar handles the live session.</p>
-          </div>
-          <ul class="hero-list">
-            <li>Each person plays the content locally, so WatchParty only syncs timing and room activity.</li>
-            <li>Private rooms stay off the public room list and still require the invite key to join.</li>
-            <li>Direct Join can open the host stream when the shared Stremio route is portable.</li>
-          </ul>
-          <div class="hero-summary">
-            <div class="hero-summary-kicker">Live right now</div>
-            <div class="hero-summary-text" id="hero-live-summary">0 people across 0 rooms, 0 titles identified.</div>
-            <div class="hero-summary-note">Only rooms with a real Stremio title count here. Empty lobbies and WatchParty Session placeholders do not.</div>
+          <div class="hero-guide-card">
+            <div class="hero-summary-kicker">Session Flow</div>
+            <h3>Start here, finish in Stremio</h3>
+            <p>Create, join, or resume from WatchParty. Once the room is active, the Stremio sidebar handles playback, chat, reactions, and room controls.</p>
+            <ul class="hero-guide-list">
+              <li><strong>Join access:</strong> Public rooms allow open join. Private rooms require the invite key.</li>
+              <li><strong>Listing:</strong> Showing a room on WatchParty is separate from join access, so hosts can show or hide the room without changing who can enter.</li>
+              <li><strong>Direct Join:</strong> When the host route is portable, WatchParty can open the same stream directly in Stremio.</li>
+            </ul>
+            <div class="hero-summary">
+              <div class="hero-summary-kicker">Live right now</div>
+              <div class="hero-summary-text" id="hero-live-summary">0 people across 0 rooms, 0 titles identified.</div>
+              <div class="hero-summary-note">Only rooms with a real Stremio title count here. Empty lobbies and WatchParty Session placeholders do not.</div>
+            </div>
           </div>
         </div>
       </div>
@@ -1012,7 +1041,7 @@
           <div class="section-heading-copy">
             <div class="section-kicker">Live Discovery</div>
             <h2>Active Rooms</h2>
-            <p class="rooms-subtitle">Public rooms join instantly. Private rooms require an invite or room key and stay off the public list.</p>
+            <p class="rooms-subtitle">Open-join and invite-key rooms can both appear here. Hosts control listing separately from join access.</p>
           </div>
           <button class="btn btn-secondary" id="rooms-private-btn" type="button">Join via Invite</button>
         </div>
@@ -1060,10 +1089,17 @@
       <input type="text" id="create-room-name" class="modal-text-input" placeholder="Room name (optional)" maxlength="30" />
       <label class="modal-toggle" for="create-room-public">
         <span class="modal-toggle-copy">
-          <span class="modal-toggle-title">List this room publicly</span>
-          <span class="modal-toggle-desc">Public rooms appear on WatchParty. Private rooms still use invite links with a room key.</span>
+          <span class="modal-toggle-title">Allow open join</span>
+          <span class="modal-toggle-desc">Turn this on if anyone who finds the room should be able to join without an invite key.</span>
         </span>
         <input type="checkbox" id="create-room-public" />
+      </label>
+      <label class="modal-toggle" for="create-room-listed">
+        <span class="modal-toggle-copy">
+          <span class="modal-toggle-title">Show on WatchParty</span>
+          <span class="modal-toggle-desc">Keep this on to list the room on the WatchParty website. Turn it off to hide the room while still sharing the link directly.</span>
+        </span>
+        <input type="checkbox" id="create-room-listed" checked />
       </label>
       <div class="modal-helper">You can still change privacy and playback safeguards later from the WatchParty sidebar in Stremio.</div>
       <div class="modal-actions">
@@ -1212,9 +1248,9 @@
         roomCard.classList.remove('hidden');
         roomPill.classList.remove('hidden');
         roomPill.className = 'hero-status-pill is-ready';
-        roomPill.textContent = room.public === false ? 'Private room active' : 'Public room active';
+        roomPill.textContent = room.public === false ? 'Invite key room active' : 'Open-join room active';
         roomTitle.textContent = room.name || room.meta?.name || 'Active room';
-        roomMeta.textContent = `${room.public === false ? 'Invite required' : 'Listed publicly'} â€¢ ${pluralize(room.users?.length || 0, 'person')} in the room`;
+        roomMeta.textContent = `${room.public === false ? 'Invite key required' : 'Open join'} • ${room.listed === false ? 'Hidden from WatchParty' : 'Listed on WatchParty'} • ${pluralize(room.users?.length || 0, 'person')} in the room`;
       } else {
         roomCard?.classList.add('hidden');
         if (roomPill) roomPill.classList.add('hidden');
@@ -1532,6 +1568,7 @@
       const statusIcon = room.paused ? '\u23F8' : '\u25B6';
       const statusColor = room.paused ? '#f59e0b' : '#22c55e';
       const isPublic = room.public;
+      const isListed = room.listed !== false;
       const directJoinType = getDirectJoinType(room);
       const isReconnectListing = room.listingState === 'reconnecting';
       const graceMinutes = Math.max(1, Math.ceil((room.graceRemainingMs || 0) / 60000));
@@ -1539,13 +1576,13 @@
       syncRoomPoster(posterSlot, room);
       card.classList.toggle('room-card-reconnecting', isReconnectListing);
       title.textContent = room.name || room.meta?.name || 'Untitled';
-      metaLine1.innerHTML = `Hosted by ${escapeHtml(room.owner)}${room.meta?.year ? ` &middot; ${room.meta.year}` : ''}${isPublic ? '' : ' &middot; Invite required'}`;
+      metaLine1.innerHTML = `Hosted by ${escapeHtml(room.owner)}${room.meta?.year ? ` &middot; ${room.meta.year}` : ''}${isPublic ? ' &middot; Open join' : ' &middot; Invite key required'}${isListed ? '' : ' &middot; Hidden from WatchParty'}`;
       metaLine2.innerHTML = `<span style="color:${statusColor}">${statusIcon}</span> ${mins}:${secs}${room.bookmarks ? ` &middot; \uD83D\uDCCC ${room.bookmarks}` : ''}`;
       badge.className = isPublic ? 'room-badge room-badge-public' : 'room-badge room-badge-private';
-      badge.textContent = isPublic ? 'Public' : 'Private';
+      badge.textContent = isPublic ? 'Open join' : 'Invite key';
       users.classList.toggle('room-users-reconnecting', isReconnectListing);
       users.textContent = isReconnectListing ? 'Reconnecting...' : `${room.users} watching`;
-      joinBtn.title = isPublic ? '' : 'Private room - invite or room key required to join.';
+      joinBtn.title = isPublic ? '' : 'Invite key required to join this room.';
       users.title = isReconnectListing
         ? `The host connection dropped. Keeping this room visible for about ${graceMinutes} minute${graceMinutes === 1 ? '' : 's'} while WatchParty reconnects.`
         : '';
@@ -1565,7 +1602,7 @@
       if (revision !== null) lastRoomsRevision = revision;
       lastRoomsUpdateAt = Date.now();
 
-      const rooms = Array.isArray(data?.rooms) ? data.rooms.filter((room) => room?.public !== false) : [];
+      const rooms = Array.isArray(data?.rooms) ? data.rooms : [];
       updateLandingStats({
         ...data,
         rooms,
@@ -1768,6 +1805,7 @@
       document.getElementById('create-error').style.display = 'none';
       document.getElementById('create-room-name').value = '';
       document.getElementById('create-room-public').checked = false;
+      document.getElementById('create-room-listed').checked = true;
       document.getElementById('create-modal').style.display = 'flex';
       document.getElementById('create-room-name').focus();
     }
@@ -1798,6 +1836,7 @@
         username,
         roomName,
         public: document.getElementById('create-room-public').checked,
+        listed: document.getElementById('create-room-listed').checked,
       }, location.origin);
       closeCreateModal();
       scheduleLandingPresenceRefresh();

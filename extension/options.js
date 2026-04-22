@@ -159,41 +159,97 @@ function renderSession(status) {
 
   const userCount = Array.isArray(room.users) ? room.users.length : 0;
   roomPill.classList.remove('hidden');
-  setPill('pill-room', room.public === false ? 'Private room active' : 'Public room active', 'success');
+  setPill('pill-room', room.public === false ? 'Invite key room active' : 'Open-join room active', 'success');
   roomCard.classList.remove('hidden');
   setText('session-title', getRoomDisplayName(status));
   setText(
     'session-meta',
-    `${room.public === false ? 'Invite required' : 'Listed publicly'} | ${userCount} watching`
+    `${room.public === false ? 'Invite key required' : 'Open join'} | ${room.listed === false ? 'Hidden from WatchParty' : 'Listed on WatchParty'} | ${userCount} watching`
   );
+}
+
+function renderIssueList(id, issues, emptyText) {
+  const el = $(id);
+  if (!el) return;
+  if (!Array.isArray(issues) || issues.length === 0) {
+    el.innerHTML = `<li class="diag-list-empty">${emptyText}</li>`;
+    return;
+  }
+  el.innerHTML = issues.slice(0, 4).map((issue) => {
+    const scope = issue.roomId ? `Room ${issue.roomId.slice(0, 8)}` : (issue.clientId ? `Client ${issue.clientId.slice(0, 8)}` : 'Global');
+    return `<li><strong>[${issue.severity || 'info'}]</strong> ${issue.code || 'unknown'}<br>${scope} — ${issue.message || ''}</li>`;
+  }).join('');
+}
+
+function formatDiagnosticTimestamp(value) {
+  if (!value) return 'Server diagnostics unavailable';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Server diagnostics unavailable';
+  return `Server snapshot ${date.toLocaleString()}`;
 }
 
 function renderStatus(status) {
   lastStatus = status || null;
   lastServerDiagnostics = status?.serverDiagnostics || null;
   const extensionVersion = chrome.runtime.getManifest().version;
-  setText('diag-extension', extensionVersion);
-  setText('diag-bg-version', status?.bgVersion || '-');
-  setText('diag-ws', status?.wsConnected ? 'Connected' : 'Disconnected');
-  setText('diag-backend-url', status?.activeBackendUrl || '-');
-  setText('diag-stremio', status?.stremioRunning ? 'Detected' : 'Not detected');
-  setText('diag-surface', status?.hasStremioTab ? 'Stremio tab available' : 'No Stremio tab');
+  const backendKey = WPConstants.BACKEND.resolveKey(status?.backendMode, status?.activeBackend);
+  const backendInfo = WPConstants.BACKEND.getInfo(backendKey);
   const controllerPhase = status?.controllerRuntime?.phase || '-';
+  const coordinatorMode = status?.coordinatorMode || '-';
+  const adapterRoute = status?.adapterState?.route || '-';
   const adapterAvailability = status?.adapterState?.availability || '-';
   const extensionIssues = Array.isArray(status?.invariants) ? status.invariants.length : 0;
   const serverIssues = status?.serverDiagnostics?.summary?.issues ?? 0;
+  const roomUserCount = Array.isArray(status?.room?.users) ? status.room.users.length : 0;
+  const roomTarget = status?.room
+    ? getRoomDisplayName(status)
+    : (status?.bootstrapPending ? 'Staged handoff' : (status?.currentRoomId ? `Resume ${status.currentRoomId.slice(0, 8)}` : 'No active room'));
+
+  setText('diag-extension', `v${extensionVersion}`);
+  setText('diag-bg-version', `Runtime build v${status?.bgVersion || extensionVersion}`);
+  setText('diag-ws', status?.wsConnected ? 'Connected' : 'Disconnected');
+  setText('diag-backend-mode', `${backendInfo.label} backend${status?.backendMode === WPConstants.BACKEND.MODES.AUTO ? ' via Auto' : ''}`);
+  setText('diag-backend-url', status?.activeBackendUrl || 'Waiting for backend selection');
+  setText('diag-stremio', status?.stremioRunning ? 'Detected locally' : 'Not detected locally');
+  setText('diag-surface', status?.hasStremioTab ? 'Stremio tab available' : 'No Stremio tab');
+  setText('diag-room-target', roomTarget);
   setText(
     'diag-room-service',
-    `${status?.coordinatorMode || '-'}${status?.bootstrapPending ? ' | pending handoff' : ''}`
+    status?.bootstrapPending
+      ? 'Bootstrap handoff pending'
+      : `${coordinatorMode}${status?.currentRoomId && !status?.room ? ` | ${status.currentRoomId.slice(0, 8)}` : ''}`
+  );
+  setText('diag-issue-summary', extensionIssues + serverIssues === 0 ? 'No issues' : `${extensionIssues + serverIssues} issue${extensionIssues + serverIssues === 1 ? '' : 's'}`);
+  setText('diag-server-generated', formatDiagnosticTimestamp(status?.serverDiagnostics?.generatedAt));
+  setText('diag-coordinator-mode', coordinatorMode);
+  setText('diag-controller-phase', controllerPhase);
+  setText('diag-adapter-route', adapterRoute);
+  setText('diag-adapter-availability', adapterAvailability);
+  setText(
+    'diag-room-state',
+    status?.room
+      ? `${status.room.public === false ? 'Invite key required' : 'Open join'} | ${status.room.listed === false ? 'Hidden from WatchParty' : 'Listed on WatchParty'} | ${roomUserCount} watching`
+      : 'No live room snapshot'
   );
   setText(
     'diag-room-error',
-    `${controllerPhase} | ${adapterAvailability} | ext ${extensionIssues} / server ${serverIssues} issues`
+    `${status?.stremioRunning ? 'Stremio ready' : 'Waiting for Stremio'} | ${controllerPhase} controller | ${adapterRoute} route | ${adapterAvailability}`
   );
+  setText(
+    'diag-ext-issues',
+    extensionIssues === 0 ? 'No extension invariant issues' : `${extensionIssues} extension issue${extensionIssues === 1 ? '' : 's'}`
+  );
+  setText(
+    'diag-server-issues',
+    status?.serverDiagnostics
+      ? (serverIssues === 0 ? 'No backend invariant issues' : `${serverIssues} backend issue${serverIssues === 1 ? '' : 's'}`)
+      : 'Backend diagnostics unavailable'
+  );
+  renderIssueList('diag-ext-issue-list', status?.invariants, 'No extension invariant issues.');
+  renderIssueList('diag-server-issue-list', status?.serverDiagnostics?.invariants, 'No backend invariant issues.');
 
   setPill('pill-extension', status?.stremioRunning ? 'Extension ready' : 'Extension active', status?.stremioRunning ? 'success' : '');
-  const backendKey = WPConstants.BACKEND.resolveKey(status?.backendMode, status?.activeBackend);
-  setPill('pill-backend', `${WPConstants.BACKEND.getInfo(backendKey).label} backend`, status?.wsConnected ? 'success' : 'warn');
+  setPill('pill-backend', `${backendInfo.label} backend`, status?.wsConnected ? 'success' : 'warn');
 
   if (!status) {
     $('hero-note').textContent = 'WatchParty could not read extension status just now. Try refreshing this page.';
@@ -282,7 +338,8 @@ function buildDiagnosticsText(status) {
     lines.push(
       `Room id: ${room.id}`,
       `Room name: ${getRoomDisplayName(status)}`,
-      `Room visibility: ${room.public === false ? 'private' : 'public'}`,
+      `Room access: ${room.public === false ? 'invite key required' : 'open join'}`,
+      `Room listing: ${room.listed === false ? 'hidden from WatchParty' : 'listed on WatchParty'}`,
       `Room users: ${Array.isArray(room.users) ? room.users.length : 0}`
     );
   }

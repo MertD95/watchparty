@@ -215,13 +215,22 @@ function setLobbyMode(mode) {
 
 function updateLobbyPrivacyState() {
   const isPublic = !!$('public-check')?.checked;
+  const isListed = $('listed-check')?.checked !== false;
   const label = $('privacy-mode-label');
   const help = $('privacy-mode-help');
+  const listingLabel = $('listing-mode-label');
+  const listingHelp = $('listing-mode-help');
   if (label) label.textContent = isPublic ? 'Public room' : 'Private room';
   if (help) {
     help.textContent = isPublic
-      ? 'Anyone on WatchParty can join instantly.'
+      ? 'Anyone who finds the room can join instantly.'
       : 'Invite required to join.';
+  }
+  if (listingLabel) listingLabel.textContent = isListed ? 'Listed on WatchParty' : 'Hidden from WatchParty';
+  if (listingHelp) {
+    listingHelp.textContent = isListed
+      ? 'Shown on the WatchParty website so people can discover the room there.'
+      : 'Hidden from the WatchParty website. Share the room link directly instead.';
   }
 }
 
@@ -282,7 +291,9 @@ function applyCoordinatorUpdate(payload) {
     showRoomView(nextRoom, currentUserId);
     return;
   }
-  showLobbyView();
+  if (!$('view-room').classList.contains('hidden')) {
+    showLobbyView();
+  }
 }
 
 function setBackendMode(mode) {
@@ -495,7 +506,7 @@ function showRoomView(room, myUserId) {
 
   const isHost = amIHost();
   currentRenderedRoom = room || null;
-  $('room-privacy-badge').textContent = room.public ? 'Public' : 'Invite required';
+  $('room-privacy-badge').textContent = room.public ? 'Open join' : 'Invite key required';
   $('room-role-badge').textContent = isHost ? 'Host' : 'Synced';
   $('room-count-badge').textContent = `${room.users?.length || 0} watching`;
   updateQuickActions();
@@ -546,6 +557,7 @@ $('btn-create').addEventListener('click', () => {
   chrome.storage.local.set({ [WPConstants.STORAGE.USERNAME]: username });
 
   const isPublic = $('public-check')?.checked || false;
+  const isListed = $('listed-check')?.checked !== false;
   let roomName = $('room-name-input')?.value.trim().toLowerCase().replace(/[^a-z0-9-]/g, '') || undefined;
   // Validate room name length after sanitization (server requires 3-30 chars)
   if (roomName && roomName.length < 3) {
@@ -568,6 +580,7 @@ $('btn-create').addEventListener('click', () => {
     meta: { id: 'pending', type: 'movie', name: 'WatchParty Session' },
     stream: { url: 'https://watchparty.mertd.me/sync' },
     public: isPublic,
+    listed: isListed,
     roomName,
   }, (response) => {
     if (handleSendMessageFailure(
@@ -639,6 +652,7 @@ $('btn-leave').addEventListener('click', () => {
 $('lobby-tab-create').addEventListener('click', () => setLobbyMode('create'));
 $('lobby-tab-join').addEventListener('click', () => setLobbyMode('join'));
 $('public-check').addEventListener('change', updateLobbyPrivacyState);
+$('listed-check').addEventListener('change', updateLobbyPrivacyState);
 $('btn-open-watchparty').addEventListener('click', openWatchPartyTab);
 $('btn-open-stremio').addEventListener('click', openStremioTab);
 $('btn-open-settings').addEventListener('click', openOptionsPage);

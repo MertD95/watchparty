@@ -619,9 +619,9 @@ async function main() {
     ]);
     servers.broadcastRooms();
 
-    await expectPass(ok, 'landing keeps private rooms out of the public room list', () => page.waitForFunction(() => {
+    await expectPass(ok, 'landing shows listed private rooms with invite-key copy', () => page.waitForFunction(() => {
       const text = (document.getElementById('rooms-list')?.innerText || '').toLowerCase();
-      return !text.includes('neo') && !text.includes('the matrix');
+      return text.includes('neo') && text.includes('the matrix') && text.includes('invite key required');
     }, { timeout: 3000 }));
 
     await page.evaluate(() => {

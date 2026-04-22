@@ -9,7 +9,7 @@ importScripts('runtime-state.js');
 importScripts('room-keys.js');
 importScripts('wp-protocol.js');
 
-const BG_VERSION = '2025-04-12-fix-chat';
+const BG_VERSION = chrome.runtime.getManifest().version;
 const STREMIO_BASE = 'http://localhost:11470';
 const STREMIO_API = 'https://api.strem.io';
 const POLL_INTERVAL_MS = 5000;

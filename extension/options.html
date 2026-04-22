@@ -268,26 +268,122 @@
       font-size: 13px;
     }
 
-    dl {
-      display: grid;
-      grid-template-columns: minmax(120px, 160px) minmax(0, 1fr);
-      gap: 10px 14px;
-      align-items: start;
+    .section-wide {
+      grid-column: 1 / -1;
     }
 
-    dt {
+    .section-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .diag-summary-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+    }
+
+    .diag-stat {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 14px 16px;
+      border-radius: 18px;
+      border: 1px solid rgba(148, 163, 184, 0.12);
+      background: rgba(15, 23, 42, 0.48);
+    }
+
+    .diag-stat-label,
+    .diag-group-title {
       color: #c7d2fe;
-      font-size: 12px;
+      font-size: 11px;
       text-transform: uppercase;
-      letter-spacing: 0.08em;
+      letter-spacing: 0.1em;
       font-weight: 700;
     }
 
-    dd {
+    .diag-stat-value {
+      color: #f8fafc;
+      font-size: 20px;
+      font-weight: 800;
+      line-height: 1.2;
+      word-break: break-word;
+    }
+
+    .diag-stat-meta {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+      word-break: break-word;
+    }
+
+    .diag-detail-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 14px;
+    }
+
+    .diag-group {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 16px;
+      border-radius: 18px;
+      border: 1px solid rgba(148, 163, 184, 0.12);
+      background: rgba(15, 23, 42, 0.4);
+      min-width: 0;
+    }
+
+    .diag-row {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      min-width: 0;
+    }
+
+    .diag-row-label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .diag-row-value {
       color: #e5e7eb;
       font-size: 14px;
       line-height: 1.5;
       word-break: break-word;
+    }
+
+    .diag-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 0;
+      margin: 0;
+      list-style: none;
+    }
+
+    .diag-list li {
+      padding: 10px 12px;
+      border-radius: 14px;
+      background: rgba(148, 163, 184, 0.08);
+      color: #dbe3f0;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .diag-list-empty {
+      color: var(--muted);
+    }
+
+    .diag-note {
+      margin-top: -2px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
     }
 
     .mono {
@@ -313,8 +409,8 @@
         grid-template-columns: 1fr;
       }
 
-      dl {
-        grid-template-columns: 1fr;
+      .section-head {
+        flex-direction: column;
       }
     }
   </style>
@@ -361,29 +457,104 @@
         <p class="card-copy" id="backend-note">Loading backend details...</p>
       </section>
 
-      <section class="card section">
-        <div class="kicker">Diagnostics</div>
-        <h2>Live Extension State</h2>
-        <dl>
-          <dt>Extension</dt>
-          <dd id="diag-extension">-</dd>
-          <dt>Background Build</dt>
-          <dd id="diag-bg-version">-</dd>
-          <dt>WebSocket</dt>
-          <dd id="diag-ws">-</dd>
-          <dt>Backend URL</dt>
-          <dd class="mono" id="diag-backend-url">-</dd>
-          <dt>Stremio</dt>
-          <dd id="diag-stremio">-</dd>
-          <dt>Known Surface</dt>
-          <dd id="diag-surface">-</dd>
-          <dt>Bootstrap Handoff</dt>
-          <dd id="diag-room-service">-</dd>
-          <dt>Runtime Model</dt>
-          <dd id="diag-room-error">-</dd>
-        </dl>
-        <div class="actions">
-          <button class="btn-secondary" id="btn-refresh" type="button">Refresh Status</button>
+      <section class="card section section-wide">
+        <div class="section-head">
+          <div>
+            <div class="kicker">Diagnostics</div>
+            <h2>Live Extension State</h2>
+            <p class="card-copy">Readable connection, runtime, resume-target, and invariant state from the extension plus backend diagnostics when the active backend is reachable.</p>
+          </div>
+          <div class="actions">
+            <button class="btn-secondary" id="btn-refresh" type="button">Refresh Status</button>
+          </div>
+        </div>
+
+        <div class="diag-summary-grid">
+          <div class="diag-stat">
+            <div class="diag-stat-label">Extension Build</div>
+            <div class="diag-stat-value" id="diag-extension">-</div>
+            <div class="diag-stat-meta" id="diag-bg-version">-</div>
+          </div>
+          <div class="diag-stat">
+            <div class="diag-stat-label">Connection</div>
+            <div class="diag-stat-value" id="diag-ws">-</div>
+            <div class="diag-stat-meta" id="diag-backend-mode">-</div>
+          </div>
+          <div class="diag-stat">
+            <div class="diag-stat-label">Resume Target</div>
+            <div class="diag-stat-value" id="diag-room-target">-</div>
+            <div class="diag-stat-meta" id="diag-room-service">-</div>
+          </div>
+          <div class="diag-stat">
+            <div class="diag-stat-label">Invariant Summary</div>
+            <div class="diag-stat-value" id="diag-issue-summary">-</div>
+            <div class="diag-stat-meta" id="diag-server-generated">-</div>
+          </div>
+        </div>
+
+        <div class="diag-detail-grid">
+          <div class="diag-group">
+            <div class="diag-group-title">Connection Details</div>
+            <div class="diag-row">
+              <div class="diag-row-label">Backend URL</div>
+              <div class="diag-row-value mono" id="diag-backend-url">-</div>
+            </div>
+            <div class="diag-row">
+              <div class="diag-row-label">Stremio</div>
+              <div class="diag-row-value" id="diag-stremio">-</div>
+            </div>
+            <div class="diag-row">
+              <div class="diag-row-label">Known Surface</div>
+              <div class="diag-row-value" id="diag-surface">-</div>
+            </div>
+          </div>
+
+          <div class="diag-group">
+            <div class="diag-group-title">Runtime Model</div>
+            <div class="diag-row">
+              <div class="diag-row-label">Coordinator Mode</div>
+              <div class="diag-row-value" id="diag-coordinator-mode">-</div>
+            </div>
+            <div class="diag-row">
+              <div class="diag-row-label">Controller Phase</div>
+              <div class="diag-row-value" id="diag-controller-phase">-</div>
+            </div>
+            <div class="diag-row">
+              <div class="diag-row-label">Adapter Route</div>
+              <div class="diag-row-value" id="diag-adapter-route">-</div>
+            </div>
+            <div class="diag-row">
+              <div class="diag-row-label">Adapter Availability</div>
+              <div class="diag-row-value" id="diag-adapter-availability">-</div>
+            </div>
+            <div class="diag-row">
+              <div class="diag-row-label">Room Snapshot</div>
+              <div class="diag-row-value" id="diag-room-state">-</div>
+            </div>
+            <div class="diag-note" id="diag-room-error">-</div>
+          </div>
+
+          <div class="diag-group">
+            <div class="diag-group-title">Extension Invariants</div>
+            <div class="diag-row">
+              <div class="diag-row-label">Summary</div>
+              <div class="diag-row-value" id="diag-ext-issues">-</div>
+            </div>
+            <ul class="diag-list" id="diag-ext-issue-list">
+              <li class="diag-list-empty">No extension invariant issues.</li>
+            </ul>
+          </div>
+
+          <div class="diag-group">
+            <div class="diag-group-title">Backend Invariants</div>
+            <div class="diag-row">
+              <div class="diag-row-label">Summary</div>
+              <div class="diag-row-value" id="diag-server-issues">-</div>
+            </div>
+            <ul class="diag-list" id="diag-server-issue-list">
+              <li class="diag-list-empty">No backend invariant issues.</li>
+            </ul>
+          </div>
         </div>
       </section>
 

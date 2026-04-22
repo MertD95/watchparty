@@ -1232,6 +1232,7 @@
         applyRoomStateDelta((nextRoom) => {
           nextRoom.public = p.public;
           nextRoom.visibility = p.visibility;
+          nextRoom.listed = p.listed !== false;
         });
         break;
 
@@ -1288,11 +1289,13 @@
         : command?.stream;
       const { stream, joinHint } = await normalizeSharedStreamPayload(rawStream);
       const isPublic = command?.public === true;
+      const isListed = command?.listed !== false;
       const payload = {
         meta,
         stream,
         joinHint,
         public: isPublic,
+        listed: isListed,
         visibility: WPRoomDomain.visibilityFromPublic(isPublic),
       };
       if (payload.public === false) {
@@ -1941,6 +1944,7 @@
         meta: message.meta,
         stream: message.stream,
         public: message.public,
+        listed: message.listed,
         roomName: message.roomName,
         roomKey: message.roomKey,
       });
@@ -2020,6 +2024,7 @@
           meta: m.meta,
           stream: m.stream,
           public: m.public,
+          listed: m.listed,
           roomName: m.roomName,
           roomKey: m.roomKey,
         });
@@ -2049,7 +2054,9 @@
       finalizeLeaveIntent({ sendLeave: true });
     },
     [WPConstants.ACTION.ROOM_VISIBILITY_UPDATE]: async (m) => {
-      if (m.public === false) {
+      const nextPublic = typeof m.public === 'boolean' ? m.public : (roomState?.public !== false);
+      const nextListed = m.listed !== false;
+      if (nextPublic === false) {
         const roomId = roomState?.id;
         const requestedRoomKey = normalizeRoomKeyInput(m.roomKey);
         const existingRoomKey = await loadStoredRoomKey(roomId);
@@ -2076,6 +2083,7 @@
           payload: {
             public: false,
             visibility: WPRoomDomain.ROOM_VISIBILITY.INVITE_ONLY,
+            listed: nextListed,
             roomKey,
           },
         });
@@ -2088,6 +2096,7 @@
         payload: {
           public: true,
           visibility: WPRoomDomain.ROOM_VISIBILITY.PUBLIC,
+          listed: nextListed,
         },
       });
     },
@@ -2119,6 +2128,7 @@
           meta: message.meta,
           stream: message.stream,
           public: message.public,
+          listed: message.listed,
           roomName: message.roomName,
           roomKey: message.roomKey,
         });
