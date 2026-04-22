@@ -56,16 +56,31 @@ jobs:
       - name: Install extension repo dependencies
         run: npm ci
 
+      - name: Determine runtime coverage availability
+        id: coverage_gate
+        env:
+          SERVER_TOKEN: ${{ secrets.SERVER_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -n "${SERVER_TOKEN:-}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Runtime CI skipped::SERVER_REPO_TOKEN is unavailable for this pull_request trigger. Fast CI still ran. Full runtime coverage will run on push, release, or manual runs where secrets are available."
+            exit 0
+          fi
+          echo "::error title=Missing SERVER_REPO_TOKEN::Runtime CI requires a token that can clone ${SERVER_REPO}. Add a fine-grained read-only Contents token as the SERVER_REPO_TOKEN repository secret."
+          exit 1
+
       - name: Checkout backend repo
+        if: steps.coverage_gate.outputs.enabled == 'true'
         env:
           SERVER_TOKEN: ${{ secrets.SERVER_REPO_TOKEN }}
           SERVER_REPO_REF: ${{ vars.SERVER_REPO_REF }}
         run: |
           set -euo pipefail
-          if [ -z "${SERVER_TOKEN:-}" ]; then
-            echo "::error title=Missing SERVER_REPO_TOKEN::Runtime CI requires a token that can clone ${SERVER_REPO}. Add a fine-grained read-only Contents token as the SERVER_REPO_TOKEN repository secret."
-            exit 1
-          fi
           REMOTE="https://x-access-token:${SERVER_TOKEN}@github.com/${SERVER_REPO}.git"
           if [ -n "${SERVER_REPO_REF:-}" ]; then
             git clone --depth 1 --branch "${SERVER_REPO_REF}" "${REMOTE}" "${SERVER_CHECKOUT_PATH}"
@@ -74,10 +89,12 @@ jobs:
           fi
 
       - name: Install backend repo dependencies
+        if: steps.coverage_gate.outputs.enabled == 'true'
         run: npm ci
         working-directory: ${{ env.SERVER_CHECKOUT_PATH }}
 
       - name: Verify generated protocol is current
+        if: steps.coverage_gate.outputs.enabled == 'true'
         run: |
           node tools/gen-protocol.js --check
           node tools/gen-room-domain.js --check
@@ -87,14 +104,17 @@ jobs:
           WATCHPARTY_EXTENSION_ROOT: ${{ github.workspace }}/extension
 
       - name: Install Playwright browser runtime
+        if: steps.coverage_gate.outputs.enabled == 'true'
         run: npx playwright install --with-deps chromium
 
       - name: Run maintained integration suite
+        if: steps.coverage_gate.outputs.enabled == 'true'
         run: npm run test:integration
         env:
           WATCHPARTY_SERVER_ROOT: ${{ github.workspace }}/${{ env.SERVER_CHECKOUT_PATH }}
 
       - name: Run maintained browser suite
+        if: steps.coverage_gate.outputs.enabled == 'true'
         run: npm run test:browser
         env:
           WATCHPARTY_SERVER_ROOT: ${{ github.workspace }}/${{ env.SERVER_CHECKOUT_PATH }}
