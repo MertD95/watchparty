@@ -19,6 +19,10 @@ Recommended environments:
 - `release-artifacts`
 - `chrome-web-store`
 
+Required repository secrets for cross-repo validation:
+
+- `SERVER_REPO_TOKEN` - a fine-grained token with read-only `Contents` access to `MertD95/watchparty-server`
+
 If you use environment protection rules, require reviewer approval before:
 
 - uploading release assets

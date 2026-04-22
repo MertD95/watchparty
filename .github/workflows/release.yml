@@ -44,10 +44,11 @@ jobs:
           SERVER_REPO_REF: ${{ vars.SERVER_REPO_REF }}
         run: |
           set -euo pipefail
-          REMOTE="https://github.com/${SERVER_REPO}.git"
-          if [ -n "${SERVER_TOKEN:-}" ]; then
-            REMOTE="https://x-access-token:${SERVER_TOKEN}@github.com/${SERVER_REPO}.git"
+          if [ -z "${SERVER_TOKEN:-}" ]; then
+            echo "::error title=Missing SERVER_REPO_TOKEN::Release validation requires a token that can clone ${SERVER_REPO}. Add a fine-grained read-only Contents token as the SERVER_REPO_TOKEN repository secret."
+            exit 1
           fi
+          REMOTE="https://x-access-token:${SERVER_TOKEN}@github.com/${SERVER_REPO}.git"
           if [ -n "${SERVER_REPO_REF:-}" ]; then
             git clone --depth 1 --branch "${SERVER_REPO_REF}" "${REMOTE}" "${SERVER_CHECKOUT_PATH}"
           else
