@@ -35,6 +35,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Install Playwright browser runtime
+        run: npx playwright install --with-deps chromium
+
       - name: Run maintained fast suite
         run: npm run test:fast
 

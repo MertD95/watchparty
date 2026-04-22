@@ -32,6 +32,9 @@ jobs:
       - name: Install extension repo dependencies
         run: npm ci
 
+      - name: Install Playwright browser runtime
+        run: npx playwright install --with-deps chromium
+
       - name: Run maintained fast suite
         run: npm run test:fast
 
@@ -63,9 +66,6 @@ jobs:
         working-directory: ${{ env.SERVER_CHECKOUT_PATH }}
         env:
           WATCHPARTY_EXTENSION_ROOT: ${{ github.workspace }}/extension
-
-      - name: Install Playwright browser runtime
-        run: npx playwright install --with-deps chromium
 
       - name: Run maintained integration suite
         run: npm run test:integration
