@@ -1074,7 +1074,7 @@
   </div>
 
   <script>
-    const IS_DEV = location.hostname === 'localhost';
+    const IS_DEV = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
     const WS_API = IS_DEV ? 'ws://localhost:8181' : 'wss://ws.mertd.me';
     const ROOMS_API = IS_DEV ? 'http://localhost:8181/rooms' : 'https://ws.mertd.me/rooms';
     const CHROME_WEB_STORE_URL = 'https://chromewebstore.google.com/detail/watchparty-for-stremio';
