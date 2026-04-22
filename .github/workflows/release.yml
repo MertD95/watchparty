@@ -69,12 +69,12 @@ jobs:
           WATCHPARTY_EXTENSION_ROOT: ${{ github.workspace }}/extension
 
       - name: Run maintained integration suite
-        run: npm run test:integration
+        run: xvfb-run -a npm run test:integration
         env:
           WATCHPARTY_SERVER_ROOT: ${{ github.workspace }}/${{ env.SERVER_CHECKOUT_PATH }}
 
       - name: Run maintained browser suite
-        run: npm run test:browser
+        run: xvfb-run -a npm run test:browser
         env:
           WATCHPARTY_SERVER_ROOT: ${{ github.workspace }}/${{ env.SERVER_CHECKOUT_PATH }}
 
