@@ -114,15 +114,46 @@ function renderBackend(status) {
 
 function renderSession(status) {
   const room = status?.room || null;
+  const currentRoomId = typeof status?.currentRoomId === 'string' && status.currentRoomId.trim()
+    ? status.currentRoomId.trim()
+    : '';
+  const bootstrapPending = status?.bootstrapPending === true;
+  const hasResumeTarget = !!room || !!currentRoomId || bootstrapPending;
   const roomPill = $('pill-room');
   const roomCard = $('session-card');
   const resumeBtn = $('btn-resume-room');
 
-  if (!room) {
+  if (!hasResumeTarget) {
     roomPill.classList.add('hidden');
     roomCard.classList.add('hidden');
     resumeBtn.textContent = 'Go to Room in Stremio';
     resumeBtn.disabled = true;
+    return;
+  }
+
+  resumeBtn.textContent = 'Go to Room in Stremio';
+  resumeBtn.disabled = false;
+
+  if (!room) {
+    roomPill.classList.remove('hidden');
+    setPill(
+      'pill-room',
+      bootstrapPending ? 'Room handoff pending' : 'Room available to resume',
+      'warn'
+    );
+    roomCard.classList.remove('hidden');
+    setText(
+      'session-title',
+      bootstrapPending
+        ? 'Finish room setup in Stremio'
+        : `Resume room ${currentRoomId.slice(0, 8)}`
+    );
+    setText(
+      'session-meta',
+      bootstrapPending
+        ? 'WatchParty has a staged create or join waiting for Stremio.'
+        : 'WatchParty still has a resumable room target even though no live room snapshot is available.'
+    );
     return;
   }
 
@@ -135,8 +166,6 @@ function renderSession(status) {
     'session-meta',
     `${room.public === false ? 'Invite required' : 'Listed publicly'} | ${userCount} watching`
   );
-  resumeBtn.textContent = 'Go to Room in Stremio';
-  resumeBtn.disabled = false;
 }
 
 function renderStatus(status) {

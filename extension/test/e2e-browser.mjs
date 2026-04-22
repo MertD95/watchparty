@@ -383,6 +383,46 @@ async function testOptionsSurfaceShowsBackendFeedback() {
   }
 }
 
+async function testOptionsResumeButtonStaysAvailableForStagedRoomHandoffs() {
+  console.log('\n-- Test: Options resume button stays available for staged room handoffs --');
+  const context = await launchWithExtension();
+  try {
+    const extId = await getExtensionId(context);
+    const options = await openOptions(context, extId);
+
+    await options.evaluate(async () => {
+      await chrome.storage.session.set({
+        currentRoom: 'resume-room-1234',
+        wpBootstrapRoomIntent: {
+          action: 'room.join',
+          roomId: 'resume-room-1234',
+          username: 'ResumeHost',
+          requestedAt: Date.now(),
+        },
+      });
+    });
+
+    const resumedState = await assertPass('Options page keeps the resume action enabled when a staged room handoff exists', () => options.waitForFunction(() => {
+      const button = document.getElementById('btn-resume-room');
+      const pill = document.getElementById('pill-room');
+      const title = document.getElementById('session-title');
+      const meta = document.getElementById('session-meta');
+      return !!button
+        && button.disabled === false
+        && button.textContent === 'Go to Room in Stremio'
+        && !!pill
+        && !pill.classList.contains('hidden')
+        && /handoff pending/i.test(pill.textContent || '')
+        && /finish room setup in stremio/i.test(title?.textContent || '')
+        && /staged create or join/i.test(meta?.textContent || '');
+    }, { timeout: TIMEOUT }));
+
+    await options.close();
+  } finally {
+    await context.close();
+  }
+}
+
 async function testOptionsRecoveryToolsClearOnlyRuntimeState() {
   console.log('\n── Test: Options recovery tools clear staged runtime state without wiping durable prefs ──');
   const context = await launchWithExtension();
@@ -2151,6 +2191,7 @@ async function main() {
   const tests = [
     testPopupLoadsWithStatus,
     testOptionsSurfaceShowsBackendFeedback,
+    testOptionsResumeButtonStaysAvailableForStagedRoomHandoffs,
     testOptionsRecoveryToolsClearOnlyRuntimeState,
     testEmptyUsernameValidation,
     testCreateRoomWithoutStremioTabAttachesLater,

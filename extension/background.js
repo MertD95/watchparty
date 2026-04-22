@@ -718,6 +718,7 @@ const messageHandlers = {
       invariants: runtimeState.invariants,
       recentEvents: runtimeState.recentEvents,
       lastRoomError: result[WPConstants.STORAGE.LAST_ROOM_ERROR] ?? null,
+      currentRoomId: runtimeState.currentRoomId,
       hasStremioTab,
       bootstrapPending: !!bootstrapIntent,
       bgVersion: BG_VERSION,
