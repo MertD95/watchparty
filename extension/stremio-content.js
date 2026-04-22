@@ -1108,6 +1108,7 @@
         break;
 
       case WPProtocol.EVENT.ROOM_ERROR:
+        notifyBackground({ action: WPConstants.ACTION.ROOM_ERROR_EVENT, payload: p });
         if (deferredLeaveIntent?.roomId && lastJoinAttemptRoomId === deferredLeaveIntent.roomId) {
           clearDeferredLeaveIntent(deferredLeaveIntent.roomId);
         }

@@ -14,6 +14,8 @@
     "test:crypto": "node extension/test/crypto.mjs",
     "test:landing": "node extension/test/landing.mjs",
     "test:sync-engine": "node extension/test/sync-engine.mjs",
+    "debug:invalid-room-key": "node tools/debug-invalid-room-key.mjs",
+    "debug:production-smoke": "node tools/production-smoke.mjs",
     "debug:browser:raw": "node extension/test/e2e-browser.mjs",
     "debug:sidepanel:raw": "node extension/test/sidepanel.mjs",
     "syntax": "node scripts/syntax-check.mjs"

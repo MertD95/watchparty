@@ -686,11 +686,12 @@ const messageHandlers = {
   [WPConstants.ACTION.STATUS_GET]: (_m, _s, sendResponse) => respondAsync(sendResponse, async () => {
     const stremioTabs = await getStremioTabs();
     const hasStremioTab = stremioTabs.length > 0;
-    const result = await getExtensionState([
-      WPConstants.STORAGE.STREMIO_PROFILE,
-      WPConstants.STORAGE.USERNAME,
-      WPConstants.STORAGE.BACKEND_MODE,
-    ]);
+  const result = await getExtensionState([
+    WPConstants.STORAGE.STREMIO_PROFILE,
+    WPConstants.STORAGE.USERNAME,
+    WPConstants.STORAGE.BACKEND_MODE,
+    WPConstants.STORAGE.LAST_ROOM_ERROR,
+  ]);
     const runtimeState = await getProjectedRuntimeState();
     const bootstrapIntent = await getBootstrapRoomIntent();
     const trustedPersistedRoom = hasStremioTab || !!runtimeState.currentRoomId;
@@ -716,6 +717,7 @@ const messageHandlers = {
       adapterState: runtimeState.adapterState,
       invariants: runtimeState.invariants,
       recentEvents: runtimeState.recentEvents,
+      lastRoomError: result[WPConstants.STORAGE.LAST_ROOM_ERROR] ?? null,
       hasStremioTab,
       bootstrapPending: !!bootstrapIntent,
       bgVersion: BG_VERSION,
@@ -799,12 +801,17 @@ const messageHandlers = {
   [WPConstants.ACTION.ROOM_REACTION_EVENT]: (m) => {
     broadcastToStremioTabs({ action: WPConstants.ACTION.ROOM_REACTION_EVENT, payload: m.payload });
   },
+  [WPConstants.ACTION.ROOM_ERROR_EVENT]: (m) => {
+    setExtensionState({ [WPConstants.STORAGE.LAST_ROOM_ERROR]: m.payload || null }).catch(() => {});
+    relayToPanel(WPConstants.ACTION.ROOM_ERROR_EVENT, m.payload);
+  },
   [WPConstants.ACTION.ROOM_CREATE]: (m, _s, sr) => respondAsync(sr, async () => {
     const stremioTabs = await getStremioTabs();
     const hasStremioTab = stremioTabs.length > 0;
     if (m.username) {
       await chrome.storage.local.set({ [WPConstants.STORAGE.USERNAME]: m.username });
     }
+    await removeExtensionState(WPConstants.STORAGE.LAST_ROOM_ERROR);
     if (await forwardToStremioTabWithRetry(m)) {
       await clearBootstrapRoomIntent();
       return { ok: true, openedStremio: false, hasStremioTab };
@@ -827,6 +834,7 @@ const messageHandlers = {
     await setExtensionState({
       [WPConstants.STORAGE.USERNAME]: m.username,
     });
+    await removeExtensionState(WPConstants.STORAGE.LAST_ROOM_ERROR);
     if (await forwardToStremioTabWithRetry(m)) {
       await clearBootstrapRoomIntent();
       return { ok: true, openedStremio: false, hasStremioTab };
@@ -1052,7 +1060,8 @@ chrome.tabs?.onRemoved?.addListener((tabId) => {
 
 // ── Extension update: re-inject content scripts into open Stremio tabs ──
 // After auto-update, old content scripts are orphaned (chrome.runtime is dead).
-// Re-injecting restores the sidebar without requiring a manual page refresh.
+// `chrome.scripting` is kept specifically for this recovery path so users do not
+// need to manually refresh already-open Stremio tabs after an extension update.
 
 chrome.runtime.onInstalled.addListener(async (details) => {
   if (details.reason !== 'update') return;

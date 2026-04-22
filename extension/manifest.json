@@ -6,7 +6,6 @@
   "description": "Synchronized watching with friends on Stremio Web. Create a room, share the code, watch together.",
   "permissions": [
     "declarativeNetRequest",
-    "declarativeNetRequestFeedback",
     "offscreen",
     "storage",
     "scripting",

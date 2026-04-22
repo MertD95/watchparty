@@ -318,10 +318,17 @@ function loadIdentity(callback) {
 // --- Reactive room state watcher (replaces polling) ---
 function waitForRoomState({ onRoom, onError, onTimeout }) {
   let resolved = false;
+  const storageListener = (changes) => {
+    if (resolved) return;
+    const nextError = changes?.[WPConstants.STORAGE.LAST_ROOM_ERROR]?.newValue;
+    if (!nextError) return;
+    finish(() => onError?.(nextError));
+  };
   const timeoutId = setTimeout(() => {
     if (resolved) return;
     resolved = true;
     chrome.runtime.onMessage.removeListener(listener);
+    chrome.storage.onChanged.removeListener(storageListener);
     onTimeout();
   }, 20000);
 
@@ -330,23 +337,31 @@ function waitForRoomState({ onRoom, onError, onTimeout }) {
     resolved = true;
     clearTimeout(timeoutId);
     chrome.runtime.onMessage.removeListener(listener);
+    chrome.storage.onChanged.removeListener(storageListener);
     callback?.();
   }
 
   function listener(message) {
     if (resolved) return;
-    if (message.type !== 'watchparty-ext' || message.action !== WPConstants.ACTION.STATUS_UPDATED) return;
+    if (message.type !== 'watchparty-ext') return;
+    if (message.action === WPConstants.ACTION.ROOM_ERROR_EVENT && message.payload) {
+      finish(() => onError?.(message.payload));
+      return;
+    }
+    if (message.action !== WPConstants.ACTION.STATUS_UPDATED) return;
     const nextRoom = message.payload?.room || null;
     if (!nextRoom) return;
     finish(() => onRoom(nextRoom, message.payload?.userId || null));
   }
 
   chrome.runtime.onMessage.addListener(listener);
+  chrome.storage.onChanged.addListener(storageListener);
   return () => {
     if (resolved) return;
     resolved = true;
     clearTimeout(timeoutId);
     chrome.runtime.onMessage.removeListener(listener);
+    chrome.storage.onChanged.removeListener(storageListener);
   };
 }
 

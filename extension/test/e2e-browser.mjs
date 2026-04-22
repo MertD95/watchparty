@@ -584,6 +584,109 @@ async function testPopupFirstJoinMissingRoomShowsImmediateError() {
   }
 }
 
+async function testPopupShowsImmediateInvalidRoomKeyErrorAfterHostUpdatesInviteKey() {
+  console.log('\n-- Test: Popup surfaces invalid old room keys after the host updates the invite key --');
+  const hostCtx = await launchWithExtension();
+  const peerCtx = await launchWithExtension();
+  try {
+    const hostStremio = await openStremio(hostCtx);
+    const hostExtId = await getExtensionId(hostCtx);
+    const hostPopup = await openPopup(hostCtx, hostExtId);
+    await hostPopup.fill('#username-input', 'HostKeyOwner');
+    await hostPopup.click('#btn-create');
+    await hostPopup.waitForFunction(
+      () => !document.getElementById('view-room').classList.contains('hidden'),
+      { timeout: TIMEOUT }
+    );
+    const roomState = await hostPopup.evaluate(async () => {
+      const roomId = document.getElementById('room-id-display')?.textContent?.trim();
+      const storageKey = roomId ? `wpRoomKey:${roomId}` : null;
+      const local = storageKey ? await chrome.storage.local.get(storageKey) : {};
+      const session = storageKey ? await chrome.storage.session.get(storageKey) : {};
+      return {
+        roomId,
+        roomKey: (session && storageKey && session[storageKey]) || (local && storageKey && local[storageKey]?.value) || null,
+      };
+    });
+
+    await openSidebarPanel(hostStremio, 'room');
+    await hostStremio.waitForFunction(
+      () => !!document.getElementById('wp-room-key-input') && !!document.getElementById('wp-room-key-save'),
+      { timeout: TIMEOUT }
+    );
+    await hostStremio.evaluate(() => {
+      const input = document.getElementById('wp-room-key-input');
+      input.value = 'UpdatedRoomKey-12345';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      document.getElementById('wp-room-key-save')?.click();
+    });
+    await hostStremio.waitForTimeout(1200);
+    const updatedRoomKey = await hostPopup.evaluate(async () => {
+      const roomId = document.getElementById('room-id-display')?.textContent?.trim();
+      const storageKey = roomId ? `wpRoomKey:${roomId}` : null;
+      const local = storageKey ? await chrome.storage.local.get(storageKey) : {};
+      const session = storageKey ? await chrome.storage.session.get(storageKey) : {};
+      return (session && storageKey && session[storageKey]) || (local && storageKey && local[storageKey]?.value) || null;
+    });
+
+    const peerStremio = await openStremio(peerCtx);
+    const peerExtId = await getExtensionId(peerCtx);
+    const peerPopup = await openPopup(peerCtx, peerExtId);
+    await peerPopup.fill('#username-input', 'PeerKeyJoiner');
+    await peerPopup.click('#lobby-tab-join');
+    await peerPopup.fill('#room-id-input', `${roomState.roomId}#key=${roomState.roomKey}`);
+    await peerPopup.click('#btn-join');
+
+    const invalidKeyShown = await assertPass('Popup surfaces the invalid old room key immediately', () => peerPopup.waitForFunction(
+      () => {
+        const error = document.getElementById('join-error');
+        return !!error
+          && !error.classList.contains('hidden')
+          && /room key is invalid/i.test(error.textContent || '');
+      },
+      { timeout: TIMEOUT }
+    ));
+
+    if (invalidKeyShown) {
+      const stillLobby = await peerPopup.evaluate(() =>
+        !document.getElementById('view-lobby').classList.contains('hidden')
+        && document.getElementById('view-room').classList.contains('hidden')
+      );
+      assert(stillLobby, 'Popup stays in the lobby after the invalid old room key');
+    }
+
+    await peerPopup.fill('#room-id-input', `${roomState.roomId}#key=${updatedRoomKey}`);
+    await peerPopup.click('#btn-join');
+    const joinedWithNewKey = await assertPass('Popup still joins successfully with the updated room key', () => peerPopup.waitForFunction(
+      () => !document.getElementById('view-room').classList.contains('hidden'),
+      { timeout: TIMEOUT }
+    ));
+
+    if (joinedWithNewKey) {
+      const peerRoomState = await peerPopup.evaluate(() => ({
+        roomId: document.getElementById('room-id-display')?.textContent?.trim() || null,
+        role: document.getElementById('room-role-badge')?.textContent?.trim() || null,
+        count: document.getElementById('room-count-badge')?.textContent?.trim() || null,
+      }));
+      assert(peerRoomState.roomId === roomState.roomId, 'Updated key join lands in the expected room');
+      assert(peerRoomState.role === 'Synced', 'Updated key join preserves the peer role');
+      assert(peerRoomState.count === '2 watching', 'Updated key join shows both room members');
+      const peerAttached = await assertPass('Peer overlay attaches after joining with the updated room key', () => peerStremio.waitForFunction(
+        () => !document.getElementById('wp-sidebar')?.innerText?.includes('Not in a room'),
+        { timeout: TIMEOUT }
+      ));
+    }
+
+    await peerPopup.close().catch(() => {});
+    await hostPopup.close().catch(() => {});
+    await peerStremio.close().catch(() => {});
+    await hostStremio.close().catch(() => {});
+  } finally {
+    await peerCtx.close();
+    await hostCtx.close();
+  }
+}
+
 async function testPopupHidesStaleInactiveBackgroundRoomState() {
   console.log('\n-- Test: Popup treats persisted room state as resumable without a Stremio tab --');
   const context = await launchWithExtension();
@@ -2052,6 +2155,7 @@ async function main() {
     testEmptyUsernameValidation,
     testCreateRoomWithoutStremioTabAttachesLater,
     testPopupFirstJoinMissingRoomShowsImmediateError,
+    testPopupShowsImmediateInvalidRoomKeyErrorAfterHostUpdatesInviteKey,
     testPopupHidesStaleInactiveBackgroundRoomState,
     testCreateRoomFlow,
     testDisconnectedLeaveStillRemovesRoomAfterReconnect,

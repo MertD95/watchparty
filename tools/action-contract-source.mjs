@@ -20,6 +20,7 @@ export const ACTION = Object.freeze({
   ROOM_TYPING_EVENT: 'room.typing.updated',
   ROOM_BOOKMARK_EVENT: 'room.bookmark.appended',
   ROOM_REACTION_EVENT: 'room.reaction.appended',
+  ROOM_ERROR_EVENT: 'room.error',
   ROOM_VISIBILITY_UPDATE: 'room.visibility.update',
   ROOM_SETTINGS_UPDATE: 'room.settings.update',
   ROOM_OWNERSHIP_TRANSFER: 'room.ownership.transfer',
