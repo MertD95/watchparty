@@ -59,12 +59,12 @@
     a:hover { text-decoration: underline; }
 
     .page-shell {
-      max-width: 1180px;
+      max-width: 1220px;
       margin: 0 auto;
-      padding: 20px 24px 56px;
+      padding: 20px 24px 44px;
       display: flex;
       flex-direction: column;
-      gap: 28px;
+      gap: 22px;
       position: relative;
     }
 
@@ -150,8 +150,8 @@
     .hero {
       display: grid;
       grid-template-columns: minmax(0, 1.4fr) minmax(300px, 0.9fr);
-      gap: 24px;
-      padding: 28px;
+      gap: 20px;
+      padding: 24px;
       align-items: stretch;
     }
 
@@ -159,9 +159,9 @@
       display: flex;
       flex-direction: column;
       justify-content: flex-start;
-      gap: 18px;
+      gap: 16px;
       min-width: 0;
-      padding-top: 8px;
+      padding-top: 4px;
     }
 
     .hero-kicker {
@@ -285,7 +285,7 @@
       flex-direction: column;
       gap: 14px;
       border-radius: 18px;
-      padding: 16px 18px;
+      padding: 14px 16px;
       background: rgba(148, 163, 184, 0.08);
       border: 1px solid rgba(148, 163, 184, 0.12);
     }
@@ -349,7 +349,7 @@
       flex-direction: column;
       gap: 8px;
       border-radius: 18px;
-      padding: 16px 18px;
+      padding: 14px 16px;
       background: rgba(148, 163, 184, 0.08);
       border: 1px solid rgba(148, 163, 184, 0.12);
     }
@@ -379,7 +379,7 @@
       flex-direction: column;
       gap: 12px;
       border-radius: 18px;
-      padding: 16px 18px;
+      padding: 14px 16px;
       background: rgba(148, 163, 184, 0.08);
       border: 1px solid rgba(148, 163, 184, 0.12);
     }
@@ -951,7 +951,7 @@
       .header,
       .hero,
       .section-shell {
-        padding: 20px;
+        padding: 18px;
       }
 
       .nav {
@@ -1002,7 +1002,7 @@
           <img class="logo-mark" src="/favicon.svg" alt="WatchParty" />
           <div class="logo-copy">
             <div class="logo">Watch<span>Party</span></div>
-            <div class="logo-subtitle">Watch together on Stremio with live room discovery and synced playback.</div>
+            <div class="logo-subtitle">Sync play, chat, and room links for Stremio.</div>
           </div>
         </div>
         <nav class="nav">
@@ -1014,29 +1014,29 @@
 
       <div class="hero surface">
         <div class="hero-copy">
-          <div class="hero-kicker">Sync Without Streaming For Each Other</div>
-          <h1>Watch together on <span>Stremio</span></h1>
-          <p>Synchronized playback with friends. Everyone streams locally on their own machine while WatchParty keeps play, pause, seek, chat, and room state in sync.</p>
+          <div class="hero-kicker">Sync play. Keep your own streams.</div>
+          <h1>Sync <span>Stremio</span> with friends</h1>
+          <p>Each person streams locally. WatchParty keeps play, pause, seek, chat, and room state aligned.</p>
           <div class="cta-row">
             <button class="btn btn-primary" id="hero-primary-btn" type="button">Install Extension</button>
-            <a href="https://web.stremio.com" class="btn btn-secondary" id="hero-stremio-btn" target="_blank">Open Stremio Web</a>
-            <button class="btn btn-secondary" id="hero-private-btn" type="button">Paste Invite Link</button>
+            <a href="https://web.stremio.com" class="btn btn-secondary" id="hero-stremio-btn" target="_blank">Open Stremio</a>
+            <button class="btn btn-secondary" id="hero-private-btn" type="button">Join via Link</button>
           </div>
           <div class="hero-feature-grid">
             <div class="hero-feature">
               <div class="hero-feature-label">Local Playback</div>
               <div class="hero-feature-value">Everyone streams on their own machine</div>
-              <div class="hero-feature-copy">WatchParty only coordinates timing, room state, and chat.</div>
+              <div class="hero-feature-copy">WatchParty only coordinates timing and room state.</div>
             </div>
             <div class="hero-feature">
               <div class="hero-feature-label">Join Access</div>
               <div class="hero-feature-value">Open join or invite-key rooms</div>
-              <div class="hero-feature-copy">Hosts can choose who can enter without changing whether the room is listed.</div>
+              <div class="hero-feature-copy">Access and listing are separate.</div>
             </div>
             <div class="hero-feature">
               <div class="hero-feature-label">Live Controls</div>
-              <div class="hero-feature-value">Playback, chat, reactions, and room controls stay in Stremio</div>
-              <div class="hero-feature-copy">Use WatchParty for discovery, room entry, and fast recovery.</div>
+              <div class="hero-feature-value">Playback and chat stay in Stremio</div>
+              <div class="hero-feature-copy">Use WatchParty for discovery, entry, and recovery.</div>
             </div>
           </div>
         </div>
@@ -1050,7 +1050,7 @@
               <span class="hero-status-pill" id="hero-extension-pill">Checking extension</span>
               <span class="hero-status-pill hidden" id="hero-room-pill"></span>
             </div>
-            <p class="hero-profile-note" id="hero-profile-note">Install the extension to create and join rooms from WatchParty.</p>
+            <p class="hero-profile-note" id="hero-profile-note">Install the extension to create or join from WatchParty.</p>
             <div class="hero-inline-actions">
               <button class="btn btn-secondary hidden" id="hero-settings-btn" type="button">Extension Settings</button>
             </div>
@@ -1064,12 +1064,12 @@
           </div>
           <div class="hero-guide-card">
             <div class="hero-summary-kicker">Session Flow</div>
-            <h3>Start here, finish in Stremio</h3>
-            <p>Create, join, or resume from WatchParty. Once the room is active, the Stremio sidebar handles playback, chat, reactions, and room controls.</p>
+            <h3>Start here. Watch in Stremio.</h3>
+            <p>Create, join, or resume from WatchParty. Once the room is live, use the Stremio sidebar.</p>
             <ul class="hero-guide-list">
-              <li><strong>Join access:</strong> Public rooms allow open join. Private rooms require the invite key.</li>
-              <li><strong>Listing:</strong> Showing a room on WatchParty is separate from join access, so hosts can show or hide the room without changing who can enter.</li>
-              <li><strong>Direct Join:</strong> When the host route is portable, WatchParty can open the same stream directly in Stremio.</li>
+              <li><strong>Join access:</strong> Open join or invite key.</li>
+              <li><strong>Listing:</strong> Show or hide the room on WatchParty separately.</li>
+              <li><strong>Direct Join:</strong> Open the same stream in Stremio when the host route is portable.</li>
             </ul>
             <div class="hero-summary">
               <div class="hero-summary-kicker">Live right now</div>
@@ -1084,30 +1084,30 @@
         <div class="section-heading">
           <div class="section-heading-copy">
             <div class="section-kicker">How It Works</div>
-            <h2>Get set up, invite people, and start syncing</h2>
-            <div class="section-copy">The extension does the coordination work for you. The website is mainly for discovery, invites, and fast entry into rooms.</div>
+            <h2>Setup in four steps</h2>
+            <div class="section-copy">Use the website for discovery and room entry. Use Stremio for the live session.</div>
           </div>
         </div>
         <div class="step-grid">
           <div class="step">
             <div class="step-num">1</div>
-            <h3>Install the extension</h3>
-            <p>Add WatchParty to your browser, then make sure Stremio Web is open and ready.</p>
+            <h3>Install</h3>
+            <p>Add WatchParty, then open Stremio Web.</p>
           </div>
           <div class="step">
             <div class="step-num">2</div>
-            <h3>Pick something to watch</h3>
-            <p>Browse and start playing on <a href="https://web.stremio.com" target="_blank">web.stremio.com</a> like normal.</p>
+            <h3>Pick something</h3>
+            <p>Open a title in <a href="https://web.stremio.com" target="_blank">Stremio Web</a>.</p>
           </div>
           <div class="step">
             <div class="step-num">3</div>
-            <h3>Create or join a room</h3>
-            <p>Use WatchParty to create or join a room, then let the extension carry the handoff into Stremio.</p>
+            <h3>Create or join</h3>
+            <p>Start from WatchParty, then let the extension hand off to Stremio.</p>
           </div>
           <div class="step">
             <div class="step-num">4</div>
-            <h3>Watch in sync</h3>
-            <p>Play, pause, seek, react, and chat while everyone stays aligned on the same timeline.</p>
+            <h3>Stay aligned</h3>
+            <p>Play, pause, seek, react, and chat in one shared session.</p>
           </div>
         </div>
       </div>
@@ -1117,17 +1117,17 @@
           <div class="section-heading-copy">
             <div class="section-kicker">Live Discovery</div>
             <h2>Active Rooms</h2>
-            <p class="rooms-subtitle">Open-join and invite-key rooms can both appear here. Hosts control listing separately from join access.</p>
+            <p class="rooms-subtitle">Listed rooms appear here. Hosts choose access and listing separately.</p>
           </div>
           <button class="btn btn-secondary" id="rooms-private-btn" type="button">Join via Invite</button>
         </div>
         <div class="rooms-list" id="rooms-list">
-          <div class="rooms-empty" id="rooms-empty">No active rooms right now. Create one from WatchParty and head into Stremio when you are ready.</div>
+          <div class="rooms-empty" id="rooms-empty">No listed rooms right now. Create one from WatchParty and continue in Stremio.</div>
         </div>
       </div>
 
       <div class="footer">
-        WatchParty is open-source and free. Not affiliated with Stremio.
+        Open-source. Free. Not affiliated with Stremio.
       </div>
     </div>
   </div>
@@ -1160,20 +1160,20 @@
   <div id="create-modal" class="modal-overlay" style="display:none">
     <div class="modal-box">
       <h3>Create Room</h3>
-      <p>Start the room from WatchParty, then continue in Stremio for playback, chat, and session controls.</p>
+      <p>Create here, then continue in Stremio.</p>
       <div class="modal-error" id="create-error" style="display:none"></div>
       <input type="text" id="create-room-name" class="modal-text-input" placeholder="Room name (optional)" maxlength="30" />
       <label class="modal-toggle" for="create-room-public">
         <span class="modal-toggle-copy">
           <span class="modal-toggle-title">Allow open join</span>
-          <span class="modal-toggle-desc">Turn this on if anyone who finds the room should be able to join without an invite key.</span>
+          <span class="modal-toggle-desc">Anyone who finds the room can join without an invite key.</span>
         </span>
         <input type="checkbox" id="create-room-public" />
       </label>
       <label class="modal-toggle" for="create-room-listed">
         <span class="modal-toggle-copy">
           <span class="modal-toggle-title">Show on WatchParty</span>
-          <span class="modal-toggle-desc">Keep this on to list the room on the WatchParty website. Turn it off to hide the room while still sharing the link directly.</span>
+          <span class="modal-toggle-desc">Show the room on WatchParty. Turn it off to hide it while still sharing the link directly.</span>
         </span>
         <input type="checkbox" id="create-room-listed" checked />
       </label>
@@ -1341,15 +1341,15 @@
 
       if (profileNote) {
         if (!extensionDetected) {
-          profileNote.textContent = 'Install the extension to create and join rooms from WatchParty.';
+          profileNote.textContent = 'Install the extension to create or join from WatchParty.';
         } else if (room) {
-          profileNote.textContent = 'You already have an active room. Go to it in Stremio to reopen the WatchParty sidebar.';
+          profileNote.textContent = 'You already have an active room. Open it in Stremio.';
         } else if (nextStatus?.bootstrapPending) {
-          profileNote.textContent = 'WatchParty is staged and waiting for Stremio. Continue there to finish creating or joining the room.';
+          profileNote.textContent = 'WatchParty is staged. Finish in Stremio.';
         } else if (nextStatus?.hasStremioTab) {
-          profileNote.textContent = 'Stremio is already open. Create here, then continue there when the room is ready.';
+          profileNote.textContent = 'Stremio is already open. Create here, then continue there.';
         } else {
-          profileNote.textContent = 'Create or join here first. WatchParty will carry the room into Stremio for the live session.';
+          profileNote.textContent = 'Create or join here first. WatchParty will carry the room into Stremio.';
         }
       }
     }

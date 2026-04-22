@@ -289,15 +289,15 @@ function renderStatus(status) {
   setPill('pill-backend', `${backendInfo.label} backend`, status?.wsConnected ? 'success' : 'warn');
 
   if (!status) {
-    $('hero-note').textContent = 'WatchParty could not read extension status just now. Try refreshing this page.';
+    $('hero-note').textContent = 'Could not read extension status. Refresh and try again.';
   } else if (status.room) {
-    $('hero-note').textContent = 'A room is already active. Go to it in Stremio to focus the tab and reopen the WatchParty sidebar.';
+    $('hero-note').textContent = 'A room is active. Open it in Stremio.';
   } else if (status.bootstrapPending) {
-    $('hero-note').textContent = 'WatchParty is staged and waiting for Stremio. Open it to finish creating or joining the room.';
+    $('hero-note').textContent = 'WatchParty is staged. Finish in Stremio.';
   } else if (status.hasStremioTab) {
-    $('hero-note').textContent = 'Stremio is already open. When a room is active, WatchParty can focus that tab and reopen the in-page sidebar.';
+    $('hero-note').textContent = 'Stremio is already open and ready.';
   } else {
-    $('hero-note').textContent = 'No room is active right now. Use WatchParty to create or join one, then continue in Stremio.';
+    $('hero-note').textContent = 'No room is active. Create or join on WatchParty, then continue in Stremio.';
   }
 
   renderSession(status);

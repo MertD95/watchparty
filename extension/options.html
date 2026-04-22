@@ -498,8 +498,8 @@
           <img class="brand-icon" src="icons/icon48.png" alt="WatchParty" />
           <div class="kicker">Extension Settings</div>
         </div>
-        <h1>WatchParty runs the room flow in the background now.</h1>
-        <p>Room discovery and creation start on WatchParty. Live controls stay inside the WatchParty sidebar in Stremio. Use "Go to Room in Stremio" to focus the active room there. This page is only for extension-level connection and diagnostic settings.</p>
+        <h1>Manage the WatchParty runtime.</h1>
+        <p>Start rooms on WatchParty. Use Stremio for playback and chat. This page is for connection, recovery, and diagnostics.</p>
         <div class="actions">
           <button class="btn-primary" id="btn-resume-room" type="button">Go to Room in Stremio</button>
           <button class="btn-secondary" id="btn-open-watchparty" type="button">Open WatchParty</button>
@@ -524,12 +524,12 @@
     <div class="grid">
       <section class="card section section-wide">
         <div class="kicker">Connection & Recovery</div>
-        <h2>Runtime Controls</h2>
-        <p class="card-copy">Keep backend selection, local recovery actions, and diagnostics close together so this page stays compact while still exposing the full extension runtime state.</p>
+        <h2>Runtime</h2>
+        <p class="card-copy">Backend selection and local recovery in one place.</p>
         <div class="control-grid">
           <div class="control-block">
             <div class="control-title">Backend Mode</div>
-            <p class="card-copy">Use Auto for normal usage. Local and Live remain available for development, debugging, and recovery.</p>
+            <p class="card-copy">Use Auto normally. Local and Live stay available for debugging.</p>
             <div class="backend-toggle" id="backend-toggle">
               <button class="backend-btn" id="backend-auto" data-mode="auto" type="button">Auto</button>
               <button class="backend-btn" id="backend-local" data-mode="local" type="button">Local</button>
@@ -540,7 +540,7 @@
           </div>
           <div class="control-block">
             <div class="control-title">Local Recovery</div>
-            <p class="card-copy">These actions only reset browser-side WatchParty state. They do not delete rooms on the server, but they can clear stuck handoffs, cached invite keys, and stale runtime state after development or interrupted sessions.</p>
+            <p class="card-copy">These actions only reset browser-side state. They do not delete rooms on the server.</p>
             <div class="actions">
               <button class="btn-secondary" id="btn-clear-bootstrap" type="button">Clear Staged Handoff</button>
               <button class="btn-secondary" id="btn-clear-room-keys" type="button">Clear Room Keys</button>
@@ -548,7 +548,7 @@
               <button class="btn-secondary" id="btn-copy-diagnostics" type="button">Copy Diagnostics</button>
             </div>
             <p class="backend-feedback" id="recovery-feedback" aria-live="polite"></p>
-            <p class="card-copy">Reset WatchParty State keeps backend mode and sidebar appearance preferences, but clears session identity, staged room handoffs, cached room snapshots, saved auth, and invite-key caches.</p>
+            <p class="card-copy">Reset keeps backend mode and appearance settings, but clears session and room runtime state.</p>
           </div>
         </div>
       </section>
@@ -557,8 +557,8 @@
         <div class="section-head">
           <div>
             <div class="kicker">Diagnostics</div>
-            <h2>Live Extension State</h2>
-            <p class="card-copy">Readable connection, runtime, resume-target, and invariant state from the extension plus backend diagnostics when the active backend is reachable.</p>
+            <h2>Status</h2>
+            <p class="card-copy">Live extension and backend state.</p>
           </div>
           <div class="actions">
             <button class="btn-secondary" id="btn-refresh" type="button">Refresh Status</button>
