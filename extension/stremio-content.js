@@ -1137,6 +1137,8 @@
             WPOverlay.showToast('This private room requires a room key.', 2500);
           } else if (p.code === WPProtocol.ERROR_CODE.INVALID_ROOM_KEY) {
             WPOverlay.showToast('Room key is invalid. Check the invite link or try again.', 3000);
+          } else if (p.code === WPProtocol.ERROR_CODE.USERNAME_IN_USE) {
+            WPOverlay.showToast('That display name is already in use in this room.', 3000);
           } else if (p.code !== WPProtocol.ERROR_CODE.COOLDOWN && p.code !== WPProtocol.ERROR_CODE.VALIDATION_FAILED) {
             WPOverlay.showToast(p.message, 2000);
           }

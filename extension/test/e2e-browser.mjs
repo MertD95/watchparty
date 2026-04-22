@@ -727,6 +727,58 @@ async function testPopupShowsImmediateInvalidRoomKeyErrorAfterHostUpdatesInviteK
   }
 }
 
+async function testPopupRejectsDuplicateDisplayNameInSameRoom() {
+  console.log('\n-- Test: Popup rejects duplicate display names in the same room --');
+  const hostCtx = await launchWithExtension();
+  const peerCtx = await launchWithExtension();
+  try {
+    const hostStremio = await openStremio(hostCtx);
+    const hostExtId = await getExtensionId(hostCtx);
+    const hostPopup = await openPopup(hostCtx, hostExtId);
+    await hostPopup.fill('#username-input', 'Alice');
+    await hostPopup.check('#public-check');
+    await hostPopup.click('#btn-create');
+    await hostPopup.waitForFunction(
+      () => !document.getElementById('view-room').classList.contains('hidden'),
+      { timeout: TIMEOUT }
+    );
+    const roomId = await hostPopup.evaluate(() => document.getElementById('room-id-display')?.textContent?.trim() || '');
+
+    const peerStremio = await openStremio(peerCtx);
+    const peerPopup = await openPopup(peerCtx, await getExtensionId(peerCtx));
+    await peerPopup.fill('#username-input', 'Alice');
+    await peerPopup.click('#lobby-tab-join');
+    await peerPopup.fill('#room-id-input', roomId);
+    await peerPopup.click('#btn-join');
+
+    const duplicateNameShown = await assertPass('Popup surfaces a duplicate display-name error immediately', () => peerPopup.waitForFunction(
+      () => {
+        const error = document.getElementById('join-error');
+        return !!error
+          && !error.classList.contains('hidden')
+          && /already in use/i.test(error.textContent || '');
+      },
+      { timeout: TIMEOUT }
+    ));
+
+    if (duplicateNameShown) {
+      const stillLobby = await peerPopup.evaluate(() =>
+        !document.getElementById('view-lobby').classList.contains('hidden')
+        && document.getElementById('view-room').classList.contains('hidden')
+      );
+      assert(stillLobby, 'Popup stays in the lobby after a duplicate display-name rejection');
+    }
+
+    await peerStremio.close().catch(() => {});
+    await peerPopup.close().catch(() => {});
+    await hostPopup.close().catch(() => {});
+    await hostStremio.close().catch(() => {});
+  } finally {
+    await peerCtx.close();
+    await hostCtx.close();
+  }
+}
+
 async function testPopupHidesStaleInactiveBackgroundRoomState() {
   console.log('\n-- Test: Popup treats persisted room state as resumable without a Stremio tab --');
   const context = await launchWithExtension();
@@ -2209,6 +2261,7 @@ async function main() {
     testCreateRoomWithoutStremioTabAttachesLater,
     testPopupFirstJoinMissingRoomShowsImmediateError,
     testPopupShowsImmediateInvalidRoomKeyErrorAfterHostUpdatesInviteKey,
+    testPopupRejectsDuplicateDisplayNameInSameRoom,
     testPopupHidesStaleInactiveBackgroundRoomState,
     testCreateRoomFlow,
     testDisconnectedLeaveStillRemovesRoomAfterReconnect,

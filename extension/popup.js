@@ -16,6 +16,7 @@ function getErrorMessage(errorLike, fallback) {
   if (code === 'ROOM_NOT_FOUND') return 'Room not found. Check the room ID or invite link and try again.';
   if (code === 'ROOM_KEY_REQUIRED') return 'This private room requires a room key.';
   if (code === 'INVALID_ROOM_KEY') return 'The room key is invalid. Paste the full invite link or a fresh room key.';
+  if (code === 'USERNAME_IN_USE') return 'That display name is already in use in this room. Choose another one.';
   if (code === 'VALIDATION_FAILED') return 'That request was rejected. Check the room details and try again.';
   if (code === 'NOT_OWNER') return 'Only the host can do that.';
   const message = typeof errorLike?.message === 'string' && errorLike.message.trim()
