@@ -54,16 +54,35 @@ export async function injectSeekableTestVideo(page, targetTimeSeconds = 2) {
     });
 
     const safeTime = Math.min(desiredTime, Math.max(0, (video.duration || desiredTime) - 0.1));
-    await new Promise((resolve) => {
-      const onSeeked = () => {
+    await new Promise((resolve, reject) => {
+      let settled = false;
+      const cleanup = () => {
+        settled = true;
         video.removeEventListener('seeked', onSeeked);
+      };
+      const onSeeked = () => {
+        if (settled) return;
+        cleanup();
         resolve();
       };
       video.addEventListener('seeked', onSeeked);
       video.currentTime = safeTime;
-      setTimeout(resolve, 500);
+      const started = performance.now();
+      const verify = () => {
+        if (settled) return;
+        if (Math.abs((video.currentTime || 0) - safeTime) < 0.25) {
+          cleanup();
+          resolve();
+          return;
+        }
+        if ((performance.now() - started) > 2000) {
+          cleanup();
+          reject(new Error('timed out waiting for seekable test video'));
+          return;
+        }
+        requestAnimationFrame(verify);
+      };
+      requestAnimationFrame(verify);
     });
   }, targetTimeSeconds);
-
-  await page.waitForTimeout(1000);
 }

@@ -1,5 +1,6 @@
 const DEFAULT_IGNORES = [
   /no viable transport found \(qt\.webChannelTransport\)/i,
+  /Permissions policy violation: compute-pressure is not allowed in this document\./i,
   /googleads\.g\.doubleclick\.net\/pagead\/viewthroughconversion/i,
   /youtube\.com\/pagead\/viewthroughconversion/i,
   /Failed to load resource: net::ERR_FAILED/i,

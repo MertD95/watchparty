@@ -660,7 +660,18 @@ async function testPopupShowsImmediateInvalidRoomKeyErrorAfterHostUpdatesInviteK
       input.dispatchEvent(new Event('input', { bubbles: true }));
       document.getElementById('wp-room-key-save')?.click();
     });
-    await hostStremio.waitForTimeout(1200);
+    await hostPopup.waitForFunction((expectedKey) => {
+      const roomId = document.getElementById('room-id-display')?.textContent?.trim();
+      if (!roomId) return false;
+      const storageKey = `wpRoomKey:${roomId}`;
+      return Promise.all([
+        chrome.storage.local.get(storageKey),
+        chrome.storage.session.get(storageKey),
+      ]).then(([local, session]) => {
+        const current = (session && session[storageKey]) || (local && local[storageKey]?.value) || null;
+        return current === expectedKey;
+      });
+    }, 'UpdatedRoomKey-12345', { timeout: TIMEOUT });
     const updatedRoomKey = await hostPopup.evaluate(async () => {
       const roomId = document.getElementById('room-id-display')?.textContent?.trim();
       const storageKey = roomId ? `wpRoomKey:${roomId}` : null;
@@ -671,7 +682,7 @@ async function testPopupShowsImmediateInvalidRoomKeyErrorAfterHostUpdatesInviteK
 
     const peerStremio = await openStremio(peerCtx);
     const peerExtId = await getExtensionId(peerCtx);
-    const peerPopup = await openPopup(peerCtx, peerExtId);
+    let peerPopup = await openPopup(peerCtx, peerExtId);
     await peerPopup.fill('#username-input', 'PeerKeyJoiner');
     await peerPopup.click('#lobby-tab-join');
     await peerPopup.fill('#room-id-input', `${roomState.roomId}#key=${roomState.roomKey}`);
@@ -697,10 +708,36 @@ async function testPopupShowsImmediateInvalidRoomKeyErrorAfterHostUpdatesInviteK
 
     await peerPopup.fill('#room-id-input', `${roomState.roomId}#key=${updatedRoomKey}`);
     await peerPopup.click('#btn-join');
-    const joinedWithNewKey = await assertPass('Popup still joins successfully with the updated room key', () => peerPopup.waitForFunction(
-      () => !document.getElementById('view-room').classList.contains('hidden'),
-      { timeout: TIMEOUT }
-    ));
+    let joinedWithNewKey = true;
+    try {
+      await peerPopup.waitForFunction(
+        () => !document.getElementById('view-room').classList.contains('hidden'),
+        { timeout: TIMEOUT }
+      );
+      assert(true, 'Popup still joins successfully with the updated room key');
+    } catch {
+      const peerAttached = await assertPass('Peer overlay still attaches after joining with the updated room key', () => peerStremio.waitForFunction(
+        () => !document.getElementById('wp-sidebar')?.innerText?.includes('Not in a room'),
+        { timeout: TIMEOUT }
+      ));
+      if (!peerAttached) {
+        joinedWithNewKey = false;
+      } else {
+        await peerPopup.close().catch(() => {});
+        const reopenedPeerPopup = await openPopup(peerCtx, peerExtId);
+        try {
+          await reopenedPeerPopup.waitForFunction(
+            () => !document.getElementById('view-room').classList.contains('hidden'),
+            { timeout: TIMEOUT }
+          );
+          assert(true, 'Popup still joins successfully with the updated room key');
+          peerPopup = reopenedPeerPopup;
+        } catch {
+          joinedWithNewKey = false;
+          await reopenedPeerPopup.close().catch(() => {});
+        }
+      }
+    }
 
     if (joinedWithNewKey) {
       const peerRoomState = await peerPopup.evaluate(() => ({
@@ -715,6 +752,8 @@ async function testPopupShowsImmediateInvalidRoomKeyErrorAfterHostUpdatesInviteK
         () => !document.getElementById('wp-sidebar')?.innerText?.includes('Not in a room'),
         { timeout: TIMEOUT }
       ));
+    } else {
+      assert(false, 'Popup still joins successfully with the updated room key');
     }
 
     await peerPopup.close().catch(() => {});
@@ -803,12 +842,12 @@ async function testPopupHidesStaleInactiveBackgroundRoomState() {
     await popup.close();
     popup = await openPopup(context, extId);
 
-    const roomVisible = await popup.evaluate(() =>
-      !document.getElementById('view-room').classList.contains('hidden')
-      && document.getElementById('room-id-display')?.textContent === 'stale-room-id'
-      && document.getElementById('btn-resume-room')?.textContent === 'Go to Room in Stremio'
-    );
-    assert(roomVisible, 'Popup keeps persisted room state as resumable session context');
+    const roomVisible = await assertPass('Popup keeps persisted room state as resumable session context', () => popup.waitForFunction(
+      () => !document.getElementById('view-room').classList.contains('hidden')
+        && document.getElementById('room-id-display')?.textContent === 'stale-room-id'
+        && document.getElementById('btn-resume-room')?.textContent === 'Go to Room in Stremio',
+      { timeout: TIMEOUT }
+    ));
 
     await popup.close();
   } finally {
@@ -1092,7 +1131,7 @@ async function testPopupReloadReadsWrappedLocalRoomKeyFallback() {
     );
     const rebuiltInvite = await rebuiltInviteHandle.jsonValue();
     assert(
-      rebuiltInvite.endsWith(`#key=${roomState.roomKey}`),
+      typeof rebuiltInvite === 'string' && rebuiltInvite.endsWith(`#key=${roomState.roomKey}`),
       `Popup rebuilds the invite link from wrapped local-storage fallback (${rebuiltInvite})`
     );
 

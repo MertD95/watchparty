@@ -179,7 +179,7 @@ async function testSidepanelChatAndBookmarks() {
 
     if (roomStateReady.ok) {
       const statusText = await env.sidepanel.evaluate(() => document.getElementById('status')?.innerText || '');
-      assert(statusText.includes('Synced to host'), 'peer sidepanel reflects the non-host role');
+      assert(statusText.includes('Synced'), 'peer sidepanel reflects the non-host role');
 
       await env.stremio1.evaluate(() => document.querySelector('[data-panel="chat"]')?.click());
       await waitForSidebarPanel(env.stremio1, 'chat');

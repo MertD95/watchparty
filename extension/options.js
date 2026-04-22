@@ -3,7 +3,6 @@
 const $ = (id) => document.getElementById(id);
 
 let lastStatus = null;
-let lastServerDiagnostics = null;
 let refreshTimer = null;
 let backendMutationInFlight = false;
 let recoveryMutationInFlight = false;
@@ -215,7 +214,6 @@ function describeContentHandoff(status) {
 
 function renderStatus(status) {
   lastStatus = status || null;
-  lastServerDiagnostics = status?.serverDiagnostics || null;
   const extensionVersion = chrome.runtime.getManifest().version;
   const backendKey = WPConstants.BACKEND.resolveKey(status?.backendMode, status?.activeBackend);
   const backendInfo = WPConstants.BACKEND.getInfo(backendKey);
