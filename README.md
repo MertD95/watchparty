@@ -60,6 +60,9 @@ npm run gen:icons
 
 - `extension/wp-protocol.js` is generated from `../watchparty-server/tools/gen-protocol.js`
 - The extension and landing page both depend on `watchparty-server` for live room flows
+- The default manifest no longer ships localhost landing-page access; unpacked dev installs can opt into localhost landing access from the options page when needed
+- `localhost:11470` is the Stremio local service, not just a development host
+- The Stremio auth key is forwarded to the background worker and kept in memory only; it is not persisted in extension storage
 - `npm run test:sidepanel-integration` is the specific sidepanel-backed integration suite
 - `npm run test:integration` is kept as a compatibility alias for `test:sidepanel-integration`
 - The website can auto-deploy through Cloudflare Pages Git integration, but the browser extension is not published to the Chrome Web Store by a normal push

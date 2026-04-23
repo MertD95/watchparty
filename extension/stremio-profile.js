@@ -1,7 +1,7 @@
 // WatchParty - Stremio Profile Reader
 // Reads user profile from Stremio Web localStorage and caches non-sensitive profile
 // data in chrome.storage.local. The auth key is forwarded to the background and kept
-// in session storage instead of being persisted durably.
+// in background memory only instead of being persisted.
 
 const WPProfile = (() => {
   'use strict';

@@ -544,6 +544,15 @@
             <p class="backend-feedback" id="recovery-feedback" aria-live="polite"></p>
             <p class="card-copy">Reset keeps backend mode and appearance settings, but clears session and room runtime state.</p>
           </div>
+          <div class="control-block hidden" id="dev-localhost-block">
+            <div class="control-title">Development Access</div>
+            <p class="card-copy">Local WatchParty landing pages are no longer part of the default shipped site-access list. Enable them only when testing localhost landing flows in an unpacked development build.</p>
+            <div class="actions">
+              <button class="btn-secondary" id="btn-toggle-local-landing" type="button">Enable Local Landing Access</button>
+            </div>
+            <p class="backend-feedback" id="dev-localhost-feedback" aria-live="polite"></p>
+            <p class="card-copy" id="dev-localhost-note">Local landing access is disabled.</p>
+          </div>
         </div>
       </section>
 

@@ -88,6 +88,7 @@ async function waitForPopupReady(page) {
     const wsText = document.getElementById('ws-status')?.textContent || '';
     return !!document.getElementById('username-input')
       && !!document.getElementById('btn-create')
+      && document.body?.dataset?.statusReady === 'true'
       && wsText.trim().length > 0;
   }, { timeout: TIMEOUT });
 }

@@ -15,6 +15,12 @@
     "http://localhost:11470/*",
     "http://127.0.0.1:11470/*"
   ],
+  "optional_host_permissions": [
+    "http://localhost:8080/*",
+    "http://localhost:8090/*",
+    "http://127.0.0.1:8080/*",
+    "http://127.0.0.1:8090/*"
+  ],
   "declarative_net_request": {
     "rule_resources": [
       {
@@ -40,11 +46,7 @@
     },
     {
       "matches": [
-        "https://watchparty.mertd.me/*",
-        "http://localhost:8080/*",
-        "http://localhost:8090/*",
-        "http://127.0.0.1:8080/*",
-        "http://127.0.0.1:8090/*"
+        "https://watchparty.mertd.me/*"
       ],
       "js": ["wp-actions.js", "constants.js", "content.js"],
       "run_at": "document_start"

@@ -45,7 +45,10 @@ const WPAction = (() => {
     APP_OPTIONS_OPEN: 'app.options.open',
     APP_STREMIO_OPEN: 'app.stremio.open',
     CLIPBOARD_COPY: 'clipboard.copy',
+    SERVER_DIAGNOSTICS_GET: 'server.diagnostics.get',
+    LOCAL_LANDING_ACCESS_SYNC: 'localLandingAccess.sync',
     AUTH_KEY_SAVE: 'auth.key.save',
+    AUTH_KEY_CLEAR: 'auth.key.clear',
     OFFSCREEN_COPY: 'offscreen.copy',
   });
 

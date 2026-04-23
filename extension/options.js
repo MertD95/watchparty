@@ -47,6 +47,14 @@ function setRecoveryFeedback(message = '', tone = '') {
   if (tone) el.classList.add(tone);
 }
 
+function setDevLocalhostFeedback(message = '', tone = '') {
+  const el = $('dev-localhost-feedback');
+  if (!el) return;
+  el.textContent = message;
+  el.className = 'backend-feedback';
+  if (tone) el.classList.add(tone);
+}
+
 function getExtensionState(keys) {
   return WPRuntimeState.get(keys);
 }
@@ -180,6 +188,28 @@ function renderIssueList(id, issues, emptyText) {
   }).join('');
 }
 
+function renderLocalLandingAccess(status) {
+  const block = $('dev-localhost-block');
+  const button = $('btn-toggle-local-landing');
+  const note = $('dev-localhost-note');
+  if (!block || !button || !note) return;
+
+  const access = status?.localLandingAccess || null;
+  const available = status?.isDevInstall === true && access?.available === true;
+  if (!available) {
+    block.classList.add('hidden');
+    return;
+  }
+
+  block.classList.remove('hidden');
+  const enabled = access?.enabled === true;
+  const granted = access?.granted === true;
+  button.textContent = granted ? 'Disable Local Landing Access' : 'Enable Local Landing Access';
+  note.textContent = enabled
+    ? 'Local landing access is enabled for localhost and 127.0.0.1 WatchParty pages in this development install.'
+    : 'Enable this only when testing local WatchParty landing pages. Installed builds do not need it.';
+}
+
 function formatDiagnosticTimestamp(value) {
   if (!value) return 'Server diagnostics unavailable';
   const date = new Date(value);
@@ -300,6 +330,7 @@ function renderStatus(status) {
 
   renderSession(status);
   renderBackend(status);
+  renderLocalLandingAccess(status);
 }
 
 async function refreshStatus() {
@@ -311,30 +342,31 @@ async function refreshStatus() {
       }),
       new Promise((_, reject) => setTimeout(() => reject(new Error('status-timeout')), 2500)),
     ]);
-    const serverDiagnostics = await fetchServerDiagnostics(status).catch(() => null);
-    renderStatus({
-      ...status,
-      serverDiagnostics,
-    });
+    if (status) {
+      const backendInfo = WPConstants.BACKEND.getInfo(WPConstants.BACKEND.resolveKey(
+        status.backendMode,
+        status.activeBackend,
+      ));
+      if (backendInfo.key === WPConstants.BACKEND.MODES.LOCAL) {
+        try {
+          const diagnosticsResponse = await Promise.race([
+            chrome.runtime.sendMessage({
+              type: 'watchparty-ext',
+              action: WPConstants.ACTION.SERVER_DIAGNOSTICS_GET,
+            }),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('diagnostics-timeout')), 2500)),
+          ]);
+          status.serverDiagnostics = diagnosticsResponse?.serverDiagnostics ?? null;
+        } catch {
+          status.serverDiagnostics = null;
+        }
+      } else {
+        status.serverDiagnostics = null;
+      }
+    }
+    renderStatus(status);
   } catch {
     renderStatus(null);
-  }
-}
-
-async function fetchServerDiagnostics(status) {
-  const backendKey = WPConstants.BACKEND.resolveKey(status?.backendMode, status?.activeBackend);
-  const httpUrl = status?.activeBackendHttpUrl || WPConstants.BACKEND.getInfo(backendKey).httpUrl;
-  if (!httpUrl) return null;
-  if (status?.wsConnected !== true && backendKey !== WPConstants.BACKEND.MODES.LOCAL) return null;
-  try {
-    const res = await Promise.race([
-      fetch(`${httpUrl}/diagnostics`),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('diagnostics-timeout')), 2500)),
-    ]);
-    if (!res?.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
   }
 }
 
@@ -445,6 +477,10 @@ async function resetWatchPartyState() {
   if (sessionKeys.length > 0) {
     await chrome.storage.session.remove(sessionKeys).catch(() => {});
   }
+  await chrome.runtime.sendMessage({
+    type: 'watchparty-ext',
+    action: WPConstants.ACTION.AUTH_KEY_CLEAR,
+  }).catch(() => {});
   return RECOVERY_RESET_LOCAL_KEYS.length + RECOVERY_RESET_SESSION_KEYS.length + new Set([...localKeys, ...sessionKeys]).size;
 }
 
@@ -498,6 +534,61 @@ function bindRecoveryButtons() {
       }
     }
   });
+}
+
+async function toggleLocalLandingAccess() {
+  const access = lastStatus?.localLandingAccess;
+  const origins = Array.isArray(access?.origins) ? access.origins : [];
+  if (!lastStatus?.isDevInstall || origins.length === 0) return;
+
+  const button = $('btn-toggle-local-landing');
+  const enable = access?.granted !== true;
+
+  if (button) {
+    button.disabled = true;
+    button.textContent = enable ? 'Enabling...' : 'Disabling...';
+  }
+
+  setDevLocalhostFeedback(
+    enable ? 'Requesting localhost landing access...' : 'Removing localhost landing access...',
+    'warn'
+  );
+
+  try {
+    if (enable) {
+      const granted = await chrome.permissions.request({ origins });
+      if (!granted) {
+        setDevLocalhostFeedback('Localhost landing access was not granted.', 'warn');
+        return;
+      }
+    } else {
+      await chrome.permissions.remove({ origins });
+    }
+
+    const response = await chrome.runtime.sendMessage({
+      type: 'watchparty-ext',
+      action: WPConstants.ACTION.LOCAL_LANDING_ACCESS_SYNC,
+    });
+    if (response?.ok === false) {
+      setDevLocalhostFeedback('Could not update localhost landing access right now.', 'warn');
+      return;
+    }
+
+    await refreshStatus();
+    setDevLocalhostFeedback(
+      enable
+        ? 'Enabled localhost landing access for this development install.'
+        : 'Disabled localhost landing access for this development install.',
+      'success'
+    );
+  } catch {
+    setDevLocalhostFeedback('Could not update localhost landing access right now.', 'warn');
+  } finally {
+    if (button) {
+      button.disabled = false;
+    }
+    renderLocalLandingAccess(lastStatus);
+  }
 }
 
 function openWatchParty() {
@@ -564,6 +655,7 @@ function init() {
   didInit = true;
   bindBackendButtons();
   bindRecoveryButtons();
+  $('btn-toggle-local-landing')?.addEventListener('click', () => { toggleLocalLandingAccess().catch(() => {}); });
   $('btn-open-watchparty').addEventListener('click', openWatchParty);
   $('btn-open-stremio').addEventListener('click', openStremio);
   $('btn-resume-room').addEventListener('click', () => { resumeRoom().catch(() => {}); });

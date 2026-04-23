@@ -10,6 +10,8 @@ let currentSessionId = null;
 let currentLobbyMode = 'create';
 let suppressedRoomId = null;
 
+document.body.dataset.statusReady = 'false';
+
 function getErrorMessage(errorLike, fallback) {
   if (!errorLike) return fallback;
   const code = typeof errorLike?.code === 'string' ? errorLike.code : '';
@@ -36,6 +38,19 @@ function getDirectStreamUrl(room) {
 
 function getBrowseUrl() {
   return WPConstants.BACKEND.getBrowseUrl(currentBackendMode, currentActiveBackend);
+}
+
+function resetRoomContentLinks() {
+  $('content-link-hint')?.classList.add('hidden');
+  $('content-name').textContent = '';
+  $('content-link')?.classList.add('hidden');
+  $('content-link').href = '#';
+  $('content-stream-link')?.classList.add('hidden');
+  $('content-stream-link').href = '#';
+}
+
+function markStatusReady() {
+  document.body.dataset.statusReady = 'true';
 }
 
 function getExtensionState(keys, callback) {
@@ -432,6 +447,7 @@ chrome.runtime.sendMessage(
     } else {
       showLobbyView();
     }
+    markStatusReady();
   }
 );
 
@@ -459,6 +475,7 @@ chrome.runtime.onMessage.addListener((message) => {
 document.querySelectorAll('#backend-toggle .backend-btn').forEach((btn) => {
   btn.addEventListener('click', () => setBackendMode(btn.dataset.mode));
 });
+resetRoomContentLinks();
 renderBackendControls();
 setWsStatus(false);
 
@@ -468,6 +485,7 @@ function showLobbyView() {
   $('view-lobby').classList.remove('hidden');
   $('view-room').classList.add('hidden');
   currentRenderedRoom = null;
+  resetRoomContentLinks();
   resetLobbyActionButtons();
   // Clear any error messages
   $('join-error').classList.add('hidden');

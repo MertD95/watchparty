@@ -13,14 +13,20 @@ const BG_VERSION = chrome.runtime.getManifest().version;
 const STREMIO_BASE = 'http://localhost:11470';
 const STREMIO_API = 'https://api.strem.io';
 const POLL_INTERVAL_MS = 5000;
+const IS_DEV_INSTALL = !('update_url' in chrome.runtime.getManifest());
 const STREMIO_WEB_URLS = ['https://web.stremio.com/*', 'https://web.strem.io/*', 'https://app.strem.io/*'];
-const WATCHPARTY_URLS = ['https://watchparty.mertd.me/*', 'http://localhost:8080/*', 'http://localhost:8090/*', 'http://127.0.0.1:8080/*', 'http://127.0.0.1:8090/*'];
+const WATCHPARTY_PROD_URLS = ['https://watchparty.mertd.me/*'];
+const WATCHPARTY_DEV_URLS = ['http://localhost:8080/*', 'http://localhost:8090/*', 'http://127.0.0.1:8080/*', 'http://127.0.0.1:8090/*'];
+const WATCHPARTY_URLS = [...WATCHPARTY_PROD_URLS, ...WATCHPARTY_DEV_URLS];
 const STREMIO_WEB_ORIGINS = new Set(['https://web.stremio.com', 'https://web.strem.io', 'https://app.strem.io']);
 const WATCHPARTY_ORIGINS = new Set(['https://watchparty.mertd.me', 'http://localhost:8080', 'http://localhost:8090', 'http://127.0.0.1:8080', 'http://127.0.0.1:8090']);
+const LOCAL_WATCHPARTY_CONTENT_SCRIPT_ID = 'watchparty-local-bridge';
+const LOCAL_WATCHPARTY_CONTENT_SCRIPT_FILES = ['wp-actions.js', 'constants.js', 'content.js'];
 
 // --- State ---
 let stremioRunning = false;
 let stremioSettings = null;
+let stremioAuthKey = null;
 const stats = { bytesProxied: 0, requestsProxied: 0, lastLatencyMs: 0 };
 const knownStremioTabIds = new Set();
 const knownWatchPartyTabIds = new Set();
@@ -42,6 +48,63 @@ const coordinatorState = {
   recentEvents: [],
   updatedAt: 0,
 };
+
+async function unregisterLocalWatchPartyBridge() {
+  if (!chrome.scripting?.unregisterContentScripts) return;
+  try {
+    await chrome.scripting.unregisterContentScripts({ ids: [LOCAL_WATCHPARTY_CONTENT_SCRIPT_ID] });
+  } catch {
+    // Ignore missing registrations.
+  }
+}
+
+async function getLocalLandingAccessState() {
+  const origins = [...WATCHPARTY_DEV_URLS];
+  if (!IS_DEV_INSTALL || !chrome.permissions?.contains) {
+    return { available: false, granted: false, enabled: false, origins };
+  }
+
+  const granted = await chrome.permissions.contains({ origins }).catch(() => false);
+  let enabled = false;
+  if (granted && chrome.scripting?.getRegisteredContentScripts) {
+    try {
+      const scripts = await chrome.scripting.getRegisteredContentScripts({ ids: [LOCAL_WATCHPARTY_CONTENT_SCRIPT_ID] });
+      enabled = scripts.some((script) => script.id === LOCAL_WATCHPARTY_CONTENT_SCRIPT_ID);
+    } catch {
+      enabled = false;
+    }
+  }
+
+  return {
+    available: true,
+    granted,
+    enabled: granted && (enabled || !chrome.scripting?.getRegisteredContentScripts),
+    origins,
+  };
+}
+
+async function syncLocalWatchPartyBridge() {
+  const access = await getLocalLandingAccessState();
+  if (!access.available || !access.granted || !chrome.scripting?.registerContentScripts) {
+    await unregisterLocalWatchPartyBridge();
+    return { ...access, enabled: false };
+  }
+
+  try {
+    await unregisterLocalWatchPartyBridge();
+    await chrome.scripting.registerContentScripts([{
+      id: LOCAL_WATCHPARTY_CONTENT_SCRIPT_ID,
+      matches: access.origins,
+      js: LOCAL_WATCHPARTY_CONTENT_SCRIPT_FILES,
+      runAt: 'document_start',
+      persistAcrossSessions: true,
+    }]);
+  } catch (error) {
+    console.warn('[WP-BG] Failed to sync local WatchParty bridge:', error?.message || String(error));
+  }
+
+  return getLocalLandingAccessState();
+}
 
 function pushCoordinatorEvent(type, details = null) {
   coordinatorState.recentEvents = [
@@ -321,9 +384,9 @@ async function fetchStremioSettings() {
 async function tryProfileSync() {
   const { [WPConstants.STORAGE.STREMIO_PROFILE]: stremioProfile } = await chrome.storage.local.get(WPConstants.STORAGE.STREMIO_PROFILE);
   if (Array.isArray(stremioProfile?.addons) && stremioProfile.addons.length > 0) return;
-  // Auth key stored in session storage (cleared on browser restart) for security
-  const { [WPConstants.STORAGE.SAVED_AUTH_KEY]: savedAuthKey } = await chrome.storage.session.get(WPConstants.STORAGE.SAVED_AUTH_KEY);
-  const authKey = savedAuthKey;
+  const authKey = typeof stremioAuthKey === 'string' && stremioAuthKey.trim()
+    ? stremioAuthKey.trim()
+    : null;
   if (!authKey) return;
   try {
     const res = await fetch(`${STREMIO_API}/api/addonCollectionGet`, {
@@ -349,6 +412,79 @@ async function tryProfileSync() {
     await chrome.storage.local.set({ [WPConstants.STORAGE.STREMIO_PROFILE]: profile });
     broadcastToWatchParty({ action: WPConstants.ACTION.PROFILE_UPDATED, data: profile });
   } catch (e) { console.warn('[WP-BG] Profile sync failed:', e.message); }
+}
+
+async function fetchLocalServerDiagnostics(httpUrl, wsConnected) {
+  if (!httpUrl || !wsConnected) return null;
+  try {
+    const response = await Promise.race([
+      fetch(`${httpUrl}/diagnostics`),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('diagnostics-timeout')), 2500)),
+    ]);
+    if (!response?.ok) return null;
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+
+async function buildStatusSnapshot() {
+  const stremioTabs = await getStremioTabs();
+  const hasStremioTab = stremioTabs.length > 0;
+  const result = await getExtensionState([
+    WPConstants.STORAGE.STREMIO_PROFILE,
+    WPConstants.STORAGE.USERNAME,
+    WPConstants.STORAGE.BACKEND_MODE,
+    WPConstants.STORAGE.LAST_ROOM_ERROR,
+  ]);
+  const runtimeState = await getProjectedRuntimeState();
+  const bootstrapIntent = await getBootstrapRoomIntent();
+  const localLandingAccess = await getLocalLandingAccessState();
+  const backendInfo = WPConstants.BACKEND.getInfo(WPConstants.BACKEND.resolveKey(
+    result[WPConstants.STORAGE.BACKEND_MODE],
+    runtimeState.activeBackend,
+  ));
+  return {
+    stremioRunning,
+    stremioSettings,
+    profile: result[WPConstants.STORAGE.STREMIO_PROFILE] ?? null,
+    stats,
+    wsConnected: runtimeState.wsConnected,
+    backendMode: result[WPConstants.STORAGE.BACKEND_MODE] ?? WPConstants.BACKEND.MODES.AUTO,
+    activeBackend: runtimeState.activeBackend,
+    activeBackendUrl: runtimeState.activeBackendUrl,
+    activeBackendHttpUrl: backendInfo.httpUrl,
+    coordinatorMode: runtimeState.mode,
+    userId: runtimeState.userId,
+    sessionId: runtimeState.sessionId,
+    username: result[WPConstants.STORAGE.USERNAME] ?? null,
+    room: runtimeState.room,
+    controllerRuntime: runtimeState.controllerRuntime,
+    adapterState: runtimeState.adapterState,
+    invariants: runtimeState.invariants,
+    recentEvents: runtimeState.recentEvents,
+    lastRoomError: result[WPConstants.STORAGE.LAST_ROOM_ERROR] ?? null,
+    currentRoomId: runtimeState.currentRoomId,
+    hasStremioTab,
+    bootstrapPending: !!bootstrapIntent,
+    isDevInstall: IS_DEV_INSTALL,
+    localLandingAccess,
+    bgVersion: BG_VERSION,
+  };
+}
+
+async function buildServerDiagnosticsSnapshot() {
+  const status = await buildStatusSnapshot();
+  const backendInfo = WPConstants.BACKEND.getInfo(WPConstants.BACKEND.resolveKey(
+    status.backendMode,
+    status.activeBackend,
+  ));
+  return {
+    ok: true,
+    serverDiagnostics: backendInfo.key === WPConstants.BACKEND.MODES.LOCAL
+      ? await fetchLocalServerDiagnostics(backendInfo.httpUrl, status.wsConnected === true)
+      : null,
+  };
 }
 
 function updateBadge() {
@@ -682,46 +818,11 @@ async function resumeRoomInStremio() {
 }
 
 const messageHandlers = {
-  [WPConstants.ACTION.STATUS_GET]: (_m, _s, sendResponse) => respondAsync(sendResponse, async () => {
-    const stremioTabs = await getStremioTabs();
-    const hasStremioTab = stremioTabs.length > 0;
-  const result = await getExtensionState([
-    WPConstants.STORAGE.STREMIO_PROFILE,
-    WPConstants.STORAGE.USERNAME,
-    WPConstants.STORAGE.BACKEND_MODE,
-    WPConstants.STORAGE.LAST_ROOM_ERROR,
-  ]);
-    const runtimeState = await getProjectedRuntimeState();
-    const bootstrapIntent = await getBootstrapRoomIntent();
-    const trustedPersistedRoom = hasStremioTab || !!runtimeState.currentRoomId;
-    const backendInfo = WPConstants.BACKEND.getInfo(WPConstants.BACKEND.resolveKey(
-      result[WPConstants.STORAGE.BACKEND_MODE],
-      runtimeState.activeBackend,
-    ));
-    return {
-      stremioRunning, stremioSettings,
-      profile: result[WPConstants.STORAGE.STREMIO_PROFILE] ?? null,
-      stats,
-      wsConnected: runtimeState.wsConnected,
-      backendMode: result[WPConstants.STORAGE.BACKEND_MODE] ?? WPConstants.BACKEND.MODES.AUTO,
-      activeBackend: runtimeState.activeBackend,
-      activeBackendUrl: runtimeState.activeBackendUrl,
-      activeBackendHttpUrl: backendInfo.httpUrl,
-      coordinatorMode: runtimeState.mode,
-      userId: runtimeState.userId,
-      sessionId: runtimeState.sessionId,
-      username: result[WPConstants.STORAGE.USERNAME] ?? null,
-      room: trustedPersistedRoom ? runtimeState.room : null,
-      controllerRuntime: runtimeState.controllerRuntime,
-      adapterState: runtimeState.adapterState,
-      invariants: runtimeState.invariants,
-      recentEvents: runtimeState.recentEvents,
-      lastRoomError: result[WPConstants.STORAGE.LAST_ROOM_ERROR] ?? null,
-      currentRoomId: runtimeState.currentRoomId,
-      hasStremioTab,
-      bootstrapPending: !!bootstrapIntent,
-      bgVersion: BG_VERSION,
-    };
+  [WPConstants.ACTION.STATUS_GET]: (_m, _s, sendResponse) => respondAsync(sendResponse, buildStatusSnapshot),
+  [WPConstants.ACTION.SERVER_DIAGNOSTICS_GET]: (_m, _s, sendResponse) => respondAsync(sendResponse, buildServerDiagnosticsSnapshot),
+  [WPConstants.ACTION.LOCAL_LANDING_ACCESS_SYNC]: (_m, _s, sendResponse) => respondAsync(sendResponse, async () => {
+    const localLandingAccess = await syncLocalWatchPartyBridge();
+    return { ok: true, localLandingAccess };
   }),
   [WPConstants.ACTION.SESSION_STATE_PUBLISH]: (m, sender) => {
     const payload = m.payload && typeof m.payload === 'object' ? m.payload : {};
@@ -902,7 +1003,13 @@ const messageHandlers = {
     return copyToClipboard(m.text);
   }),
   [WPConstants.ACTION.AUTH_KEY_SAVE]: (m) => {
-    if (m.authKey) { chrome.storage.session.set({ [WPConstants.STORAGE.SAVED_AUTH_KEY]: m.authKey }); tryProfileSync(); }
+    if (typeof m.authKey === 'string' && m.authKey.trim()) {
+      stremioAuthKey = m.authKey.trim();
+      tryProfileSync();
+    }
+  },
+  [WPConstants.ACTION.AUTH_KEY_CLEAR]: () => {
+    stremioAuthKey = null;
   },
 };
 
@@ -1064,6 +1171,7 @@ chrome.tabs?.onRemoved?.addListener((tabId) => {
 // need to manually refresh already-open Stremio tabs after an extension update.
 
 chrome.runtime.onInstalled.addListener(async (details) => {
+  await syncLocalWatchPartyBridge().catch(() => {});
   if (details.reason !== 'update') return;
   // console.log('[WP-BG] Extension updated — re-injecting content scripts');
   try {
@@ -1091,8 +1199,11 @@ chrome.runtime.onInstalled.addListener(async (details) => {
 
 checkStremio();
 fetchStremioSettings();
+syncLocalWatchPartyBridge().catch(() => {});
 chrome.storage.session?.setAccessLevel?.({ accessLevel: 'TRUSTED_AND_UNTRUSTED_CONTEXTS' }).catch(() => {});
 setInterval(checkStremio, POLL_INTERVAL_MS);
 // Dev-only: auto-reload on file changes (no update_url = unpacked/dev extension)
-if (!('update_url' in chrome.runtime.getManifest())) connectDevReload();
+if (IS_DEV_INSTALL) connectDevReload();
+chrome.permissions?.onAdded?.addListener(() => { syncLocalWatchPartyBridge().catch(() => {}); });
+chrome.permissions?.onRemoved?.addListener(() => { syncLocalWatchPartyBridge().catch(() => {}); });
 
