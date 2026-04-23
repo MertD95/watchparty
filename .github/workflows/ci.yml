@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       landing: ${{ steps.filter.outputs.landing }}
-      runtime: ${{ steps.filter.outputs.runtime }}
+      extension: ${{ steps.filter.outputs.extension }}
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
         with:
@@ -38,12 +38,12 @@ jobs:
 
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "landing=true" >> "$GITHUB_OUTPUT"
-            echo "runtime=true" >> "$GITHUB_OUTPUT"
+            echo "extension=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           landing=false
-          runtime=false
+          extension=false
 
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             BASE_SHA="${{ github.event.pull_request.base.sha }}"
@@ -55,7 +55,7 @@ jobs:
 
           if [ -z "${BASE_SHA:-}" ] || [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
             echo "landing=true" >> "$GITHUB_OUTPUT"
-            echo "runtime=true" >> "$GITHUB_OUTPUT"
+            echo "extension=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -75,13 +75,13 @@ jobs:
 
             case "$file" in
               extension/*|package.json|package-lock.json|scripts/*|.github/workflows/ci.yml|.github/workflows/release.yml)
-                runtime=true
+                extension=true
                 ;;
             esac
           done <<< "$CHANGED_FILES"
 
           echo "landing=$landing" >> "$GITHUB_OUTPUT"
-          echo "runtime=$runtime" >> "$GITHUB_OUTPUT"
+          echo "extension=$extension" >> "$GITHUB_OUTPUT"
 
   fast:
     needs: changes
@@ -123,11 +123,11 @@ jobs:
       - name: Run landing browser suite
         run: npm run test:landing
 
-  runtime:
+  extension:
     needs: [changes, fast]
-    if: needs.changes.outputs.runtime == 'true'
+    if: needs.changes.outputs.extension == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
 
@@ -139,7 +139,7 @@ jobs:
       - name: Install extension repo dependencies
         run: npm ci
 
-      - name: Determine runtime coverage availability
+      - name: Determine extension coverage availability
         id: coverage_gate
         env:
           SERVER_TOKEN: ${{ secrets.SERVER_REPO_TOKEN }}
@@ -151,10 +151,10 @@ jobs:
           fi
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Runtime CI skipped::SERVER_REPO_TOKEN is unavailable for this pull_request trigger. Fast and landing CI still ran. Full runtime coverage will run on push, release, or manual runs where secrets are available."
+            echo "::notice title=Extension CI skipped::SERVER_REPO_TOKEN is unavailable for this pull_request trigger. Fast and landing CI still ran. Sidepanel integration and full browser coverage still run on push, release, or manual runs where secrets are available."
             exit 0
           fi
-          echo "::error title=Missing SERVER_REPO_TOKEN::Runtime CI requires a token that can clone ${SERVER_REPO}. Add a fine-grained read-only Contents token as the SERVER_REPO_TOKEN repository secret."
+          echo "::error title=Missing SERVER_REPO_TOKEN::Extension CI requires a token that can clone ${SERVER_REPO}. Add a fine-grained read-only Contents token as the SERVER_REPO_TOKEN repository secret."
           exit 1
 
       - name: Checkout backend repo
@@ -190,14 +190,8 @@ jobs:
         if: steps.coverage_gate.outputs.enabled == 'true'
         run: npx playwright install --with-deps chromium
 
-      - name: Run maintained integration suite
+      - name: Run sidepanel integration suite
         if: steps.coverage_gate.outputs.enabled == 'true'
         run: xvfb-run -a npm run test:integration
-        env:
-          WATCHPARTY_SERVER_ROOT: ${{ github.workspace }}/${{ env.SERVER_CHECKOUT_PATH }}
-
-      - name: Run maintained browser suite
-        if: steps.coverage_gate.outputs.enabled == 'true'
-        run: xvfb-run -a npm run test:browser
         env:
           WATCHPARTY_SERVER_ROOT: ${{ github.workspace }}/${{ env.SERVER_CHECKOUT_PATH }}

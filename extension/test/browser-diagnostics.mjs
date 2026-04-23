@@ -3,6 +3,7 @@ const DEFAULT_IGNORES = [
   /Permissions policy violation: compute-pressure is not allowed in this document\./i,
   /googleads\.g\.doubleclick\.net\/pagead\/viewthroughconversion/i,
   /youtube\.com\/pagead\/viewthroughconversion/i,
+  /Player\s+\{code:\s*94,\s*message:\s*The owner of the requested video does not allow it to be played in embedded players/i,
   /Failed to load resource: net::ERR_FAILED/i,
 ];
 

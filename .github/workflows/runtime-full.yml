@@ -1,0 +1,74 @@
+name: Runtime Full
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '24'
+  SERVER_REPO: MertD95/watchparty-server
+  SERVER_CHECKOUT_PATH: watchparty-server
+
+jobs:
+  full-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install extension repo dependencies
+        run: npm ci
+
+      - name: Checkout backend repo
+        env:
+          SERVER_TOKEN: ${{ secrets.SERVER_REPO_TOKEN }}
+          SERVER_REPO_REF: ${{ vars.SERVER_REPO_REF }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SERVER_TOKEN:-}" ]; then
+            echo "::error title=Missing SERVER_REPO_TOKEN::Full runtime coverage requires a token that can clone ${SERVER_REPO}. Add a fine-grained read-only Contents token as the SERVER_REPO_TOKEN repository secret."
+            exit 1
+          fi
+          REMOTE="https://x-access-token:${SERVER_TOKEN}@github.com/${SERVER_REPO}.git"
+          if [ -n "${SERVER_REPO_REF:-}" ]; then
+            git clone --depth 1 --branch "${SERVER_REPO_REF}" "${REMOTE}" "${SERVER_CHECKOUT_PATH}"
+          else
+            git clone --depth 1 "${REMOTE}" "${SERVER_CHECKOUT_PATH}"
+          fi
+
+      - name: Install backend repo dependencies
+        run: npm ci
+        working-directory: ${{ env.SERVER_CHECKOUT_PATH }}
+
+      - name: Verify generated protocol is current
+        run: |
+          node tools/gen-protocol.js --check
+          node tools/gen-room-domain.js --check
+          node tools/gen-direct-play-domain.js --check
+        working-directory: ${{ env.SERVER_CHECKOUT_PATH }}
+        env:
+          WATCHPARTY_EXTENSION_ROOT: ${{ github.workspace }}/extension
+
+      - name: Install Playwright browser runtime
+        run: npx playwright install --with-deps chromium
+
+      - name: Run sidepanel integration suite
+        run: xvfb-run -a npm run test:integration
+        env:
+          WATCHPARTY_SERVER_ROOT: ${{ github.workspace }}/${{ env.SERVER_CHECKOUT_PATH }}
+
+      - name: Run extension runtime browser suite
+        run: xvfb-run -a npm run test:browser
+        env:
+          WATCHPARTY_SERVER_ROOT: ${{ github.workspace }}/${{ env.SERVER_CHECKOUT_PATH }}

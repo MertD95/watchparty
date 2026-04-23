@@ -40,15 +40,27 @@ node tools/serve-landing.mjs
 ```bash
 npm run syntax
 npm run test:fast
+npm run test:landing
+npm run test:sidepanel-integration
+npm run test:integration
 npm run test:browser
 npm run test:full
 npm run gen:actions
 npm run gen:icons
 ```
 
+## CI strategy
+
+- Push/PR CI runs the deterministic fast suite on every change.
+- Landing browser coverage runs only when landing or bridge-related files change.
+- Sidepanel integration runs only when extension/runtime-related files change.
+- The full extension browser suite is kept for release validation and the manual `Runtime Full` workflow.
+
 ## Notes
 
 - `extension/wp-protocol.js` is generated from `../watchparty-server/tools/gen-protocol.js`
 - The extension and landing page both depend on `watchparty-server` for live room flows
+- `npm run test:sidepanel-integration` is the specific sidepanel-backed integration suite
+- `npm run test:integration` is kept as a compatibility alias for `test:sidepanel-integration`
 - The website can auto-deploy through Cloudflare Pages Git integration, but the browser extension is not published to the Chrome Web Store by a normal push
 - Deployment and external-service hardening notes live in `SECURITY.md`
