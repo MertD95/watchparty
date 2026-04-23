@@ -36,6 +36,10 @@ jobs:
         run: |
           set -euo pipefail
 
+          has_commit() {
+            git rev-parse --verify "$1^{commit}" >/dev/null 2>&1
+          }
+
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "landing=true" >> "$GITHUB_OUTPUT"
             echo "extension=true" >> "$GITHUB_OUTPUT"
@@ -53,7 +57,30 @@ jobs:
             HEAD_SHA="${{ github.sha }}"
           fi
 
+          if [ -n "${HEAD_SHA:-}" ] && ! has_commit "$HEAD_SHA"; then
+            echo "::notice title=CI diff fallback::Head SHA $HEAD_SHA is unavailable in the local checkout. Running landing and extension coverage."
+            echo "landing=true" >> "$GITHUB_OUTPUT"
+            echo "extension=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           if [ -z "${BASE_SHA:-}" ] || [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            echo "landing=true" >> "$GITHUB_OUTPUT"
+            echo "extension=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if ! has_commit "$BASE_SHA"; then
+            echo "::notice title=CI diff fallback::Base SHA $BASE_SHA is unavailable, likely due to a force-push or app-managed branch update. Falling back to merge-base against origin/main."
+            if has_commit "origin/main"; then
+              BASE_SHA="$(git merge-base origin/main "$HEAD_SHA" || true)"
+            else
+              BASE_SHA=""
+            fi
+          fi
+
+          if [ -z "${BASE_SHA:-}" ] || ! has_commit "$BASE_SHA"; then
+            echo "::notice title=CI diff fallback::Could not resolve a valid base commit. Running landing and extension coverage."
             echo "landing=true" >> "$GITHUB_OUTPUT"
             echo "extension=true" >> "$GITHUB_OUTPUT"
             exit 0
