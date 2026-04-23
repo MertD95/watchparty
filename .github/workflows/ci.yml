@@ -21,7 +21,89 @@ env:
   SERVER_CHECKOUT_PATH: watchparty-server
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      landing: ${{ steps.filter.outputs.landing }}
+      runtime: ${{ steps.filter.outputs.runtime }}
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          fetch-depth: 0
+
+      - name: Classify changed files
+        id: filter
+        run: |
+          set -euo pipefail
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "landing=true" >> "$GITHUB_OUTPUT"
+            echo "runtime=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          landing=false
+          runtime=false
+
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE_SHA="${{ github.event.pull_request.base.sha }}"
+            HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          else
+            BASE_SHA="${{ github.event.before }}"
+            HEAD_SHA="${{ github.sha }}"
+          fi
+
+          if [ -z "${BASE_SHA:-}" ] || [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            echo "landing=true" >> "$GITHUB_OUTPUT"
+            echo "runtime=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          CHANGED_FILES="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
+          echo "::group::Changed files"
+          printf '%s\n' "$CHANGED_FILES"
+          echo "::endgroup::"
+
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+
+            case "$file" in
+              landing/*|extension/content.js|extension/constants.js|extension/test/landing.mjs|package.json|package-lock.json|scripts/*|.github/workflows/ci.yml|.github/workflows/release.yml)
+                landing=true
+                ;;
+            esac
+
+            case "$file" in
+              extension/*|package.json|package-lock.json|scripts/*|.github/workflows/ci.yml|.github/workflows/release.yml)
+                runtime=true
+                ;;
+            esac
+          done <<< "$CHANGED_FILES"
+
+          echo "landing=$landing" >> "$GITHUB_OUTPUT"
+          echo "runtime=$runtime" >> "$GITHUB_OUTPUT"
+
   fast:
+    needs: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run deterministic fast suite
+        run: npm run test:ci-fast
+
+  landing:
+    needs: [changes, fast]
+    if: needs.changes.outputs.landing == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -38,11 +120,12 @@ jobs:
       - name: Install Playwright browser runtime
         run: npx playwright install --with-deps chromium
 
-      - name: Run maintained fast suite
-        run: npm run test:fast
+      - name: Run landing browser suite
+        run: npm run test:landing
 
   runtime:
-    needs: fast
+    needs: [changes, fast]
+    if: needs.changes.outputs.runtime == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -68,7 +151,7 @@ jobs:
           fi
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Runtime CI skipped::SERVER_REPO_TOKEN is unavailable for this pull_request trigger. Fast CI still ran. Full runtime coverage will run on push, release, or manual runs where secrets are available."
+            echo "::notice title=Runtime CI skipped::SERVER_REPO_TOKEN is unavailable for this pull_request trigger. Fast and landing CI still ran. Full runtime coverage will run on push, release, or manual runs where secrets are available."
             exit 0
           fi
           echo "::error title=Missing SERVER_REPO_TOKEN::Runtime CI requires a token that can clone ${SERVER_REPO}. Add a fine-grained read-only Contents token as the SERVER_REPO_TOKEN repository secret."

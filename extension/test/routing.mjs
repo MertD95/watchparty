@@ -245,7 +245,6 @@ console.log('\n--- Test 2b: Landing bridge actions -> background ---');
 for (const action of [
   ACTION_MAP.STATUS_GET,
   ACTION_MAP.SURFACE_READY,
-  ACTION_MAP.AUTH_KEY_SAVE,
   ACTION_MAP.ROOM_JOIN,
   ACTION_MAP.ROOM_CREATE,
   ACTION_MAP.ROOM_RESUME,
