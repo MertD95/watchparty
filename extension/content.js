@@ -1,5 +1,5 @@
 // WatchParty for Stremio - Content Script (WatchParty pages)
-// Signals extension presence, relays Stremio profile data, and proxies fetch requests.
+// Signals extension presence, relays extension status, and forwards landing-page actions.
 
 // Signal extension is installed (synchronous, before app JS runs)
 document.documentElement.setAttribute('data-watchparty-ext', '1');
@@ -65,15 +65,6 @@ function onReady() {
     surface: 'watchparty',
   });
   sendCachedProfile();
-  // Pass any saved authKey to the extension so it can fetch addons via API
-  // (without the user needing to visit web.strem.io)
-  try {
-    const raw = localStorage.getItem('stremio.authKey');
-    if (raw) {
-      const authKey = JSON.parse(raw);
-      if (authKey) sendRuntimeMessage({ action: WPConstants.ACTION.AUTH_KEY_SAVE, authKey });
-    }
-  } catch { /* no saved auth key */ }
 }
 
 if (document.readyState === 'loading') {

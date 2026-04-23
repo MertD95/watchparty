@@ -1302,7 +1302,7 @@
         roomPill.className = 'hero-status-pill is-ready';
         roomPill.textContent = room.public === false ? 'Invite key room active' : 'Open-join room active';
         roomTitle.textContent = room.name || room.meta?.name || 'Active room';
-        roomMeta.textContent = `${room.public === false ? 'Invite key required' : 'Open join'} â€¢ ${room.listed === false ? 'Hidden from WatchParty' : 'Listed on WatchParty'} â€¢ ${pluralize(room.users?.length || 0, 'person')} in the room`;
+        roomMeta.textContent = `${room.public === false ? 'Invite key required' : 'Open join'} | ${room.listed === false ? 'Hidden from WatchParty' : 'Listed on WatchParty'} | ${pluralize(room.users?.length || 0, 'person')} in the room`;
       } else {
         roomCard?.classList.add('hidden');
         if (roomPill) roomPill.classList.add('hidden');
@@ -1703,7 +1703,7 @@
         const data = await res.json();
         applyRoomsSnapshot(data);
       } catch {
-        // Server unavailable Ã¢â‚¬â€ show empty state
+        // Server unavailable - show empty state
       }
     }
 
@@ -1761,7 +1761,7 @@
           scheduleRoomsStreamReconnect();
         };
       } catch {
-        // EventSource not available Ã¢â‚¬â€ fall back to polling
+        // EventSource not available - fall back to polling
         startPollingFallback();
         scheduleRoomsStreamReconnect(3000);
       }
@@ -2007,7 +2007,7 @@
 
       // Check if extension is installed
       const extCheck = setTimeout(() => {
-        // Extension didn't respond Ã¢â‚¬â€ show warning
+        // Extension did not respond - show warning
         document.getElementById('no-ext-warning').style.display = 'block';
         document.getElementById('redirect-status').textContent = 'Extension not detected.';
         document.getElementById('redirect-btn').style.display = 'inline-flex';
@@ -2046,7 +2046,7 @@
       d.textContent = str;
       return d.innerHTML;
     }
-    // escapeAttr removed Ã¢â‚¬â€ room cards now use DOM API (buildRoomCard), no innerHTML
+    // escapeAttr removed - room cards now use DOM API (buildRoomCard), no innerHTML
   </script>
 </body>
 </html>

@@ -320,10 +320,10 @@ async function fetchStremioSettings() {
 
 async function tryProfileSync() {
   const { [WPConstants.STORAGE.STREMIO_PROFILE]: stremioProfile } = await chrome.storage.local.get(WPConstants.STORAGE.STREMIO_PROFILE);
-  if (stremioProfile?.authKey && stremioProfile?.addons?.length > 0) return;
+  if (Array.isArray(stremioProfile?.addons) && stremioProfile.addons.length > 0) return;
   // Auth key stored in session storage (cleared on browser restart) for security
   const { [WPConstants.STORAGE.SAVED_AUTH_KEY]: savedAuthKey } = await chrome.storage.session.get(WPConstants.STORAGE.SAVED_AUTH_KEY);
-  const authKey = stremioProfile?.authKey || savedAuthKey;
+  const authKey = savedAuthKey;
   if (!authKey) return;
   try {
     const res = await fetch(`${STREMIO_API}/api/addonCollectionGet`, {
@@ -337,7 +337,6 @@ async function tryProfileSync() {
     const addons = data.result?.addons ?? [];
     if (addons.length === 0) return;
     const profile = {
-      authKey,
       user: stremioProfile?.user ?? null,
       addons: addons.map(a => ({ transportUrl: a.transportUrl, manifest: a.manifest, flags: a.flags })),
       settings: stremioProfile?.settings ?? {

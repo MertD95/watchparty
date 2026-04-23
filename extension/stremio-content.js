@@ -33,6 +33,8 @@
   let pendingRoomJoinCommand = null;
   let pendingJoinOptions = null;
   let pendingCreatedRoomKey = null;
+  let pendingVisibilityRoomKey = null;
+  let pendingVisibilityRoomKeyRoomId = null;
   let deferredLeaveIntent = null;
   let lastJoinAttemptRoomId = null;
   let shareContentLinkInFlight = false;
@@ -803,6 +805,27 @@
     return JSON.parse(JSON.stringify(value));
   }
 
+  async function applyConfirmedRoomKeyUpdate(roomId, nextPublic) {
+    if (!roomId) return;
+    if (nextPublic) {
+      pendingVisibilityRoomKey = null;
+      pendingVisibilityRoomKeyRoomId = null;
+      await clearRoomKeyForRoom(roomId);
+      WPCrypto.clear();
+      return;
+    }
+    if (!pendingVisibilityRoomKey || pendingVisibilityRoomKeyRoomId !== roomId) return;
+    await cacheRoomKeyForRoom(roomId, pendingVisibilityRoomKey);
+    if (typeof WPCrypto !== 'undefined') {
+      try {
+        WPCrypto.clear();
+        await WPCrypto.importKey(pendingVisibilityRoomKey);
+      } catch { /* ignore import failures for local recovery */ }
+    }
+    pendingVisibilityRoomKey = null;
+    pendingVisibilityRoomKeyRoomId = null;
+  }
+
   function publishSessionState() {
     if (!isControllerTab) return;
     syncControllerRuntimeState('publish.session-state');
@@ -1081,11 +1104,15 @@
 
       case WPProtocol.EVENT.ROOM_VISIBILITY_UPDATED:
         if (typeof p?.public !== 'boolean' || !p?.visibility || !roomState) return;
-        applyRoomStateDelta((nextRoom) => {
-          nextRoom.public = p.public;
-          nextRoom.visibility = p.visibility;
-          nextRoom.listed = p.listed !== false;
-        });
+        {
+          const targetRoomId = roomState.id;
+          applyRoomStateDelta((nextRoom) => {
+            nextRoom.public = p.public;
+            nextRoom.visibility = p.visibility;
+            nextRoom.listed = p.listed !== false;
+          });
+          applyConfirmedRoomKeyUpdate(targetRoomId, p.public).catch(() => {});
+        }
         break;
 
       case WPProtocol.EVENT.ROOM_CONTENT_UPDATED:
@@ -1923,13 +1950,8 @@
           WPOverlay.showToast('Failed to generate a private room key.', 2500);
           return;
         }
-        await cacheRoomKeyForRoom(roomId, roomKey);
-        if (typeof WPCrypto !== 'undefined') {
-          try {
-            WPCrypto.clear();
-            await WPCrypto.importKey(roomKey);
-          } catch { }
-        }
+        pendingVisibilityRoomKey = roomKey;
+        pendingVisibilityRoomKeyRoomId = roomId;
         WPWS.send({
           type: WPProtocol.COMMAND.ROOM_VISIBILITY_UPDATE,
           payload: {
@@ -1941,8 +1963,8 @@
         });
         return;
       }
-      await clearRoomKeyForRoom(roomState?.id);
-      WPCrypto.clear();
+      pendingVisibilityRoomKey = null;
+      pendingVisibilityRoomKeyRoomId = roomState?.id || null;
       WPWS.send({
         type: WPProtocol.COMMAND.ROOM_VISIBILITY_UPDATE,
         payload: {

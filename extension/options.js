@@ -176,7 +176,7 @@ function renderIssueList(id, issues, emptyText) {
   }
   el.innerHTML = issues.slice(0, 4).map((issue) => {
     const scope = issue.roomId ? `Room ${issue.roomId.slice(0, 8)}` : (issue.clientId ? `Client ${issue.clientId.slice(0, 8)}` : 'Global');
-    return `<li><strong>[${issue.severity || 'info'}]</strong> ${issue.code || 'unknown'}<br>${scope} — ${issue.message || ''}</li>`;
+    return `<li><strong>[${issue.severity || 'info'}]</strong> ${issue.code || 'unknown'}<br>${scope} - ${issue.message || ''}</li>`;
   }).join('');
 }
 
@@ -533,10 +533,9 @@ function bindBackendButtons() {
         setBackendFeedback(`Already using ${WPConstants.BACKEND.getInfo(WPConstants.BACKEND.resolveKey(mode, lastStatus?.activeBackend)).label} mode.`, 'warn');
         return;
       }
-
       backendMutationInFlight = true;
       setBackendButtonsState(currentMode, { pendingMode: mode, disabled: true });
-      setBackendFeedback(`Switching to ${WPConstants.BACKEND.getInfo(WPConstants.BACKEND.resolveKey(mode, lastStatus?.activeBackend)).label} mode…`);
+      setBackendFeedback(`Switching to ${WPConstants.BACKEND.getInfo(WPConstants.BACKEND.resolveKey(mode, lastStatus?.activeBackend)).label} mode...`);
       try {
         await chrome.storage.local.set({ [WPConstants.STORAGE.BACKEND_MODE]: mode });
         lastStatus = { ...(lastStatus || {}), backendMode: mode };

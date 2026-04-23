@@ -1,3 +1,8 @@
+const IS_CI = process.env.CI === 'true' || process.env.CI === '1';
+const DEFAULT_TIMEOUT = IS_CI ? 30000 : 15000;
+const DEFAULT_RETRY_ATTEMPTS = IS_CI ? 5 : 3;
+const DEFAULT_RETRY_DELAY_MS = IS_CI ? 1000 : 500;
+
 export function formatError(error) {
   if (!error) return 'Unknown error';
   if (typeof error === 'string') return error;
@@ -20,7 +25,7 @@ export async function expectPass(report, label, task) {
   }
 }
 
-export async function pollUntil(task, { timeout = 15000, intervalMs = 100, label = 'condition' } = {}) {
+export async function pollUntil(task, { timeout = DEFAULT_TIMEOUT, intervalMs = 100, label = 'condition' } = {}) {
   const started = Date.now();
   let lastError = null;
   while ((Date.now() - started) < timeout) {
@@ -38,8 +43,8 @@ export async function pollUntil(task, { timeout = 15000, intervalMs = 100, label
 
 export async function gotoWithRetry(page, url, {
   waitUntil = 'domcontentloaded',
-  attempts = 3,
-  retryDelayMs = 500,
+  attempts = DEFAULT_RETRY_ATTEMPTS,
+  retryDelayMs = DEFAULT_RETRY_DELAY_MS,
 } = {}) {
   let lastError = null;
   for (let attempt = 1; attempt <= attempts; attempt++) {

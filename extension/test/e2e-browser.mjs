@@ -1,10 +1,10 @@
-// WatchParty — Full E2E Browser Test (Real User Flow)
-// Tests the actual user flow: popup → create room → sidebar updates → chat → leave.
-// Uses Playwright with the real extension loaded — tests the ACTUAL extension pipeline,
+﻿// WatchParty â€” Full E2E Browser Test (Real User Flow)
+// Tests the actual user flow: popup â†’ create room â†’ sidebar updates â†’ chat â†’ leave.
+// Uses Playwright with the real extension loaded â€” tests the ACTUAL extension pipeline,
 // not page-context WebSockets (which bypass the extension's message routing).
 //
 // This catches bugs that MCP/page-context testing CANNOT:
-// - Popup → background.js → content script message relay
+// - Popup â†’ background.js â†’ content script message relay
 // - chrome.storage-based room state persistence
 // - Sidebar UI updates from real room events
 // - Extension popup form validation
@@ -25,7 +25,9 @@ import { injectSeekableTestVideo } from './seekable-video.mjs';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const EXT_PATH = path.resolve(__dirname, '..');
 const STREMIO_URL = 'https://web.stremio.com';
-const TIMEOUT = 15000;
+const IS_CI = process.env.CI === 'true' || process.env.CI === '1';
+const TIMEOUT = IS_CI ? 25000 : 15000;
+const SHORT_TIMEOUT = IS_CI ? 10000 : 5000;
 const CHROME_FLAGS = [
   '--disable-background-timer-throttling',
   '--disable-backgrounding-occluded-windows',
@@ -129,14 +131,14 @@ async function waitForSidebarPanel(page, panelName) {
   }, panelName, { timeout: TIMEOUT });
 }
 
-async function waitForChatSendButtonState(page, disabled, timeout = 5000) {
+async function waitForChatSendButtonState(page, disabled, timeout = SHORT_TIMEOUT) {
   await page.waitForFunction((expectedDisabled) => {
     const button = document.getElementById('wp-chat-send');
     return !!button && button.disabled === expectedDisabled;
   }, disabled, { timeout });
 }
 
-async function waitForSidebarAccent(page, expectedColor, timeout = 5000) {
+async function waitForSidebarAccent(page, expectedColor, timeout = SHORT_TIMEOUT) {
   await page.waitForFunction((expected) => (
     document.getElementById('wp-sidebar')?.style.getPropertyValue('--wp-accent') === expected
   ), expectedColor, { timeout });
@@ -260,7 +262,7 @@ async function findRoomSnapshot(roomApis, roomId, predicate = () => true) {
   return null;
 }
 
-async function waitForRoomSnapshot(roomApis, roomId, predicate = () => true, timeout = 15000, intervalMs = 400) {
+async function waitForRoomSnapshot(roomApis, roomId, predicate = () => true, timeout = TIMEOUT, intervalMs = 400) {
   try {
     return await pollUntil(
       async () => {
@@ -289,7 +291,7 @@ async function waitForRoomGone(roomApis, roomId, timeout = 10000) {
   }
 }
 
-// ── Tests ──
+// â”€â”€ Tests â”€â”€
 
 function buildPlayerHash(payload) {
   const encoded = deflateSync(Buffer.from(JSON.stringify(payload), 'utf8')).toString('base64url');
@@ -297,7 +299,7 @@ function buildPlayerHash(payload) {
 }
 
 async function testPopupLoadsWithStatus() {
-  console.log('\n── Test: Popup loads and shows status ──');
+  console.log('\nâ”€â”€ Test: Popup loads and shows status â”€â”€');
   const context = await launchWithExtension();
   try {
     const stremio = await openStremio(context);
@@ -340,7 +342,7 @@ async function testPopupLoadsWithStatus() {
 }
 
 async function testOptionsSurfaceShowsBackendFeedback() {
-  console.log('\n── Test: Options page backend controls show feedback ──');
+  console.log('\nâ”€â”€ Test: Options page backend controls show feedback â”€â”€');
   const context = await launchWithExtension();
   try {
     const extId = await getExtensionId(context);
@@ -424,7 +426,7 @@ async function testOptionsResumeButtonStaysAvailableForStagedRoomHandoffs() {
 }
 
 async function testOptionsRecoveryToolsClearOnlyRuntimeState() {
-  console.log('\n── Test: Options recovery tools clear staged runtime state without wiping durable prefs ──');
+  console.log('\nâ”€â”€ Test: Options recovery tools clear staged runtime state without wiping durable prefs â”€â”€');
   const context = await launchWithExtension();
   try {
     const extId = await getExtensionId(context);
@@ -557,7 +559,7 @@ async function testOptionsRecoveryToolsClearOnlyRuntimeState() {
 }
 
 async function testCreateRoomWithoutStremioTabAttachesLater() {
-  console.log('\nâ”€â”€ Test: Create room auto-opens Stremio when no tab exists â”€â”€');
+  console.log('\\n-- Test: Create room auto-opens Stremio when no tab exists --');
   const context = await launchWithExtension();
   let popup = null;
   let stremio = null;
@@ -856,7 +858,7 @@ async function testPopupHidesStaleInactiveBackgroundRoomState() {
 }
 
 async function testCreateRoomFlow() {
-  console.log('\n── Test: Create room via popup → sidebar updates ──');
+  console.log('\nâ”€â”€ Test: Create room via popup â†’ sidebar updates â”€â”€');
   const context = await launchWithExtension();
   try {
     const stremio = await openStremio(context);
@@ -994,19 +996,19 @@ async function testCreateRoomFlow() {
       // Test leave room
       await popup.bringToFront();
       await popup.click('#btn-leave');
-      const backToLobby = await assertPass('Back to lobby after leaving', () => waitForPopupLobbyView(popup, 5000));
+      const backToLobby = await assertPass('Back to lobby after leaving', () => waitForPopupLobbyView(popup, SHORT_TIMEOUT));
 
-      // Stremio sidebar should show "Not in a room" (wait for background → content script relay)
+      // Stremio sidebar should show "Not in a room" (wait for background â†’ content script relay)
       await stremio.bringToFront();
-      // Note: leave goes through popup → background → forwardToStremioTab → content script.
+      // Note: leave goes through popup â†’ background â†’ forwardToStremioTab â†’ content script.
       // In MV3, the service worker may suspend between relay hops. Also, the content script
       // sends room.leave to the WS server, and the sidebar only updates on the server's sync response.
-      // This can take several seconds — use a generous timeout.
+      // This can take several seconds â€” use a generous timeout.
       const leftRoom = await assertPass('Sidebar shows "Not in a room" after leaving (may be slow due to MV3 relay)', () => waitForSidebarLobby(stremio, 10000));
 
       // Regression: re-create immediately after leaving in the same popup session.
       await popup.bringToFront();
-      await waitForPopupLobbyView(popup, 5000).catch(() => {});
+      await waitForPopupLobbyView(popup, SHORT_TIMEOUT).catch(() => {});
       await popup.click('#btn-create');
       const recreatedRoom = await assertPass('Popup can create another room after leaving', () => waitForPopupRoomView(popup, TIMEOUT));
 
@@ -1121,15 +1123,17 @@ async function testPopupReloadReadsWrappedLocalRoomKeyFallback() {
       roomState,
       { timeout: TIMEOUT }
     );
-    const rebuiltInviteHandle = await popup.waitForFunction(
-      async (expected) => {
-        const value = await buildInviteUrlWithKey(expected.roomId);
-        return (typeof value === 'string' && value.endsWith(`#key=${expected.roomKey}`)) ? value : null;
-      },
-      roomState,
-      { timeout: TIMEOUT }
-    );
-    const rebuiltInvite = await rebuiltInviteHandle.jsonValue();
+    const rebuiltInvite = await pollUntil(async () => {
+      const value = await popup.evaluate(async (expected) => {
+        const invite = await buildInviteUrlWithKey(expected.roomId);
+        return (typeof invite === 'string' && invite.endsWith(`#key=${expected.roomKey}`)) ? invite : null;
+      }, roomState);
+      return value || null;
+    }, {
+      timeout: TIMEOUT,
+      intervalMs: 250,
+      label: 'rebuilt invite link from wrapped local room-key fallback',
+    });
     assert(
       typeof rebuiltInvite === 'string' && rebuiltInvite.endsWith(`#key=${roomState.roomKey}`),
       `Popup rebuilds the invite link from wrapped local-storage fallback (${rebuiltInvite})`
@@ -1143,7 +1147,7 @@ async function testPopupReloadReadsWrappedLocalRoomKeyFallback() {
 }
 
 async function testJoinRoomFlow() {
-  console.log('\n── Test: Create room on User1, join via popup on User2 ──');
+  console.log('\nâ”€â”€ Test: Create room on User1, join via popup on User2 â”€â”€');
   const ctx1 = await launchWithExtension();
   const ctx2 = await launchWithExtension();
   try {
@@ -1197,7 +1201,7 @@ async function testJoinRoomFlow() {
 }
 
 async function testJoinRoomWithoutStremioTabAttachesLater() {
-  console.log('\nâ”€â”€ Test: Join room without Stremio tab and attach later â”€â”€');
+  console.log('\\n-- Test: Join room without Stremio tab and attach later --');
   const ctx1 = await launchWithExtension();
   const ctx2 = await launchWithExtension();
   let popup2 = null;
@@ -1343,7 +1347,7 @@ async function testPopupFirstRoomControlsWithoutStremioTab() {
 }
 
 async function testChatFlow() {
-  console.log('\n── Test: Two-user chat via sidebar ──');
+  console.log('\nâ”€â”€ Test: Two-user chat via sidebar â”€â”€');
   const ctx1 = await launchWithExtension();
   const ctx2 = await launchWithExtension();
   try {
@@ -1476,7 +1480,7 @@ async function testChatFlow() {
     ).then((handle) => handle.jsonValue()).catch(() => null);
     assert(!!badge, `Unread badge shows: "${badge || ''}"`);
 
-    // Open sidebar → badge should clear
+    // Open sidebar â†’ badge should clear
     await stremio1.evaluate(() => document.getElementById('wp-toggle-host')?.click());
     await waitForSidebarRoomAttached(stremio1);
     const badgeAfter = await stremio1.evaluate(() => {
@@ -1496,19 +1500,19 @@ async function testChatFlow() {
 }
 
 async function testEmptyUsernameValidation() {
-  console.log('\n── Test: Popup validation ──');
+  console.log('\nâ”€â”€ Test: Popup validation â”€â”€');
   const context = await launchWithExtension();
   try {
     const stremio = await openStremio(context);
     const extId = await getExtensionId(context);
     const popup = await openPopup(context, extId);
 
-    // Clear username, click create — should NOT create (focus input instead)
+    // Clear username, click create â€” should NOT create (focus input instead)
     await popup.fill('#username-input', '');
     await popup.click('#btn-create');
     await assertPass('Empty username: stays on lobby', () => waitForPopupLobbyView(popup, 3000));
 
-    // Room name too short after sanitization (e.g. "a!" → "a" which is < 3 chars)
+    // Room name too short after sanitization (e.g. "a!" â†’ "a" which is < 3 chars)
     await popup.fill('#username-input', 'TestUser');
     await popup.fill('#room-name-input', 'a!');
     await popup.click('#btn-create');
@@ -1526,7 +1530,7 @@ async function testEmptyUsernameValidation() {
   }
 }
 
-// ── Helper: set up two users in a room (reusable) ──
+// â”€â”€ Helper: set up two users in a room (reusable) â”€â”€
 
 async function setupTwoUsers() {
   const ctx1 = await launchWithExtension();
@@ -1565,10 +1569,10 @@ async function cleanupTwoUsers({ ctx1, ctx2, popup1, popup2, stremio1, stremio2 
   await ctx2.close();
 }
 
-// ── Two-user: Host settings visible, peer settings restricted ──
+// â”€â”€ Two-user: Host settings visible, peer settings restricted â”€â”€
 
 async function testHostVsPeerSettings() {
-  console.log('\n── Test: Host sees all settings, peer sees limited ──');
+  console.log('\nâ”€â”€ Test: Host sees all settings, peer sees limited â”€â”€');
   const env = await setupTwoUsers();
   try {
     await openSidebarPanel(env.stremio1, 'room');
@@ -1653,10 +1657,10 @@ async function testHostVsPeerSettings() {
   }
 }
 
-// ── Two-user: Theme change propagates ──
+// â”€â”€ Two-user: Theme change propagates â”€â”€
 
 async function testThemePropagation() {
-  console.log('\n── Test: Theme color change propagates to sidebar ──');
+  console.log('\nâ”€â”€ Test: Theme color change propagates to sidebar â”€â”€');
   const env = await setupTwoUsers();
   try {
     await openSidebarPanel(env.stremio1, 'room');
@@ -1682,10 +1686,10 @@ async function testThemePropagation() {
   }
 }
 
-// ── Two-user: Peer sees content link to host's movie ──
+// â”€â”€ Two-user: Peer sees content link to host's movie â”€â”€
 
 async function testPeerContentLink() {
-  console.log('\n── Test: Peer sees host content link ──');
+  console.log('\nâ”€â”€ Test: Peer sees host content link â”€â”€');
   const env = await setupTwoUsers();
   try {
     await injectMockVideo(env.stremio1, 42);
@@ -1729,10 +1733,10 @@ async function testPeerContentLink() {
   }
 }
 
-// ── Two-user: Bidirectional chat ──
+// â”€â”€ Two-user: Bidirectional chat â”€â”€
 
 async function testPeerDirectStreamLink() {
-  console.log('\nâ”€â”€ Test: Peer sees direct host stream link â”€â”€');
+  console.log('\\n-- Test: Peer sees direct host stream link --');
   const env = await setupTwoUsers();
   try {
     await injectMockVideo(env.stremio1, 42);
@@ -1792,7 +1796,7 @@ async function testPeerDirectStreamLink() {
 }
 
 async function testDebridLikeHostRequiresManualPeerStreamButStillSyncs() {
-  console.log('\n── Test: Debrid-like host stream requires manual peer stream but still syncs ──');
+  console.log('\nâ”€â”€ Test: Debrid-like host stream requires manual peer stream but still syncs â”€â”€');
   const env = await setupTwoUsers();
   const roomApis = ['http://localhost:8181/rooms', 'https://ws.mertd.me/rooms'];
   try {
@@ -1908,7 +1912,7 @@ async function testDebridLikeHostRequiresManualPeerStreamButStillSyncs() {
 }
 
 async function testCreateRoomFromPlayerPagePublishesSafeDirectJoinMetadata() {
-  console.log('\n── Test: Host creates a room directly from player page ──');
+  console.log('\nâ”€â”€ Test: Host creates a room directly from player page â”€â”€');
   const context = await launchWithExtension();
   try {
     const directPlayerUrl = `${STREMIO_URL}/#/player/eAEBOADH%2F3sieXRJZCI6Ik5LWWVhNjN0UW1JIiwiZGVzY3JpcHRpb24iOiJQcm9qZWN0IEhhaWwgTWFyeSJ9BqUSsQ%3D%3D`;
@@ -1928,7 +1932,7 @@ async function testCreateRoomFromPlayerPagePublishesSafeDirectJoinMetadata() {
 
     const roomId = await popup.evaluate(() => document.getElementById('room-id-display').textContent);
     const roomApis = ['http://localhost:8181/rooms', 'https://ws.mertd.me/rooms'];
-    const roomSnapshot = await waitForRoomSnapshot(roomApis, roomId, (room) => room.hasDirectJoin === true, 15000, 500);
+    const roomSnapshot = await waitForRoomSnapshot(roomApis, roomId, (room) => room.hasDirectJoin === true, TIMEOUT, 500);
 
     assert(
       roomSnapshot?.hasDirectJoin === true
@@ -1945,7 +1949,7 @@ async function testCreateRoomFromPlayerPagePublishesSafeDirectJoinMetadata() {
 }
 
 async function testRoomCreatedFromDetailPageUpgradesDirectJoinAfterOpeningPlayer() {
-  console.log('\nâ”€â”€ Test: Host room upgrades from detail page to player route â”€â”€');
+  console.log('\\n-- Test: Host room upgrades from detail page to player route --');
   const context = await launchWithExtension();
   try {
     const detailUrl = `${STREMIO_URL}/#/detail/movie/tt0468569/tt0468569`;
@@ -1999,7 +2003,7 @@ async function testRoomCreatedFromDetailPageUpgradesDirectJoinAfterOpeningPlayer
 }
 
 async function testPreferDirectJoinOpensPrivatePlayerLocally() {
-  console.log('\n── Test: Prefer Direct Join opens the host player after room sync ──');
+  console.log('\nâ”€â”€ Test: Prefer Direct Join opens the host player after room sync â”€â”€');
   const ctx1 = await launchWithExtension();
   const ctx2 = await launchWithExtension();
   try {
@@ -2066,7 +2070,7 @@ async function testPreferDirectJoinOpensPrivatePlayerLocally() {
 }
 
 async function testBidirectionalChat() {
-  console.log('\n── Test: Bidirectional chat between two real extensions ──');
+  console.log('\nâ”€â”€ Test: Bidirectional chat between two real extensions â”€â”€');
   const env = await setupTwoUsers();
   try {
     // Bob sends message
@@ -2081,10 +2085,10 @@ async function testBidirectionalChat() {
     await openSidebarPanel(env.stremio1, 'chat');
     const aliceGotBob = await assertPass('Alice sees Bob message', () => env.stremio1.waitForFunction(
       () => document.getElementById('wp-chat-messages')?.innerText?.includes('Hello from Bob!'),
-      { timeout: 5000 }
+      { timeout: SHORT_TIMEOUT }
     ));
 
-    // Alice sends message — note: already tested in testChatFlow that Alice→Bob works.
+    // Alice sends message â€” note: already tested in testChatFlow that Aliceâ†’Bob works.
     // In two separate Playwright contexts, the backgrounded browser throttles WS heavily.
     // So instead of waiting for Bob's backgrounded tab, verify Alice sees her own message.
     await env.stremio1.bringToFront();
@@ -2094,7 +2098,7 @@ async function testBidirectionalChat() {
     await env.stremio1.keyboard.press('Enter');
     const aliceSentOk = await assertPass('Alice sent message (local echo + server broadcast)', () => env.stremio1.waitForFunction(
       () => document.getElementById('wp-chat-messages')?.innerText?.includes('Hi Bob from Alice!'),
-      { timeout: 5000 }
+      { timeout: SHORT_TIMEOUT }
     ));
   } finally {
     await cleanupTwoUsers(env);
@@ -2102,7 +2106,7 @@ async function testBidirectionalChat() {
 }
 
 async function testTypingIndicatorFlow() {
-  console.log('\n── Test: Typing indicator syncs across users ──');
+  console.log('\nâ”€â”€ Test: Typing indicator syncs across users â”€â”€');
   const env = await setupTwoUsers();
   try {
     await env.stremio2.bringToFront();
@@ -2114,7 +2118,7 @@ async function testTypingIndicatorFlow() {
         const el = document.getElementById('wp-typing-indicator');
         return el && !el.classList.contains('wp-hidden-el') && el.textContent.includes('Bob is typing');
       },
-      { timeout: 5000 }
+      { timeout: SHORT_TIMEOUT }
     ));
 
     await env.stremio2.keyboard.type('yping...');
@@ -2122,7 +2126,7 @@ async function testTypingIndicatorFlow() {
 
     const typingCleared = await assertPass('Typing indicator clears after Bob sends the message', () => env.stremio1.waitForFunction(
       () => document.getElementById('wp-typing-indicator')?.classList.contains('wp-hidden-el'),
-      { timeout: 5000 }
+      { timeout: SHORT_TIMEOUT }
     ));
   } finally {
     await cleanupTwoUsers(env);
@@ -2130,7 +2134,7 @@ async function testTypingIndicatorFlow() {
 }
 
 async function testLatePeerVideoAttachmentResyncsToHost() {
-  console.log('\n── Test: Peer video added after join catches up to host ──');
+  console.log('\nâ”€â”€ Test: Peer video added after join catches up to host â”€â”€');
   const env = await setupTwoUsers();
   try {
     await env.stremio1.bringToFront();
@@ -2186,7 +2190,7 @@ async function testLatePeerVideoAttachmentResyncsToHost() {
 }
 
 async function testBookmarkFlow() {
-  console.log('\n── Test: Bookmarks sync and seek the peer video ──');
+  console.log('\nâ”€â”€ Test: Bookmarks sync and seek the peer video â”€â”€');
   const env = await setupTwoUsers();
   try {
     await injectMockVideo(env.stremio1, 2);
@@ -2204,7 +2208,7 @@ async function testBookmarkFlow() {
 
       const peerSawBookmark = await assertPass('Peer receives the bookmark entry', () => env.stremio2.waitForFunction(
         () => document.querySelector('.wp-bookmark-msg .wp-bookmark-time')?.textContent === '0:02',
-        { timeout: 5000 }
+        { timeout: SHORT_TIMEOUT }
       ));
 
       if (peerSawBookmark) {
@@ -2213,7 +2217,7 @@ async function testBookmarkFlow() {
         await env.stremio2.waitForFunction(() => {
           const video = document.querySelector('video');
           return !!video && Math.abs(video.currentTime - 2) < 0.1;
-        }, { timeout: 5000 });
+        }, { timeout: SHORT_TIMEOUT });
         const peerVideoTime = await env.stremio2.evaluate(() => document.querySelector('video')?.currentTime || 0);
         assert(Math.abs(peerVideoTime - 2) < 0.1, `Clicking the bookmark seeks the peer video (${peerVideoTime.toFixed(1)}s)`);
       }
@@ -2223,10 +2227,10 @@ async function testBookmarkFlow() {
   }
 }
 
-// ── Two-user: Named room persist ──
+// â”€â”€ Two-user: Named room persist â”€â”€
 
 async function testNamedRoom() {
-  console.log('\n── Test: Named room preserves state across rejoin ──');
+  console.log('\nâ”€â”€ Test: Named room preserves state across rejoin â”€â”€');
   const ctx = await launchWithExtension();
   try {
     const stremio = await openStremio(ctx);
@@ -2258,7 +2262,7 @@ async function testNamedRoom() {
     ).catch(() => {});
     await waitForSidebarLobby(stremio);
 
-    // Rejoin with same name — should get same room
+    // Rejoin with same name â€” should get same room
     const popup2 = await openPopup(ctx, extId);
     await popup2.fill('#username-input', 'Alice');
     await popup2.fill('#room-name-input', roomName);
@@ -2273,7 +2277,7 @@ async function testNamedRoom() {
   }
 }
 
-// ── Main ──
+// â”€â”€ Main â”€â”€
 
 async function main() {
   console.log('WatchParty E2E Browser Tests (Real Extension Flow)');
@@ -2329,7 +2333,7 @@ async function main() {
     try {
       await test();
     } catch (e) {
-      console.error(`  ✗ FATAL: ${e.message}`);
+      console.error(`  âœ— FATAL: ${e.message}`);
       failed++;
     } finally {
       assertCleanDiagnostics(test.name);

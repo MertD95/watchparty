@@ -1,6 +1,7 @@
-// WatchParty — Stremio Profile Reader
-// Reads user profile from Stremio Web's localStorage and caches in chrome.storage.local.
-// Only writes to storage when the profile actually changes.
+// WatchParty - Stremio Profile Reader
+// Reads user profile from Stremio Web localStorage and caches non-sensitive profile
+// data in chrome.storage.local. The auth key is forwarded to the background and kept
+// in session storage instead of being persisted durably.
 
 const WPProfile = (() => {
   'use strict';
@@ -19,15 +20,15 @@ const WPProfile = (() => {
       lastHash = hash;
 
       const profile = JSON.parse(raw);
+      const authKey = profile.auth?.key ?? null;
       const data = {
-        authKey: profile.auth?.key ?? null,
         user: profile.auth?.user
           ? { id: profile.auth.user._id, email: profile.auth.user.email }
           : null,
-        addons: (profile.addons ?? []).map(a => ({
-          transportUrl: a.transportUrl,
-          manifest: a.manifest,
-          flags: a.flags,
+        addons: (profile.addons ?? []).map((addon) => ({
+          transportUrl: addon.transportUrl,
+          manifest: addon.manifest,
+          flags: addon.flags,
         })),
         settings: {
           audioLanguage: profile.settings?.audioLanguage ?? null,
@@ -39,11 +40,23 @@ const WPProfile = (() => {
         },
         readAt: Date.now(),
       };
+
       chrome.storage.local.set({ [WPConstants.STORAGE.STREMIO_PROFILE]: data });
+      if (authKey) {
         chrome.runtime.sendMessage({
-        type: 'watchparty-ext', action: WPConstants.ACTION.PROFILE_UPDATED, data,
+          type: 'watchparty-ext',
+          action: WPConstants.ACTION.AUTH_KEY_SAVE,
+          authKey,
+        }).catch(() => {});
+      }
+      chrome.runtime.sendMessage({
+        type: 'watchparty-ext',
+        action: WPConstants.ACTION.PROFILE_UPDATED,
+        data,
       }).catch(() => {});
-    } catch { /* localStorage read failed or JSON parse error */ }
+    } catch {
+      // Ignore localStorage read failures and malformed profile data.
+    }
   }
 
   let intervalId = null;
@@ -57,7 +70,10 @@ const WPProfile = (() => {
   }
 
   function stop() {
-    if (intervalId) { clearInterval(intervalId); intervalId = null; }
+    if (intervalId) {
+      clearInterval(intervalId);
+      intervalId = null;
+    }
   }
 
   return { start, stop, readAndCache };

@@ -13,7 +13,9 @@ import { injectSeekableTestVideo } from './seekable-video.mjs';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const EXT_PATH = path.resolve(__dirname, '..');
 const STREMIO_URL = 'https://web.stremio.com';
-const TIMEOUT = 15000;
+const IS_CI = process.env.CI === 'true' || process.env.CI === '1';
+const TIMEOUT = IS_CI ? 25000 : 15000;
+const SHORT_TIMEOUT = IS_CI ? 10000 : 5000;
 const CHROME_FLAGS = [
   '--disable-background-timer-throttling',
   '--disable-backgrounding-occluded-windows',
@@ -190,13 +192,13 @@ async function testSidepanelChatAndBookmarks() {
           const el = document.getElementById('typing-indicator');
           return el && !el.classList.contains('hidden') && el.textContent.includes('Alice is typing');
         },
-        { timeout: 5000 }
+        { timeout: SHORT_TIMEOUT }
       ));
       await env.stremio1.keyboard.type('yping from Alice');
       await env.stremio1.keyboard.press('Enter');
       await expectPass(assert, 'sidepanel typing indicator clears after send', () => env.sidepanel.waitForFunction(
         () => document.getElementById('typing-indicator')?.classList.contains('hidden'),
-        { timeout: 5000 }
+        { timeout: SHORT_TIMEOUT }
       ));
 
       await env.sidepanel.focus('#chat-input');
@@ -205,18 +207,18 @@ async function testSidepanelChatAndBookmarks() {
 
       await expectPass(assert, 'sidepanel chat send reaches the other user overlay', () => env.stremio1.waitForFunction(
         () => document.getElementById('wp-chat-messages')?.innerText?.includes('Hello from the sidepanel'),
-        { timeout: 5000 }
+        { timeout: SHORT_TIMEOUT }
       ));
 
       await expectPass(assert, 'sidepanel chat input clears after send', () => env.sidepanel.waitForFunction(
         () => (document.getElementById('chat-input')?.value || '') === '',
-        { timeout: 5000 }
+        { timeout: SHORT_TIMEOUT }
       ));
 
       await expectPass(assert, 'sidepanel keeps a single local echo for its own chat send', () => env.sidepanel.waitForFunction(
         () => [...document.querySelectorAll('#chat-messages .chat-msg')]
           .filter((el) => (el.innerText || '').includes('Hello from the sidepanel')).length === 1,
-        { timeout: 5000 }
+        { timeout: SHORT_TIMEOUT }
       ));
 
       await injectMockVideo(env.stremio2, 2);
@@ -226,7 +228,7 @@ async function testSidepanelChatAndBookmarks() {
           const text = el.innerText || '';
           return text.includes('Bob') && text.includes('0:02');
         }),
-        { timeout: 5000 }
+        { timeout: SHORT_TIMEOUT }
       ));
 
       await injectMockVideo(env.stremio1, 2);
@@ -242,7 +244,7 @@ async function testSidepanelChatAndBookmarks() {
       await env.stremio1.evaluate(() => document.getElementById('wp-bookmark-btn')?.click());
       const bobSidepanelSawBookmark = await expectPass(assert, 'sidepanel receives bookmarks created by the other user', () => env.sidepanel.waitForFunction(
         () => [...document.querySelectorAll('.bookmark-msg')].some((el) => (el.innerText || '').includes('Alice') && (el.innerText || '').includes('0:02')),
-        { timeout: 5000 }
+        { timeout: SHORT_TIMEOUT }
       ));
 
       if (bobSidepanelSawBookmark.ok) {
@@ -254,7 +256,7 @@ async function testSidepanelChatAndBookmarks() {
         await env.stremio2.waitForFunction(() => {
           const video = document.querySelector('video');
           return !!video && Math.abs(video.currentTime - 2) < 0.1;
-        }, { timeout: 5000 });
+        }, { timeout: SHORT_TIMEOUT });
         const peerVideoTime = await env.stremio2.evaluate(() => document.querySelector('video')?.currentTime || 0);
         assert(Math.abs(peerVideoTime - 2) < 0.1, `sidepanel bookmark seek updates the page video (${peerVideoTime.toFixed(1)}s)`);
       }

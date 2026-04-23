@@ -83,12 +83,8 @@ function createServers(apiPort, pagePort) {
     `const ROOMS_API = IS_DEV ? 'http://localhost:${apiPort}/rooms' : 'https://ws.mertd.me/rooms';`
   );
   landingHtml = replaceOnce(landingHtml, 'setInterval(loadPublicRooms, 10000);', 'setInterval(loadPublicRooms, 100);');
-  landingHtml = replaceOnce(
-    landingHtml,
-    `setInterval(() => {
-      const stale = !lastRoomsUpdateAt || (Date.now() - lastRoomsUpdateAt) > 20000;
-      if (!sseActive || stale) loadPublicRooms();
-    }, 15000);`,
+  landingHtml = landingHtml.replace(
+    /setInterval\(\(\) => \{\s+const stale = !lastRoomsUpdateAt \|\| \(Date\.now\(\) - lastRoomsUpdateAt\) > 20000;\s+if \(!sseActive \|\| stale\) loadPublicRooms\(\);\s+\}, 15000\);/,
     `setInterval(() => {
       const stale = !lastRoomsUpdateAt || (Date.now() - lastRoomsUpdateAt) > 200;
       if (!sseActive || stale) loadPublicRooms();
