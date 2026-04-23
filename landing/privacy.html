@@ -91,9 +91,10 @@
       <h2>Data the extension and service use</h2>
       <ul>
         <li>Display name entered by the user for room participation.</li>
+        <li>Connection data such as IP address and basic request or connection logs processed by the WatchParty backend for security, rate limiting, and service operations.</li>
         <li>Room data such as room ID, invite state, room visibility, bookmarks, reactions, and live chat messages.</li>
         <li>Playback synchronization data such as play, pause, seek, timing, and connection state.</li>
-        <li>Stremio page context needed for the extension to identify the current title or active player route.</li>
+        <li>Stremio page context and browsing activity on supported Stremio Web pages, including current URLs, player and detail routes, title metadata, and supported browser storage values needed to identify the active title or player route.</li>
         <li>Local extension preferences such as accent color, compact chat, reaction sound, floating reactions, and selected backend mode.</li>
         <li>Local Stremio runtime information from the user’s device, such as Stremio Server availability on localhost and basic server settings required for compatibility checks.</li>
         <li>Stremio profile addon and settings data used to understand playback context. The extension keeps the Stremio auth key in extension memory only and does not persist it to extension storage.</li>
@@ -112,6 +113,7 @@
       <h2>How data is shared</h2>
       <ul>
         <li>Room and synchronization data is sent to the WatchParty backend so shared rooms can function.</li>
+        <li>Stremio addon and compatibility requests may be sent to Stremio services such as api.strem.io and v3-cinemeta.strem.io when needed for extension features.</li>
         <li>GIF search requests are sent to the GIF provider used by the extension when the user searches for GIFs.</li>
         <li>WatchParty does not sell user data.</li>
         <li>WatchParty does not use user data for advertising, credit decisions, or unrelated profiling.</li>
@@ -128,6 +130,14 @@
       <p>
         Private room keys are attached to invite links and used by the extension for private-room access. Local development
         and operational endpoints are restricted separately from the public production room flow.
+      </p>
+
+      <h2>Limited Use</h2>
+      <p>
+        WatchParty uses the data it handles only to provide and improve its single purpose: synchronized watch rooms on supported
+        Stremio Web pages. WatchParty does not sell user data, does not use or transfer user data for advertising, and does not
+        use or transfer user data for creditworthiness or lending purposes. WatchParty transfers user data only when necessary to
+        provide the extension’s user-facing features, for security and abuse prevention, or as otherwise required by applicable law.
       </p>
 
       <h2>Contact</h2>
