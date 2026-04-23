@@ -45,6 +45,7 @@ npm run test:sidepanel-integration
 npm run test:integration
 npm run test:browser
 npm run test:full
+npm run build:store-package
 npm run gen:actions
 npm run gen:icons
 ```
@@ -66,4 +67,5 @@ npm run gen:icons
 - `npm run test:sidepanel-integration` is the specific sidepanel-backed integration suite
 - `npm run test:integration` is kept as a compatibility alias for `test:sidepanel-integration`
 - The website can auto-deploy through Cloudflare Pages Git integration, but the browser extension is not published to the Chrome Web Store by a normal push
+- `npm run build:store-package` creates a Chrome Web Store bundle under `dist/chrome-web-store/` and strips dev-only localhost landing origins from the packaged manifest
 - Deployment and external-service hardening notes live in `SECURITY.md`

@@ -10,16 +10,21 @@ importScripts('room-keys.js');
 importScripts('wp-protocol.js');
 
 const BG_VERSION = chrome.runtime.getManifest().version;
+const MANIFEST = chrome.runtime.getManifest();
 const STREMIO_BASE = 'http://localhost:11470';
 const STREMIO_API = 'https://api.strem.io';
 const POLL_INTERVAL_MS = 5000;
-const IS_DEV_INSTALL = !('update_url' in chrome.runtime.getManifest());
+const IS_DEV_INSTALL = !('update_url' in MANIFEST);
 const STREMIO_WEB_URLS = ['https://web.stremio.com/*', 'https://web.strem.io/*', 'https://app.strem.io/*'];
 const WATCHPARTY_PROD_URLS = ['https://watchparty.mertd.me/*'];
-const WATCHPARTY_DEV_URLS = ['http://localhost:8080/*', 'http://localhost:8090/*', 'http://127.0.0.1:8080/*', 'http://127.0.0.1:8090/*'];
+const WATCHPARTY_DEV_URLS = (Array.isArray(MANIFEST.optional_host_permissions) ? MANIFEST.optional_host_permissions : [])
+  .filter((pattern) => /^http:\/\/(?:localhost|127\.0\.0\.1):80(?:80|90)\/\*$/.test(pattern));
 const WATCHPARTY_URLS = [...WATCHPARTY_PROD_URLS, ...WATCHPARTY_DEV_URLS];
 const STREMIO_WEB_ORIGINS = new Set(['https://web.stremio.com', 'https://web.strem.io', 'https://app.strem.io']);
-const WATCHPARTY_ORIGINS = new Set(['https://watchparty.mertd.me', 'http://localhost:8080', 'http://localhost:8090', 'http://127.0.0.1:8080', 'http://127.0.0.1:8090']);
+const WATCHPARTY_ORIGINS = new Set([
+  'https://watchparty.mertd.me',
+  ...WATCHPARTY_DEV_URLS.map((pattern) => pattern.slice(0, -2)),
+]);
 const LOCAL_WATCHPARTY_CONTENT_SCRIPT_ID = 'watchparty-local-bridge';
 const LOCAL_WATCHPARTY_CONTENT_SCRIPT_FILES = ['wp-actions.js', 'constants.js', 'content.js'];
 
@@ -60,7 +65,7 @@ async function unregisterLocalWatchPartyBridge() {
 
 async function getLocalLandingAccessState() {
   const origins = [...WATCHPARTY_DEV_URLS];
-  if (!IS_DEV_INSTALL || !chrome.permissions?.contains) {
+  if (!IS_DEV_INSTALL || !chrome.permissions?.contains || origins.length === 0) {
     return { available: false, granted: false, enabled: false, origins };
   }
 
@@ -400,7 +405,6 @@ async function tryProfileSync() {
     const addons = data.result?.addons ?? [];
     if (addons.length === 0) return;
     const profile = {
-      user: stremioProfile?.user ?? null,
       addons: addons.map(a => ({ transportUrl: a.transportUrl, manifest: a.manifest, flags: a.flags })),
       settings: stremioProfile?.settings ?? {
         audioLanguage: null, secondaryAudioLanguage: null,
@@ -410,7 +414,7 @@ async function tryProfileSync() {
       readAt: Date.now(),
     };
     await chrome.storage.local.set({ [WPConstants.STORAGE.STREMIO_PROFILE]: profile });
-    broadcastToWatchParty({ action: WPConstants.ACTION.PROFILE_UPDATED, data: profile });
+    broadcastToWatchParty({ action: WPConstants.ACTION.PROFILE_UPDATED });
   } catch (e) { console.warn('[WP-BG] Profile sync failed:', e.message); }
 }
 
@@ -447,7 +451,6 @@ async function buildStatusSnapshot() {
   return {
     stremioRunning,
     stremioSettings,
-    profile: result[WPConstants.STORAGE.STREMIO_PROFILE] ?? null,
     stats,
     wsConnected: runtimeState.wsConnected,
     backendMode: result[WPConstants.STORAGE.BACKEND_MODE] ?? WPConstants.BACKEND.MODES.AUTO,
@@ -984,7 +987,7 @@ const messageHandlers = {
   [WPConstants.ACTION.ROOM_MEMBER_PRESENCE_PUBLISH]: (m, _s, sr) => respondAsync(sr, async () => { await forwardToStremioTabWithRetry(m); return { ok: true }; }),
   [WPConstants.ACTION.ROOM_MEMBER_PLAYBACK_STATUS_PUBLISH]: (m, _s, sr) => respondAsync(sr, async () => { await forwardToStremioTabWithRetry(m); return { ok: true }; }),
   [WPConstants.ACTION.ROOM_PLAYBACK_REQUEST_SYNC]: (m, _s, sr) => respondAsync(sr, async () => { await forwardToStremioTabWithRetry(m); return { ok: true }; }),
-  [WPConstants.ACTION.PROFILE_UPDATED]: (m) => broadcastToWatchParty({ action: WPConstants.ACTION.PROFILE_UPDATED, data: m.data }),
+  [WPConstants.ACTION.PROFILE_UPDATED]: () => broadcastToWatchParty({ action: WPConstants.ACTION.PROFILE_UPDATED }),
   [WPConstants.ACTION.SURFACE_READY]: (m, sender, sendResponse) => {
     rememberSurfaceTab(sender?.tab ? (m.surface || null) : null, sender?.tab?.id ?? null);
     sendResponse?.({ ok: true, tabId: sender?.tab?.id ?? null });

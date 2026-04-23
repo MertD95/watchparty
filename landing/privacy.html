@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WatchParty Privacy Policy</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1020;
+      --bg-2: #151c36;
+      --text: #eef2ff;
+      --muted: #b8c0d9;
+      --line: rgba(255,255,255,0.10);
+      --accent: #7f84ff;
+      --card: rgba(255,255,255,0.04);
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      font-family: "Segoe UI", Inter, system-ui, sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(127,132,255,0.18), transparent 18%),
+        linear-gradient(180deg, var(--bg) 0%, var(--bg-2) 100%);
+      color: var(--text);
+    }
+    main {
+      max-width: 920px;
+      margin: 0 auto;
+      padding: 48px 24px 80px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      padding: 28px;
+      backdrop-filter: blur(10px);
+      box-shadow: 0 24px 60px rgba(0,0,0,0.22);
+    }
+    h1 {
+      margin: 0 0 10px;
+      font-size: 44px;
+      line-height: 1;
+      letter-spacing: -0.04em;
+    }
+    h2 {
+      margin: 32px 0 12px;
+      font-size: 22px;
+      line-height: 1.2;
+    }
+    p, li {
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.6;
+    }
+    ul { padding-left: 20px; }
+    a { color: #aab0ff; }
+    .kicker {
+      color: var(--accent);
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      font-size: 13px;
+      font-weight: 700;
+      margin-bottom: 10px;
+    }
+    .meta {
+      margin-top: 12px;
+      font-size: 14px;
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="card">
+      <div class="kicker">WatchParty for Stremio</div>
+      <h1>Privacy Policy</h1>
+      <p>
+        This policy applies to the WatchParty website at
+        <a href="https://watchparty.mertd.me">watchparty.mertd.me</a>
+        and the WatchParty for Stremio browser extension.
+      </p>
+      <p class="meta">Last updated: 2026-04-23</p>
+
+      <h2>What WatchParty does</h2>
+      <p>
+        WatchParty adds shared watch rooms to Stremio Web. It lets users create or join rooms,
+        synchronize playback, chat during playback, share invite links, and manage room settings.
+      </p>
+
+      <h2>Data the extension and service use</h2>
+      <ul>
+        <li>Display name entered by the user for room participation.</li>
+        <li>Room data such as room ID, invite state, room visibility, bookmarks, reactions, and live chat messages.</li>
+        <li>Playback synchronization data such as play, pause, seek, timing, and connection state.</li>
+        <li>Stremio page context needed for the extension to identify the current title or active player route.</li>
+        <li>Local extension preferences such as accent color, compact chat, reaction sound, floating reactions, and selected backend mode.</li>
+        <li>Local Stremio runtime information from the user’s device, such as Stremio Server availability on localhost and basic server settings required for compatibility checks.</li>
+        <li>Stremio profile addon and settings data used to understand playback context. The extension keeps the Stremio auth key in extension memory only and does not persist it to extension storage.</li>
+        <li>GIF search queries sent by the user when using the GIF picker.</li>
+      </ul>
+
+      <h2>How data is used</h2>
+      <ul>
+        <li>To create, join, resume, and manage watch rooms.</li>
+        <li>To synchronize playback between room participants.</li>
+        <li>To deliver room chat, reactions, bookmarks, and host controls.</li>
+        <li>To detect local Stremio availability and support playback-related extension features.</li>
+        <li>To keep room state and user preferences available across popup, side panel, and in-page extension surfaces.</li>
+      </ul>
+
+      <h2>How data is shared</h2>
+      <ul>
+        <li>Room and synchronization data is sent to the WatchParty backend so shared rooms can function.</li>
+        <li>GIF search requests are sent to the GIF provider used by the extension when the user searches for GIFs.</li>
+        <li>WatchParty does not sell user data.</li>
+        <li>WatchParty does not use user data for advertising, credit decisions, or unrelated profiling.</li>
+      </ul>
+
+      <h2>Local storage</h2>
+      <p>
+        The extension stores room state, room keys, display name, and user preferences in Chrome extension storage
+        so it can recover sessions and keep extension surfaces in sync. Sensitive Stremio auth state is kept in memory
+        and is not persisted in extension storage.
+      </p>
+
+      <h2>Security</h2>
+      <p>
+        Private room keys are attached to invite links and used by the extension for private-room access. Local development
+        and operational endpoints are restricted separately from the public production room flow.
+      </p>
+
+      <h2>Contact</h2>
+      <p>
+        For privacy questions about WatchParty, contact the publisher through the contact address listed on the Chrome Web Store item.
+      </p>
+    </div>
+  </main>
+</body>
+</html>

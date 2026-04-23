@@ -40,7 +40,7 @@ window.addEventListener('message', async (event) => {
       window.postMessage({
         type: 'watchparty-ext-response',
         requestId: event.data.requestId,
-        data: { stremioRunning: false, profile: null },
+        data: { stremioRunning: false },
       }, event.origin || location.origin);
     }
   }
@@ -81,7 +81,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
   if (message.action === WPConstants.ACTION.PROFILE_UPDATED) {
-    window.postMessage({ type: 'watchparty-ext-profile', data: { profile: message.data } }, location.origin);
+    window.postMessage({ type: 'watchparty-ext-profile', data: {} }, location.origin);
   } else if (message.action === WPConstants.ACTION.STREMIO_STATUS_UPDATED) {
     window.postMessage({ type: 'watchparty-ext-profile', data: { stremioRunning: message.stremioRunning } }, location.origin);
   }

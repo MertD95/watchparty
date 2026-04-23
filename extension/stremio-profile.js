@@ -22,9 +22,6 @@ const WPProfile = (() => {
       const profile = JSON.parse(raw);
       const authKey = profile.auth?.key ?? null;
       const data = {
-        user: profile.auth?.user
-          ? { id: profile.auth.user._id, email: profile.auth.user.email }
-          : null,
         addons: (profile.addons ?? []).map((addon) => ({
           transportUrl: addon.transportUrl,
           manifest: addon.manifest,

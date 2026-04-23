@@ -4,8 +4,10 @@
   "version": "1.0.0",
   "scripts": {
     "dev": "node dev-reload.mjs",
+    "build:store-package": "node tools/build-store-package.mjs",
     "gen:actions": "node tools/gen-action-contract.mjs",
     "gen:icons": "node tools/generate-icons.mjs",
+    "gen:store-assets": "node extension/test/run-with-local-server.mjs tools/generate-store-assets.mjs",
     "test": "npm run test:fast",
     "test:ci-fast": "npm run syntax && npm run test:routing && npm run test:sync-engine && npm run test:crypto",
     "test:fast": "npm run syntax && npm run test:routing && npm run test:landing && npm run test:sync-engine && npm run test:crypto",
