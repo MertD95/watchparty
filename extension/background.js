@@ -16,6 +16,9 @@ const STREMIO_API = 'https://api.strem.io';
 const POLL_INTERVAL_MS = 5000;
 const IS_DEV_INSTALL = !('update_url' in MANIFEST);
 const STREMIO_WEB_URLS = ['https://web.stremio.com/*', 'https://web.strem.io/*', 'https://app.strem.io/*'];
+const STREMIO_CONTENT_SCRIPT_FILES = (MANIFEST.content_scripts || [])
+  .find((script) => Array.isArray(script.matches) && script.matches.some((pattern) => STREMIO_WEB_URLS.includes(pattern)))
+  ?.js || [];
 const WATCHPARTY_PROD_URLS = ['https://watchparty.mertd.me/*'];
 const WATCHPARTY_DEV_URLS = (Array.isArray(MANIFEST.optional_host_permissions) ? MANIFEST.optional_host_permissions : [])
   .filter((pattern) => /^http:\/\/(?:localhost|127\.0\.0\.1):80(?:80|90)\/\*$/.test(pattern));
@@ -637,15 +640,15 @@ async function getBootstrapRoomIntent() {
 }
 
 async function claimLease({ storageKey, leaseContract, lease, senderTabId, force = false }) {
-  const requestedLease = leaseContract.build({
+  const requestedLeaseBase = leaseContract.build({
     ...lease,
     tabId: senderTabId,
   });
-  if (!requestedLease) return { ok: false, claimed: false, lease: null };
+  if (!requestedLeaseBase) return { ok: false, claimed: false, lease: null };
 
   const result = await getExtensionState(storageKey);
   const currentLease = leaseContract.normalize(result[storageKey]);
-  const ownsLease = leaseContract.isOwner(currentLease, requestedLease.leaseId);
+  const ownsLease = leaseContract.isOwner(currentLease, requestedLeaseBase.leaseId);
   const leaseIsExpired = leaseContract.isExpired(currentLease);
   const shouldClaim = force || ownsLease || leaseIsExpired || !currentLease;
 
@@ -657,8 +660,17 @@ async function claimLease({ storageKey, leaseContract, lease, senderTabId, force
     return { ok: true, claimed: true, lease: currentLease, ownerTabId: currentLease?.tabId ?? null };
   }
 
+  const requestedLease = leaseContract.build({
+    ...requestedLeaseBase,
+    fence: (currentLease?.fence ?? 0) + 1,
+  });
+  if (!requestedLease) return { ok: false, claimed: false, lease: null };
+
   await setExtensionState({ [storageKey]: requestedLease });
-  return { ok: true, claimed: true, lease: requestedLease, ownerTabId: requestedLease.tabId ?? null };
+  const verifyResult = await getExtensionState(storageKey);
+  const storedLease = leaseContract.normalize(verifyResult[storageKey]);
+  const claimed = leaseContract.isOwner(storedLease, requestedLease.leaseId);
+  return { ok: true, claimed, lease: storedLease, ownerTabId: storedLease?.tabId ?? null };
 }
 
 async function releaseLease({ storageKey, leaseContract, leaseId }) {
@@ -738,13 +750,38 @@ async function openOrFocusWatchParty() {
   return { opened: true, tab: created };
 }
 
-async function openOrFocusStremio(url = 'https://web.stremio.com') {
+function shouldNavigateExistingStremioTab(url) {
+  try {
+    const parsed = new URL(url);
+    return !!parsed.hash && parsed.hash !== '#' && parsed.hash !== '#/';
+  } catch {
+    return false;
+  }
+}
+
+async function openOrFocusStremio(url) {
+  const requestedUrl = typeof url === 'string' && url.trim() && urlMatchesOrigins(url.trim(), STREMIO_WEB_ORIGINS)
+    ? url.trim()
+    : null;
   const tabs = await getStremioTabs();
   if (tabs.length > 0) {
-    await focusTab(tabs[0]);
-    return { opened: false, tab: tabs[0] };
+    const tab = tabs[0];
+    if (requestedUrl && shouldNavigateExistingStremioTab(requestedUrl) && tab.id != null && tab.url !== requestedUrl) {
+      try {
+        const updated = await chrome.tabs.update(tab.id, { active: true, url: requestedUrl });
+        if (typeof tab.windowId === 'number') {
+          await chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
+        }
+        rememberSurfaceTab('stremio', updated?.id ?? tab.id);
+        return { opened: false, tab: updated || tab, navigated: true };
+      } catch {
+        forgetSurfaceTab(tab.id);
+      }
+    }
+    await focusTab(tab);
+    return { opened: false, tab };
   }
-  const targetUrl = typeof url === 'string' && url.trim() ? url.trim() : 'https://web.stremio.com';
+  const targetUrl = requestedUrl || 'https://web.stremio.com';
   const created = await chrome.tabs.create({ url: targetUrl });
   rememberSurfaceTab('stremio', created?.id ?? null);
   return { opened: true, tab: created };
@@ -1164,10 +1201,6 @@ if (chrome.sidePanel) {
   });
 }
 
-chrome.tabs?.onRemoved?.addListener((tabId) => {
-  forgetSurfaceTab(tabId);
-});
-
 // ── Extension update: re-inject content scripts into open Stremio tabs ──
 // After auto-update, old content scripts are orphaned (chrome.runtime is dead).
 // `chrome.scripting` is kept specifically for this recovery path so users do not
@@ -1183,12 +1216,7 @@ chrome.runtime.onInstalled.addListener(async (details) => {
       if (tab.id == null) continue;
       chrome.scripting.executeScript({
         target: { tabId: tab.id },
-        files: [
-          'constants.js', 'runtime-state.js', 'wp-room-domain.js', 'wp-direct-play-domain.js', 'direct-play.js', 'wp-protocol.js',
-          'utils.js', 'stremio-sync.js', 'stremio-ws.js', 'stremio-crypto.js',
-          'stremio-overlay-theme.js', 'stremio-overlay-modals.js', 'stremio-overlay.js',
-          'stremio-profile.js', 'stremio-content.js',
-        ],
+        files: STREMIO_CONTENT_SCRIPT_FILES,
       }).catch(() => {}); // Tab may have navigated away or be restricted
       chrome.scripting.insertCSS({
         target: { tabId: tab.id },

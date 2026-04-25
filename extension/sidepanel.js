@@ -11,6 +11,8 @@
   let currentSessionId = null;
   let currentRoomState = null;
   let currentWsConnected = false;
+  let renderedRoomId = null;
+  const renderedBookmarkKeys = new Set();
   const typingUsers = new Map();
   const localPreferences = {
     accentColor: '#6366f1',
@@ -287,11 +289,19 @@
   function appendBookmark(msg) {
     const container = document.getElementById('chat-messages');
     if (!container) return;
+    const key = getBookmarkKey(msg || {});
+    if (renderedBookmarkKeys.has(key)) return;
+    renderedBookmarkKeys.add(key);
+    if (renderedBookmarkKeys.size > 300) {
+      renderedBookmarkKeys.delete(renderedBookmarkKeys.values().next().value);
+    }
     const mins = Math.floor((msg.time || 0) / 60);
     const secs = Math.floor((msg.time || 0) % 60).toString().padStart(2, '0');
     const div = document.createElement('div');
+    const sender = WPUtils.getMatchingRoomUser(currentRoomState, msg.user, null);
+    const colorKey = sender?.sessionId || msg.sessionId || msg.user;
     div.className = 'bookmark-msg';
-    div.innerHTML = `Pinned by <span class="chat-name" style="color:${getUserColor(currentSessionId || msg.user)}">${escapeHtml(msg.userName || 'Unknown')}</span> at <button class="bookmark-time" type="button">${mins}:${secs}</button>`;
+    div.innerHTML = `Pinned by <span class="chat-name" style="color:${getUserColor(colorKey)}">${escapeHtml(msg.userName || 'Unknown')}</span> at <button class="bookmark-time" type="button">${mins}:${secs}</button>`;
     div.querySelector('.bookmark-time')?.addEventListener('click', () => {
       sendAction({ action: WPConstants.ACTION.ROOM_BOOKMARK_SEEK, time: msg.time });
       showToast(`Seeking to ${mins}:${secs}`);
@@ -299,6 +309,20 @@
     container.appendChild(div);
     while (container.childElementCount > 200) container.removeChild(container.firstChild);
     container.scrollTop = container.scrollHeight;
+  }
+
+  function getBookmarkKey(msg) {
+    const identity = msg.sessionId || msg.user || 'unknown';
+    const time = Number.isFinite(msg.time) ? Math.floor(msg.time * 1000) : 0;
+    return `${identity}:${time}`;
+  }
+
+  function renderBookmarkHistory(roomState) {
+    const bookmarks = Array.isArray(roomState?.bookmarks) ? roomState.bookmarks : [];
+    if (bookmarks.length === 0) return;
+    for (const bookmark of [...bookmarks].sort((a, b) => (a.date || 0) - (b.date || 0))) {
+      appendBookmark(bookmark);
+    }
   }
 
   function sendChat() {
@@ -324,6 +348,8 @@
   }
 
   function renderEmptyState() {
+    renderedRoomId = null;
+    renderedBookmarkKeys.clear();
     const status = document.getElementById('status');
     const users = document.getElementById('users');
     const usersEmpty = document.getElementById('users-empty');
@@ -496,8 +522,15 @@
       renderEmptyState();
       return;
     }
+    if (renderedRoomId !== roomState.id) {
+      renderedRoomId = roomState.id;
+      renderedBookmarkKeys.clear();
+      const chatMessages = document.getElementById('chat-messages');
+      if (chatMessages) chatMessages.innerHTML = '';
+    }
     renderStatus(roomState);
     renderUsers(roomState);
+    renderBookmarkHistory(roomState);
     updateTypingIndicator();
   }
 

@@ -160,6 +160,7 @@ const constantsSource = readSrc('constants.js');
 const optionsSource = readSrc('options.js');
 const protocolSource = readSrc('wp-protocol.js');
 const wsSource = readSrc('stremio-ws.js');
+const manifest = JSON.parse(readSrc('manifest.json'));
 
 const ACTION_MAP = extractObjectMap(actionsSource, 'ACTION');
 const COMMAND_MAP = extractObjectMap(protocolSource, 'COMMAND');
@@ -178,6 +179,10 @@ const bridgeSends = extractSentActions(bridgeSource, ACTION_MAP);
 const contentEventCases = extractProtocolSwitchCases(contentSource, 'EVENT');
 const commandSends = new Set([...extractProtocolSends(contentSource), ...extractProtocolSends(wsSource)]);
 const contentErrorCodes = extractProtocolErrorCodes(contentSource);
+const stremioManifestScript = manifest.content_scripts.find((script) => {
+  return Array.isArray(script.matches) && script.matches.includes('https://web.stremio.com/*');
+});
+const wsOnOpenBlock = wsSource.slice(wsSource.indexOf('ws.onopen'), wsSource.indexOf('ws.onmessage'));
 
 console.log('--- Parsed routing table ---');
 console.log(`  background.js cases:     ${[...bgCases].sort().join(', ')}`);
@@ -281,6 +286,18 @@ ok(constantsSource.includes('SESSION_RUNTIME'), 'constants.js defines session ru
 ok(constantsSource.includes('BOOTSTRAP_SESSION'), 'constants.js defines bootstrap session keys');
 ok(constantsSource.includes('CONTROLLER_TAB_LEASE'), 'constants.js defines controller lease contract');
 ok(constantsSource.includes('VIDEO_TAB_LEASE'), 'constants.js defines active video lease contract');
+ok(constantsSource.includes('fence: Number.isFinite(fence)') && bgSource.includes('(currentLease?.fence ?? 0) + 1'), 'controller/video leases carry a monotonic fencing token');
+ok(Array.isArray(stremioManifestScript?.js) && stremioManifestScript.js.includes('wp-actions.js'), 'manifest Stremio content script includes generated action contract');
+ok(bgSource.includes('const STREMIO_CONTENT_SCRIPT_FILES') && bgSource.includes('MANIFEST.content_scripts'), 'background derives update reinjection files from manifest');
+ok(bgSource.includes('files: STREMIO_CONTENT_SCRIPT_FILES'), 'background update reinjection uses the manifest-derived content script list');
+ok(bgSource.includes('urlMatchesOrigins(url.trim(), STREMIO_WEB_ORIGINS)') && bgSource.includes('url: requestedUrl'), 'background validates and navigates requested Stremio URLs when focusing an existing tab');
+ok(bgSource.includes('shouldNavigateExistingStremioTab(requestedUrl)'), 'background only redirects existing Stremio tabs for specific requested routes');
+ok(!wsOnOpenBlock.includes('flushQueue()'), 'stremio-ws does not flush queued room actions on raw socket open');
+ok(wsSource.includes('markApplicationReady') && contentSource.includes('WPWS.markApplicationReady()'), 'stremio-content marks WS app-ready after room lifecycle recovery');
+ok(overlaySource.includes('setActionDispatcher') && contentSource.includes('WPOverlay.setActionDispatcher'), 'overlay actions use a private content-script dispatcher');
+ok(!overlaySource.includes("CustomEvent('wp-action'") && !contentSource.includes("addEventListener('wp-action'"), 'overlay actions do not use document-wide CustomEvent routing');
+ok(overlaySource.includes('isTrustedUserEvent') && overlaySource.includes('event.isTrusted !== false'), 'overlay action controls reject synthetic page events');
+ok(overlaySource.includes('renderBookmarkHistory(roomState.bookmarks)') && sidepanelSource.includes('renderBookmarkHistory(roomState)'), 'overlay and sidepanel hydrate bookmark history from room snapshots');
 ok(!sidepanelSource.includes('PENDING_ACTION'), 'sidepanel does not use transient action storage');
 ok(!bgSource.includes('PENDING_ACTION'), 'background does not use transient action storage');
 ok(!contentSource.includes('PENDING_ACTION'), 'stremio-content does not use transient action storage');

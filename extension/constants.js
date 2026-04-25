@@ -223,13 +223,14 @@ const WPConstants = (() => {
   const CONTROLLER_TAB_LEASE = Object.freeze({
     TTL_MS: CONTROLLER_TAB_LEASE_TTL_MS,
     RENEW_INTERVAL_MS: CONTROLLER_TAB_LEASE_RENEW_INTERVAL_MS,
-    build({ leaseId, tabId, sessionId, claimedAt = Date.now() }) {
+    build({ leaseId, tabId, sessionId, claimedAt = Date.now(), fence = 0 }) {
       if (typeof leaseId !== 'string' || !leaseId.trim()) return null;
       return {
         leaseId: leaseId.trim(),
         tabId: normalizeTabId(tabId),
         sessionId: typeof sessionId === 'string' && sessionId.trim() ? sessionId.trim() : null,
         claimedAt: Number.isFinite(claimedAt) && claimedAt > 0 ? claimedAt : Date.now(),
+        fence: Number.isFinite(fence) && fence >= 0 ? Math.floor(fence) : 0,
       };
     },
     normalize(value) {
@@ -240,6 +241,7 @@ const WPConstants = (() => {
         tabId: normalizeTabId(value.tabId),
         sessionId: typeof value.sessionId === 'string' && value.sessionId.trim() ? value.sessionId.trim() : null,
         claimedAt: Number.isFinite(value.claimedAt) && value.claimedAt > 0 ? value.claimedAt : Date.now(),
+        fence: Number.isFinite(value.fence) && value.fence >= 0 ? Math.floor(value.fence) : 0,
       };
     },
     isOwner(value, leaseId) {
@@ -259,13 +261,14 @@ const WPConstants = (() => {
   const VIDEO_TAB_LEASE = Object.freeze({
     TTL_MS: VIDEO_TAB_LEASE_TTL_MS,
     RENEW_INTERVAL_MS: VIDEO_TAB_LEASE_RENEW_INTERVAL_MS,
-    build({ leaseId, tabId, sessionId, claimedAt = Date.now() }) {
+    build({ leaseId, tabId, sessionId, claimedAt = Date.now(), fence = 0 }) {
       if (typeof leaseId !== 'string' || !leaseId.trim()) return null;
       return {
         leaseId: leaseId.trim(),
         tabId: normalizeTabId(tabId),
         sessionId: typeof sessionId === 'string' && sessionId.trim() ? sessionId.trim() : null,
         claimedAt: Number.isFinite(claimedAt) && claimedAt > 0 ? claimedAt : Date.now(),
+        fence: Number.isFinite(fence) && fence >= 0 ? Math.floor(fence) : 0,
       };
     },
     normalize(value) {
@@ -276,6 +279,7 @@ const WPConstants = (() => {
         tabId: normalizeTabId(value.tabId),
         sessionId: typeof value.sessionId === 'string' && value.sessionId.trim() ? value.sessionId.trim() : null,
         claimedAt: Number.isFinite(value.claimedAt) && value.claimedAt > 0 ? value.claimedAt : Date.now(),
+        fence: Number.isFinite(value.fence) && value.fence >= 0 ? Math.floor(value.fence) : 0,
       };
     },
     isOwner(value, leaseId) {

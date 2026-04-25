@@ -161,7 +161,7 @@ async function setupTwoUsers() {
 }
 
 async function cleanupTwoUsers(env) {
-  for (const page of [env.popup1, env.popup2, env.stremio1, env.stremio2, env.sidepanel]) {
+  for (const page of [env.popup1, env.popup2, env.stremio1, env.stremio2, env.sidepanel, env.sidepanelLate]) {
     try { await page?.close(); } catch {}
   }
   await env.ctx1.close();
@@ -241,13 +241,18 @@ async function testSidepanelChatAndBookmarks() {
         },
         { timeout: TIMEOUT }
       ));
-      await env.stremio1.evaluate(() => document.getElementById('wp-bookmark-btn')?.click());
+      await env.stremio1.click('#wp-bookmark-btn');
       const bobSidepanelSawBookmark = await expectPass(assert, 'sidepanel receives bookmarks created by the other user', () => env.sidepanel.waitForFunction(
         () => [...document.querySelectorAll('.bookmark-msg')].some((el) => (el.innerText || '').includes('Alice') && (el.innerText || '').includes('0:02')),
         { timeout: SHORT_TIMEOUT }
       ));
 
       if (bobSidepanelSawBookmark.ok) {
+        env.sidepanelLate = await openSidepanel(env.ctx2, env.extId2);
+        await expectPass(assert, 'new sidepanel hydrates bookmark history from room state', () => env.sidepanelLate.waitForFunction(
+          () => [...document.querySelectorAll('.bookmark-msg')].some((el) => (el.innerText || '').includes('Alice') && (el.innerText || '').includes('0:02')),
+          { timeout: SHORT_TIMEOUT }
+        ));
         await env.stremio2.evaluate(() => {
           const video = document.querySelector('video');
           if (video) video.currentTime = 0.1;

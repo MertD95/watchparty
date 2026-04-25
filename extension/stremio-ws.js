@@ -19,6 +19,7 @@ const WPWS = (() => {
   const CLOCK_SAMPLES = 6;
   const CLOCK_RESYNC_INTERVAL_MS = 60000;
   const KEEPALIVE_INTERVAL_MS = 25000;
+  const MAX_SEND_QUEUE = 100;
 
   // --- State ---
   let ws = null;
@@ -31,6 +32,7 @@ const WPWS = (() => {
   let backendMode = BACKEND_MODES.AUTO;
   let resolvedBackend = null;
   let lastSeq = 0; // Track last received sequence number for reconnect replay
+  let applicationReady = false;
 
   // --- Callbacks (set by orchestrator) ---
   let onMessageHandler = null;
@@ -96,7 +98,7 @@ const WPWS = (() => {
           checkHeartbeat();
         }
       }, KEEPALIVE_INTERVAL_MS);
-      flushQueue();
+      markApplicationPending();
       if (onConnectHandler) onConnectHandler();
     };
 
@@ -124,6 +126,7 @@ const WPWS = (() => {
       for (const t of pendingPingTimers) clearTimeout(t);
       pendingPingTimers = [];
       ws = null;
+      markApplicationPending();
       if (onDisconnectHandler) onDisconnectHandler();
       scheduleReconnect();
     };
@@ -139,6 +142,7 @@ const WPWS = (() => {
     for (const t of pendingPingTimers) clearTimeout(t);
     pendingPingTimers = [];
     sendQueue = [];
+    markApplicationPending();
     reconnectAttempts = 0;
     if (resetReplay) lastSeq = 0;
     if (ws) {
@@ -160,21 +164,64 @@ const WPWS = (() => {
   }
 
   let sendQueue = [];
+  const BOOTSTRAP_COMMANDS = new Set([
+    WPProtocol.COMMAND.SESSION_HELLO,
+    WPProtocol.COMMAND.ROOM_CREATE,
+    WPProtocol.COMMAND.ROOM_JOIN,
+    WPProtocol.COMMAND.ROOM_REJOIN,
+    WPProtocol.COMMAND.ROOM_LEAVE,
+    WPProtocol.COMMAND.SESSION_CLOCK_PING,
+  ]);
+  const VOLATILE_COMMANDS = new Set([
+    WPProtocol.COMMAND.ROOM_PLAYBACK_PUBLISH,
+    WPProtocol.COMMAND.ROOM_CONTENT_UPDATE,
+    WPProtocol.COMMAND.ROOM_MEMBER_PRESENCE_PUBLISH,
+    WPProtocol.COMMAND.ROOM_MEMBER_PLAYBACK_STATUS_PUBLISH,
+    WPProtocol.COMMAND.ROOM_TYPING_SEND,
+    WPProtocol.COMMAND.SESSION_CLOCK_PING,
+  ]);
+
+  function shouldSendImmediately(msg) {
+    return ws?.readyState === WebSocket.OPEN && (applicationReady || BOOTSTRAP_COMMANDS.has(msg?.type));
+  }
+
+  function shouldQueue(msg) {
+    return !!msg?.type && !VOLATILE_COMMANDS.has(msg.type);
+  }
+
+  function enqueue(msg) {
+    if (!shouldQueue(msg)) return;
+    sendQueue.push(msg);
+    if (sendQueue.length > MAX_SEND_QUEUE) sendQueue.shift();
+  }
+
   function send(msg) {
-    if (ws && ws.readyState === WebSocket.OPEN) {
+    if (shouldSendImmediately(msg)) {
       ws.send(JSON.stringify(msg));
     } else {
-      // Queue state-changing messages so they're sent when WS reconnects.
-      // Skip high-frequency messages (player.sync, clock.ping) to avoid queue bloat.
-      if (msg.type !== WPProtocol.COMMAND.ROOM_PLAYBACK_PUBLISH && msg.type !== WPProtocol.COMMAND.SESSION_CLOCK_PING) {
-        sendQueue.push(msg);
-      }
+      enqueue(msg);
     }
   }
   function flushQueue() {
     while (sendQueue.length > 0 && ws?.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(sendQueue.shift()));
     }
+  }
+  function clearQueue() {
+    sendQueue = [];
+  }
+
+  function markApplicationPending() {
+    applicationReady = false;
+  }
+
+  function markApplicationReady() {
+    applicationReady = true;
+    flushQueue();
+  }
+
+  function isApplicationReady() {
+    return applicationReady;
   }
 
   function isConnected() {
@@ -246,6 +293,7 @@ const WPWS = (() => {
   // --- Public API ---
   return {
     connect, disconnect, send, isConnected, isReady: isConnected,
+    flushQueue, clearQueue, markApplicationPending, markApplicationReady, isApplicationReady,
     startClockSync, getClockOffset, getLastSeq,
     setBackendMode, getBackendMode, getActiveBackend, getActiveWsUrl,
     // Callback setters

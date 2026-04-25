@@ -27,6 +27,8 @@ const WPOverlay = (() => {
     reactionSound: true,
     floatingReactions: true,
   };
+  let actionDispatcher = null;
+  const pendingActions = [];
   let roomKeyRenderSeq = 0;
   let roomKeyDraftRoomId = null;
   let roomKeyDraftValue = '';
@@ -80,7 +82,8 @@ const WPOverlay = (() => {
   }
 
   // Toggle reaction: one per user per emoji, no stacking
-  function toggleReaction(pillsContainer, emoji) {
+  function toggleReaction(pillsContainer, emoji, event = null) {
+    if (!isTrustedUserEvent(event)) return;
     const existing = pillsContainer.querySelector(`[data-emoji="${CSS.escape(emoji)}"]`);
     if (existing && existing.classList.contains('wp-pill-mine')) {
       // Already reacted with this emoji → remove own reaction
@@ -106,7 +109,7 @@ const WPOverlay = (() => {
       // No per-pill listener — handled by delegated click on #wp-chat-messages
       pillsContainer.appendChild(pill);
     }
-    dispatchAction(WPConstants.ACTION.ROOM_REACTION_SEND, { emoji });
+    dispatchAction(WPConstants.ACTION.ROOM_REACTION_SEND, { emoji }, event);
   }
 
 
@@ -143,8 +146,15 @@ const WPOverlay = (() => {
     if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => { });
     return audioCtx;
   }
-  document.addEventListener('click', () => { userHasInteracted = true; ensureAudioCtx(); }, { once: true });
-  document.addEventListener('keydown', () => { userHasInteracted = true; }, { once: true });
+  document.addEventListener('click', (event) => {
+    if (!isTrustedUserEvent(event)) return;
+    userHasInteracted = true;
+    ensureAudioCtx();
+  }, { once: true });
+  document.addEventListener('keydown', (event) => {
+    if (!isTrustedUserEvent(event)) return;
+    userHasInteracted = true;
+  }, { once: true });
 
   function playTone(frequency, gainValue, duration) {
     try {
@@ -221,8 +231,27 @@ const WPOverlay = (() => {
   }
 
   // --- Action dispatch helper ---
-  function dispatchAction(action, detail = {}) {
-    document.dispatchEvent(new CustomEvent('wp-action', { detail: { action, ...detail } }));
+  function isTrustedUserEvent(event) {
+    return !event || event.isTrusted !== false;
+  }
+
+  function dispatchAction(action, detail = {}, event = null) {
+    if (!isTrustedUserEvent(event)) return false;
+    const message = { action, ...detail };
+    if (typeof actionDispatcher === 'function') {
+      actionDispatcher(message);
+      return true;
+    }
+    if (pendingActions.length < 20) pendingActions.push(message);
+    return false;
+  }
+
+  function setActionDispatcher(dispatcher) {
+    actionDispatcher = typeof dispatcher === 'function' ? dispatcher : null;
+    if (!actionDispatcher) return;
+    while (pendingActions.length > 0) {
+      actionDispatcher(pendingActions.shift());
+    }
   }
 
   function normalizeUsernameInput(value) {
@@ -265,7 +294,8 @@ const WPOverlay = (() => {
     renderRoomControls(container, cachedRoomState, cachedIsHost);
   }
 
-  function persistDisplayName(nextUsername) {
+  function persistDisplayName(nextUsername, event = null) {
+    if (!isTrustedUserEvent(event)) return false;
     const username = normalizeUsernameInput(nextUsername);
     if (!username) {
       showToast('Add a display name first.', 1800);
@@ -274,7 +304,7 @@ const WPOverlay = (() => {
     localPreferences.username = username;
     cachedUsername = username;
     chrome.storage.local.set({ [WPConstants.STORAGE.USERNAME]: username });
-    dispatchAction(WPConstants.ACTION.SESSION_USERNAME_UPDATE, { username });
+    dispatchAction(WPConstants.ACTION.SESSION_USERNAME_UPDATE, { username }, event);
     refreshLocalSettingsCard();
     return true;
   }
@@ -307,7 +337,8 @@ const WPOverlay = (() => {
       : 'Paste a full invite link when joining private rooms so the key reaches this browser.';
   }
 
-  async function handleRoomKeySave(roomState, isHost) {
+  async function handleRoomKeySave(roomState, isHost, event = null) {
+    if (!isTrustedUserEvent(event)) return;
     const input = document.getElementById('wp-room-key-input');
     const button = document.getElementById('wp-room-key-save');
     const roomId = roomState?.id;
@@ -347,7 +378,7 @@ const WPOverlay = (() => {
       public: false,
       listed: roomState?.listed !== false,
       roomKey: nextKey,
-    });
+    }, event);
     showToast('Invite key updated for future room links.', 2200);
 
     setTimeout(() => {
@@ -376,11 +407,11 @@ const WPOverlay = (() => {
     input.onkeydown = (event) => {
       if (event.key === 'Enter' && isHost) {
         event.preventDefault();
-        handleRoomKeySave(roomState, isHost).catch(() => { });
+        handleRoomKeySave(roomState, isHost, event).catch(() => { });
       }
     };
     if (button) {
-      button.onclick = () => { handleRoomKeySave(roomState, isHost).catch(() => { }); };
+      button.onclick = (event) => { handleRoomKeySave(roomState, isHost, event).catch(() => { }); };
     }
 
     if (!roomId || roomState?.public !== false) {
@@ -808,6 +839,7 @@ const WPOverlay = (() => {
     if (existing) existing.remove();
     const existingToggle = document.getElementById('wp-toggle-host');
     if (existingToggle) existingToggle.remove();
+    clearDisplayedBookmarks();
 
     overlay = document.createElement('div');
     overlay.id = 'wp-overlay';
@@ -908,6 +940,7 @@ const WPOverlay = (() => {
 
     // Delegated click: handles react buttons, reaction pills, and bookmark times
     chatMessages.addEventListener('click', (e) => {
+      if (!isTrustedUserEvent(e)) return;
       // React button → open emoji picker in reaction mode
       const reactBtn = e.target.closest('.wp-msg-react-trigger');
       if (reactBtn) {
@@ -938,7 +971,7 @@ const WPOverlay = (() => {
       if (pill) {
         const pillsContainer = pill.closest('.wp-msg-pills');
         if (pillsContainer && pill.dataset.emoji) {
-          toggleReaction(pillsContainer, pill.dataset.emoji);
+          toggleReaction(pillsContainer, pill.dataset.emoji, e);
         }
         return;
       }
@@ -974,7 +1007,7 @@ const WPOverlay = (() => {
       const lowerKey = String(e.key || '').toLowerCase();
       if (allowEnterSubmit && e.key === 'Enter') {
         e.preventDefault();
-        sendChat();
+        sendChat(e);
         return;
       }
       if (e.key === 'Escape') {
@@ -1006,7 +1039,7 @@ const WPOverlay = (() => {
     document.querySelectorAll('.wp-tab-btn').forEach((btn) => {
       btn.addEventListener('click', () => setActivePanel(btn.dataset.panel));
     });
-    $('wp-chat-send').addEventListener('click', () => sendChat());
+    $('wp-chat-send').addEventListener('click', (event) => sendChat(event));
     bindInputFieldGuards($('wp-chat-input'), { allowEnterSubmit: true });
     // --- Emoji picker toggle (library handles everything else) ---
     $('wp-emoji-btn').addEventListener('click', (ev) => {
@@ -1046,10 +1079,11 @@ const WPOverlay = (() => {
     });
     // Event delegation for GIF clicks (avoids per-element listeners on every search)
     $('wp-gif-results').addEventListener('click', (e) => {
+      if (!isTrustedUserEvent(e)) return;
       const img = e.target.closest('.wp-gif-item');
       if (!img?.dataset.url) return;
       const gifContent = `[gif:${img.dataset.url}]`;
-      dispatchAction(WPConstants.ACTION.ROOM_CHAT_SEND, { content: gifContent });
+      dispatchAction(WPConstants.ACTION.ROOM_CHAT_SEND, { content: gifContent }, e);
       // Local echo + dedup tracking (same pattern as text chat)
       const container = document.getElementById('wp-chat-messages');
       if (container) {
@@ -1094,7 +1128,8 @@ const WPOverlay = (() => {
     btn.style.cursor = 'not-allowed';
     setTimeout(() => { btn.disabled = false; btn.style.opacity = ''; btn.style.cursor = ''; }, 3000);
   }
-  function sendChat() {
+  function sendChat(event = null) {
+    if (!isTrustedUserEvent(event)) return;
     const input = document.getElementById('wp-chat-input');
     if (!input || !input.value.trim()) return;
     const btn = document.getElementById('wp-chat-send');
@@ -1120,8 +1155,8 @@ const WPOverlay = (() => {
       addLocalEcho(content);
     }
 
-    dispatchAction(WPConstants.ACTION.ROOM_CHAT_SEND, { content });
-    dispatchAction(WPConstants.ACTION.ROOM_TYPING_SEND, { typing: false });
+    dispatchAction(WPConstants.ACTION.ROOM_CHAT_SEND, { content }, event);
+    dispatchAction(WPConstants.ACTION.ROOM_TYPING_SEND, { typing: false }, event);
     input.value = '';
   }
 
@@ -1135,6 +1170,7 @@ const WPOverlay = (() => {
     cachedRoomState = roomState || null;
     if (previousRoomId && previousRoomId !== roomState?.id) {
       clearRoomKeyDraft(previousRoomId);
+      clearDisplayedBookmarks();
     }
     cachedIsHost = !!isHost;
     // Cache username for local echo
@@ -1162,6 +1198,7 @@ const WPOverlay = (() => {
     const chatContainer = document.getElementById('wp-chat-container');
     if (!inRoom || !roomState) {
       resetRenderCache();
+      clearDisplayedBookmarks();
       launcherInRoom = false;
       if (status) status.innerHTML = '<div class="wp-empty-state">Not in a room.<br/><a class="wp-empty-link" href="https://watchparty.mertd.me" target="_blank" rel="noreferrer">Create or join from WatchParty</a>.</div>';
       if (roomCode) roomCode.textContent = '';
@@ -1180,6 +1217,7 @@ const WPOverlay = (() => {
 
     // Show chat when in room
     if (chatContainer) chatContainer.classList.remove('wp-hidden-el');
+    renderBookmarkHistory(roomState.bookmarks);
 
     const nextRoomCode = roomState.id?.slice(0, 8) || '';
     if (roomCode && renderCache.lastRoomCode !== nextRoomCode) {
@@ -1215,19 +1253,21 @@ const WPOverlay = (() => {
     if (renderCache.lastStatusHtml === newStatusHtml) return;
     status.innerHTML = newStatusHtml;
     renderCache.lastStatusHtml = newStatusHtml;
-    document.getElementById('wp-ready-check-btn')?.addEventListener('click', () => {
-      dispatchAction(WPConstants.ACTION.ROOM_READY_CHECK_UPDATE, { readyAction: 'initiate' });
+    document.getElementById('wp-ready-check-btn')?.addEventListener('click', (event) => {
+      if (!isTrustedUserEvent(event)) return;
+      dispatchAction(WPConstants.ACTION.ROOM_READY_CHECK_UPDATE, { readyAction: 'initiate' }, event);
       const video = document.querySelector('video');
       if (video && !video.paused) video.pause();
       const userCount = document.getElementById('wp-users')?.children.length || 1;
       showReadyCheck('started', [], userCount, cachedUserId);
     });
-    document.getElementById('wp-bookmark-btn')?.addEventListener('click', () => {
+    document.getElementById('wp-bookmark-btn')?.addEventListener('click', (event) => {
+      if (!isTrustedUserEvent(event)) return;
       const video = document.querySelector('video');
       if (!video) return;
       const time = video.currentTime;
-      dispatchAction(WPConstants.ACTION.ROOM_BOOKMARK_ADD, { time });
-      appendBookmark({ user: cachedUserId, userName: cachedUsername, time, label: '' });
+      dispatchAction(WPConstants.ACTION.ROOM_BOOKMARK_ADD, { time }, event);
+      appendBookmark({ user: cachedUserId, userName: cachedUsername, sessionId: cachedSessionId, time, label: '' });
       showToast('Bookmark saved!', 1500);
     });
   }
@@ -1267,19 +1307,20 @@ const WPOverlay = (() => {
     const roomKeySection = container.querySelector('#wp-room-key-section');
     roomKeySection?.classList.toggle('wp-hidden-el', !isPrivateRoom);
 
-    container.querySelector('#wp-copy-invite-btn').onclick = async () => {
+    container.querySelector('#wp-copy-invite-btn').onclick = async (event) => {
+      if (!isTrustedUserEvent(event)) return;
       const copied = await copyInviteUrl(roomState);
       showToast(copied ? 'Invite copied' : 'Copy failed', 1600);
     };
-    container.querySelector('#wp-leave-room-btn').onclick = () => {
-      dispatchAction(WPConstants.ACTION.ROOM_LEAVE);
+    container.querySelector('#wp-leave-room-btn').onclick = (event) => {
+      dispatchAction(WPConstants.ACTION.ROOM_LEAVE, {}, event);
     };
     if (privateToggle) {
       privateToggle.onchange = (event) => {
         dispatchAction(WPConstants.ACTION.ROOM_VISIBILITY_UPDATE, {
           public: !event.target.checked,
           listed: listedToggle ? listedToggle.checked : (roomState.listed !== false),
-        });
+        }, event);
       };
     }
     if (listedToggle) {
@@ -1287,12 +1328,12 @@ const WPOverlay = (() => {
         dispatchAction(WPConstants.ACTION.ROOM_VISIBILITY_UPDATE, {
           public: roomState.public !== false,
           listed: !!event.target.checked,
-        });
+        }, event);
       };
     }
     if (autoPauseToggle) {
       autoPauseToggle.onchange = (event) => {
-        dispatchAction(WPConstants.ACTION.ROOM_SETTINGS_UPDATE, { settings: { autoPauseOnDisconnect: !!event.target.checked } });
+        dispatchAction(WPConstants.ACTION.ROOM_SETTINGS_UPDATE, { settings: { autoPauseOnDisconnect: !!event.target.checked } }, event);
       };
     }
     renderRoomKeyControls(roomState, isHost);
@@ -1315,25 +1356,29 @@ const WPOverlay = (() => {
       container.innerHTML = WPOverlayShells.buildLocalSettingsShell(buildAccentSwatchButtons());
       container.dataset.shellReady = 'true';
 
-      const saveName = () => persistDisplayName(container.querySelector('#wp-settings-username')?.value || '');
+      const saveName = (event) => persistDisplayName(container.querySelector('#wp-settings-username')?.value || '', event);
       container.querySelector('#wp-settings-save-name')?.addEventListener('click', saveName);
       container.querySelector('#wp-settings-username')?.addEventListener('keydown', (event) => {
         if (event.key === 'Enter') {
           event.preventDefault();
-          saveName();
+          saveName(event);
         }
       });
       container.querySelector('#wp-settings-compact')?.addEventListener('change', (event) => {
+        if (!isTrustedUserEvent(event)) return;
         chrome.storage.local.set({ [WPConstants.STORAGE.COMPACT_CHAT]: !!event.target.checked });
       });
       container.querySelector('#wp-settings-sound')?.addEventListener('change', (event) => {
+        if (!isTrustedUserEvent(event)) return;
         chrome.storage.local.set({ [WPConstants.STORAGE.REACTION_SOUND]: !!event.target.checked });
       });
       container.querySelector('#wp-settings-floating')?.addEventListener('change', (event) => {
+        if (!isTrustedUserEvent(event)) return;
         chrome.storage.local.set({ [WPConstants.STORAGE.FLOATING_REACTIONS]: !!event.target.checked });
       });
       container.querySelectorAll('.wp-color-btn').forEach((button) => {
-        button.addEventListener('click', () => {
+        button.addEventListener('click', (event) => {
+          if (!isTrustedUserEvent(event)) return;
           chrome.storage.local.set({ [WPConstants.STORAGE.ACCENT_COLOR]: button.dataset.color || '#6366f1' });
         });
       });
@@ -1461,8 +1506,9 @@ const WPOverlay = (() => {
       return `<div class="wp-user${awayClass}"><span class="wp-user-dot" style="background:${color}"></span><span class="wp-user-main">${crown}<span class="wp-user-name">${escapeHtml(u.name)}</span>${you}</span>${statusIcon}${playbackLabel}${transferBtn}</div>`;
     }).join('');
     usersDiv.onclick = (e) => {
+      if (!isTrustedUserEvent(e)) return;
       const btn = e.target.closest('.wp-transfer-btn');
-      if (btn?.dataset.uid) dispatchAction(WPConstants.ACTION.ROOM_OWNERSHIP_TRANSFER, { targetUserId: btn.dataset.uid });
+      if (btn?.dataset.uid) dispatchAction(WPConstants.ACTION.ROOM_OWNERSHIP_TRANSFER, { targetUserId: btn.dataset.uid }, e);
     };
   }
 
@@ -1642,22 +1688,41 @@ const WPOverlay = (() => {
   function showCountdown(seconds) { WPModals.showCountdown(seconds); }
 
   // --- Bookmarks ---
-  let lastBookmarkKey = '';
+  const displayedBookmarkKeys = new Set();
+
+  function getBookmarkKey(msg) {
+    const identity = msg.sessionId || msg.user || 'unknown';
+    const time = Number.isFinite(msg.time) ? Math.floor(msg.time * 1000) : 0;
+    return `${identity}:${time}`;
+  }
+
+  function rememberBookmarkKey(key) {
+    displayedBookmarkKeys.add(key);
+    if (displayedBookmarkKeys.size > 300) {
+      displayedBookmarkKeys.delete(displayedBookmarkKeys.values().next().value);
+    }
+  }
+
+  function clearDisplayedBookmarks() {
+    displayedBookmarkKeys.clear();
+  }
+
   function appendBookmark(msg) {
     const container = document.getElementById('wp-chat-messages');
     if (!container) return;
-    // Deduplicate: skip if same user+time within short window (local echo + server broadcast)
-    const key = `${msg.user}:${Math.floor(msg.time)}`;
-    if (key === lastBookmarkKey) return;
-    lastBookmarkKey = key;
-    setTimeout(() => { if (lastBookmarkKey === key) lastBookmarkKey = ''; }, 3000);
+    const key = getBookmarkKey(msg || {});
+    if (displayedBookmarkKeys.has(key)) return;
+    rememberBookmarkKey(key);
     const mins = Math.floor(msg.time / 60);
     const secs = Math.floor(msg.time % 60).toString().padStart(2, '0');
     const timeStr = `${mins}:${secs}`;
     const div = document.createElement('div');
+    const sender = cachedRoomState?.users?.find((user) => user.id === msg.user);
+    const colorKey = sender?.sessionId || msg.sessionId || msg.user;
     div.className = 'wp-chat-msg wp-bookmark-msg';
-    div.innerHTML = `<span class="wp-bookmark-icon">📌</span> <span class="wp-chat-name" style="color:${getUserColor(cachedSessionId || msg.user)}">${escapeHtml(msg.userName)}</span> bookmarked <button class="wp-bookmark-time" data-time="${msg.time}">${timeStr}</button> <span class="wp-chat-text">${msg.label ? escapeHtml(msg.label) : ''}</span>`;
-    div.querySelector('.wp-bookmark-time')?.addEventListener('click', () => {
+    div.innerHTML = `<span class="wp-bookmark-icon">📌</span> <span class="wp-chat-name" style="color:${getUserColor(colorKey)}">${escapeHtml(msg.userName)}</span> bookmarked <button class="wp-bookmark-time" data-time="${msg.time}">${timeStr}</button> <span class="wp-chat-text">${msg.label ? escapeHtml(msg.label) : ''}</span>`;
+    div.querySelector('.wp-bookmark-time')?.addEventListener('click', (event) => {
+      if (!isTrustedUserEvent(event)) return;
       const video = document.querySelector('video');
       if (video) {
         video.currentTime = msg.time;
@@ -1670,6 +1735,14 @@ const WPOverlay = (() => {
     pruneChildren(container);
     container.scrollTop = container.scrollHeight;
     updateChatEmptyState(cachedRoomState);
+  }
+
+  function renderBookmarkHistory(bookmarks) {
+    if (!Array.isArray(bookmarks) || bookmarks.length === 0) return;
+    const sortedBookmarks = [...bookmarks].sort((a, b) => (a.date || 0) - (b.date || 0));
+    for (const bookmark of sortedBookmarks) {
+      appendBookmark(bookmark);
+    }
   }
 
   async function buildInviteUrl(roomId) {
@@ -1708,7 +1781,8 @@ const WPOverlay = (() => {
   function bindRoomCodeCopy(roomState) {
     const el = document.getElementById('wp-room-code');
     if (!el) return;
-    el.onclick = async () => {
+    el.onclick = async (event) => {
+      if (!isTrustedUserEvent(event)) return;
       const copied = await copyInviteUrl(roomState);
       el.textContent = copied ? 'Link copied!' : 'Copy failed';
       setTimeout(() => { el.textContent = roomState?.id?.slice(0, 8) || ''; }, 1500);
@@ -1720,7 +1794,8 @@ const WPOverlay = (() => {
     if (!input) return;
     let typingTimeout = null;
     let isTyping = false;
-    input.addEventListener('input', () => {
+    input.addEventListener('input', (event) => {
+      if (!isTrustedUserEvent(event)) return;
       if (!isTyping) {
         isTyping = true;
         onTypingStart(); // Send only once per typing session
@@ -1786,8 +1861,9 @@ const WPOverlay = (() => {
     if (!btn) {
       btn = document.createElement('button');
       btn.id = 'wp-catchup-btn';
-      btn.addEventListener('click', () => {
-        dispatchAction(WPConstants.ACTION.ROOM_PLAYBACK_REQUEST_SYNC);
+      btn.addEventListener('click', (event) => {
+        if (!isTrustedUserEvent(event)) return;
+        dispatchAction(WPConstants.ACTION.ROOM_PLAYBACK_REQUEST_SYNC, {}, event);
         removeCatchUpButton();
       });
       document.getElementById('wp-overlay')?.appendChild(btn);
@@ -1807,6 +1883,7 @@ const WPOverlay = (() => {
 
   return {
     create, updateState, updateSyncIndicator,
+    setActionDispatcher,
     appendChatMessage, showReaction, updateTypingIndicator,
     openSidebar, bindRoomCodeCopy, bindTypingIndicator,
     playNotifSound, showToast,

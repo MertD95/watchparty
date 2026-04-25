@@ -56,6 +56,19 @@ async function assertPass(label, task) {
   return result.ok;
 }
 
+async function readPopupCachedRoomKey(page) {
+  return page.evaluate(async () => {
+    const roomId = document.getElementById('room-id-display')?.textContent?.trim();
+    const storageKey = roomId ? `wpRoomKey:${roomId}` : null;
+    if (!storageKey) return null;
+    const [local, session] = await Promise.all([
+      chrome.storage.local.get(storageKey),
+      chrome.storage.session.get(storageKey),
+    ]);
+    return (session && session[storageKey]) || (local && local[storageKey]?.value) || null;
+  });
+}
+
 function trackPageDiagnostics(page, label) {
   currentDiagnostics?.attachPage(page, label);
 }
@@ -657,31 +670,15 @@ async function testPopupShowsImmediateInvalidRoomKeyErrorAfterHostUpdatesInviteK
       () => !!document.getElementById('wp-room-key-input') && !!document.getElementById('wp-room-key-save'),
       { timeout: TIMEOUT }
     );
-    await hostStremio.evaluate(() => {
-      const input = document.getElementById('wp-room-key-input');
-      input.value = 'UpdatedRoomKey-12345';
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-      document.getElementById('wp-room-key-save')?.click();
-    });
-    await hostPopup.waitForFunction((expectedKey) => {
-      const roomId = document.getElementById('room-id-display')?.textContent?.trim();
-      if (!roomId) return false;
-      const storageKey = `wpRoomKey:${roomId}`;
-      return Promise.all([
-        chrome.storage.local.get(storageKey),
-        chrome.storage.session.get(storageKey),
-      ]).then(([local, session]) => {
-        const current = (session && session[storageKey]) || (local && local[storageKey]?.value) || null;
-        return current === expectedKey;
-      });
-    }, 'UpdatedRoomKey-12345', { timeout: TIMEOUT });
-    const updatedRoomKey = await hostPopup.evaluate(async () => {
-      const roomId = document.getElementById('room-id-display')?.textContent?.trim();
-      const storageKey = roomId ? `wpRoomKey:${roomId}` : null;
-      const local = storageKey ? await chrome.storage.local.get(storageKey) : {};
-      const session = storageKey ? await chrome.storage.session.get(storageKey) : {};
-      return (session && storageKey && session[storageKey]) || (local && storageKey && local[storageKey]?.value) || null;
-    });
+    await hostStremio.fill('#wp-room-key-input', 'UpdatedRoomKey-12345');
+    await hostStremio.click('#wp-room-key-save');
+    const updatedRoomKey = await pollUntil(
+      async () => {
+        const key = await readPopupCachedRoomKey(hostPopup);
+        return key === 'UpdatedRoomKey-12345' ? key : null;
+      },
+      { timeout: TIMEOUT, intervalMs: 100, label: 'host room-key cache to update' }
+    );
 
     const peerStremio = await openStremio(peerCtx);
     const peerExtId = await getExtensionId(peerCtx);
@@ -1057,9 +1054,8 @@ async function testDisconnectedLeaveStillRemovesRoomAfterReconnect() {
     await context.setOffline(true);
     await waitForPopupReady(popup);
 
-    await stremio.evaluate(() => {
-      document.dispatchEvent(new CustomEvent('wp-action', { detail: { action: 'room.leave' } }));
-    });
+    await stremio.waitForSelector('#wp-leave-room-btn', { timeout: TIMEOUT });
+    await stremio.click('#wp-leave-room-btn');
     const leftLocally = await assertPass('Sidebar leaves the room immediately even while disconnected', () => stremio.waitForFunction(
       () => document.getElementById('wp-sidebar')?.innerText?.includes('Not in a room'),
       { timeout: TIMEOUT }
@@ -1664,8 +1660,8 @@ async function testThemePropagation() {
   console.log('\nâ”€â”€ Test: Theme color change propagates to sidebar â”€â”€');
   const env = await setupTwoUsers();
   try {
-    await openSidebarPanel(env.stremio1, 'room');
-    await env.stremio1.evaluate(() => document.querySelector('.wp-color-btn[data-color="#ec4899"]')?.click());
+    await openSidebarPanel(env.stremio1, 'prefs');
+    await env.stremio1.click('.wp-color-btn[data-color="#ec4899"]');
     await waitForSidebarAccent(env.stremio1, '#ec4899');
 
     // Check Alice's Stremio sidebar has pink accent
@@ -1674,8 +1670,8 @@ async function testThemePropagation() {
       document.getElementById('wp-sidebar')?.style.getPropertyValue('--wp-accent'));
     assert(aliceAccent === '#ec4899', `Alice sidebar accent is pink: ${aliceAccent}`);
 
-    await openSidebarPanel(env.stremio2, 'room');
-    await env.stremio2.evaluate(() => document.querySelector('.wp-color-btn[data-color="#22c55e"]')?.click());
+    await openSidebarPanel(env.stremio2, 'prefs');
+    await env.stremio2.click('.wp-color-btn[data-color="#22c55e"]');
     await waitForSidebarAccent(env.stremio2, '#22c55e');
 
     await env.stremio2.bringToFront();
@@ -2254,9 +2250,8 @@ async function testNamedRoom() {
     await waitForSidebarRoomAttached(stremio);
 
     // Leave room
-    await stremio.evaluate(() => {
-      document.dispatchEvent(new CustomEvent('wp-action', { detail: { action: 'room.leave' } }));
-    });
+    await stremio.waitForSelector('#wp-leave-room-btn', { timeout: TIMEOUT });
+    await stremio.click('#wp-leave-room-btn');
     await stremio.waitForFunction(
       () => document.getElementById('wp-sidebar')?.innerText?.includes('Not in a room'),
       { timeout: 8000 }
@@ -2329,7 +2324,13 @@ async function main() {
     testNamedRoom,
   ];
 
-  for (const test of tests) {
+  const filter = process.env.WP_E2E_FILTER || '';
+  const selectedTests = filter
+    ? tests.filter((test) => test.name.toLowerCase().includes(filter.toLowerCase()))
+    : tests;
+  if (filter) console.log(`Filter: ${filter} (${selectedTests.length}/${tests.length} tests)\n`);
+
+  for (const test of selectedTests) {
     currentDiagnostics = createBrowserDiagnostics();
     try {
       await test();

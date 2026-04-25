@@ -449,6 +449,30 @@
     return /^[A-Za-z0-9_-]{16,200}$/.test(trimmed) ? trimmed : null;
   }
 
+  function normalizeUsername(value) {
+    const username = typeof value === 'string' ? value.trim() : '';
+    return username && username.length <= WPProtocol.LIMITS.USERNAME_MAX ? username : null;
+  }
+
+  function resolveKnownUsername(...candidates) {
+    for (const candidate of candidates) {
+      const username = normalizeUsername(candidate);
+      if (username) return username;
+    }
+    const currentUser = roomState?.users?.find((user) => {
+      if (user.id === userId) return true;
+      return !!(sessionId && user.sessionId && user.sessionId === sessionId);
+    });
+    return normalizeUsername(currentUser?.name);
+  }
+
+  function sendSessionHello(usernameCandidate) {
+    const username = resolveKnownUsername(usernameCandidate);
+    if (!username || !sessionId) return false;
+    WPWS.send({ type: WPProtocol.COMMAND.SESSION_HELLO, payload: { username, sessionId } });
+    return true;
+  }
+
   function normalizeDeferredLeaveIntent(value) {
     if (!value || typeof value !== 'object') return null;
     const roomId = typeof value.roomId === 'string' ? value.roomId.trim() : '';
@@ -516,7 +540,7 @@
   function finalizeLeaveIntent(options = {}) {
     const leavingRoomId = options.roomId || roomState?.id || deferredLeaveIntent?.roomId;
     if (!leavingRoomId) return;
-    if (options.sendLeave && inRoom && WPWS.isReady()) {
+    if (options.sendLeave && inRoom && WPWS.isReady() && WPWS.isApplicationReady()) {
       clearDeferredLeaveIntent(leavingRoomId);
       WPWS.send({ type: WPProtocol.COMMAND.ROOM_LEAVE, payload: {} });
     } else {
@@ -535,9 +559,7 @@
       chrome.storage.local.get(WPConstants.STORAGE.USERNAME, (result) => resolve(result || {}));
     }).catch(() => ({}));
     const username = stored?.[WPConstants.STORAGE.USERNAME];
-    if (username) {
-      WPWS.send({ type: WPProtocol.COMMAND.SESSION_HELLO, payload: { username, sessionId } });
-    }
+    sendSessionHello(username);
     const roomKey = await loadStoredRoomKey(roomId);
     lastJoinAttemptRoomId = roomId;
     WPWS.send({
@@ -906,9 +928,7 @@
       if (!roomState?.id) return;
       // Load E2E crypto key before rejoining (prevents garbled messages on new tabs)
       loadCryptoKeyForRoom(roomState.id).then(() => {
-        if (stored[WPConstants.STORAGE.USERNAME]) {
-          WPWS.send({ type: WPProtocol.COMMAND.SESSION_HELLO, payload: { username: stored[WPConstants.STORAGE.USERNAME], sessionId } });
-        }
+        sendSessionHello(stored[WPConstants.STORAGE.USERNAME]);
         loadStoredRoomKey(roomState.id).then((roomKey) => {
           const seq = WPWS.getLastSeq();
           lastJoinAttemptRoomId = roomState.id;
@@ -954,11 +974,14 @@
           clearDeferredLeaveIntent(p.id);
           WPWS.send({ type: WPProtocol.COMMAND.ROOM_LEAVE, payload: {} });
           applyLocalLeaveState(p.id);
+          WPWS.clearQueue();
+          WPWS.markApplicationReady();
           return;
         }
         adoptRoomSnapshot(p, {
           lifecycle: (!inRoom || !roomState?.id || roomState.id !== p.id) ? 'joined' : 'sync',
         });
+        WPWS.markApplicationReady();
         break;
 
       case WPProtocol.EVENT.ROOM_CHAT_APPENDED:
@@ -987,10 +1010,12 @@
         }
         if (p?.code === WPProtocol.ERROR_CODE.ROOM_NOT_FOUND) {
           const wasInRoom = inRoom;
-      clearPendingJoinOptions();
-      inRoom = false; roomState = null;
-      WPSync.detach();
-        if (extOk()) removeExtensionState(WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT).catch(() => {});
+          clearPendingJoinOptions();
+          inRoom = false; roomState = null;
+          WPSync.detach();
+          WPWS.clearQueue();
+          WPWS.markApplicationReady();
+          if (extOk()) removeExtensionState(WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT).catch(() => {});
           refreshOverlay();
           persistState();
           if (wasInRoom || p?.code === WPProtocol.ERROR_CODE.ROOM_NOT_FOUND) {
@@ -999,6 +1024,15 @@
         }
         if (p?.code === WPProtocol.ERROR_CODE.INVALID_ROOM_KEY && lastJoinAttemptRoomId) {
           clearRoomKeyForRoom(lastJoinAttemptRoomId);
+        }
+        if (
+          p?.code === WPProtocol.ERROR_CODE.INVALID_ROOM_KEY
+          || p?.code === WPProtocol.ERROR_CODE.ROOM_KEY_REQUIRED
+          || p?.code === WPProtocol.ERROR_CODE.USERNAME_IN_USE
+        ) {
+          clearPendingJoinOptions();
+          WPWS.clearQueue();
+          WPWS.markApplicationReady();
         }
         // Show error feedback for non-room errors
         if (p?.code !== WPProtocol.ERROR_CODE.ROOM_NOT_FOUND && p?.message) {
@@ -1055,6 +1089,14 @@
         break;
 
       case WPProtocol.EVENT.ROOM_BOOKMARK_APPENDED:
+        if (!p) return;
+        if (roomState) {
+          applyRoomStateDelta((nextRoom) => {
+            nextRoom.bookmarks = Array.isArray(nextRoom.bookmarks) ? nextRoom.bookmarks : [];
+            nextRoom.bookmarks.push({ ...p });
+            if (nextRoom.bookmarks.length > 50) nextRoom.bookmarks.shift();
+          });
+        }
         WPOverlay.appendBookmark(p);
         notifyBackground({ action: WPConstants.ACTION.ROOM_BOOKMARK_EVENT, payload: p });
         break;
@@ -1157,9 +1199,7 @@
         WPWS.send({ type: WPProtocol.COMMAND.ROOM_LEAVE, payload: {} });
         inRoom = false; roomState = null; isHost = false;
       }
-      if (command?.username) {
-        WPWS.send({ type: WPProtocol.COMMAND.SESSION_HELLO, payload: { username: command.username, sessionId } });
-      }
+      sendSessionHello(command?.username);
       const context = getCurrentContentContext();
       const seedMeta = (isPlaceholderMeta(command?.meta) && context.meta) ? context.meta : command?.meta;
       const meta = await enrichContentMeta(seedMeta, context.launchUrl);
@@ -1210,9 +1250,7 @@
       try { await WPCrypto.importKey(cryptoKeyStr); } catch { /* invalid key */ }
     }
     const username = command?.username || stored[WPConstants.STORAGE.USERNAME];
-    if (username) {
-      WPWS.send({ type: WPProtocol.COMMAND.SESSION_HELLO, payload: { username, sessionId } });
-    }
+    sendSessionHello(username);
     lastJoinAttemptRoomId = roomToJoin;
     WPWS.send({ type: WPProtocol.COMMAND.ROOM_JOIN, payload: { id: roomToJoin, roomKey: cryptoKeyStr || undefined } });
   }
@@ -1272,7 +1310,9 @@
           username: stored[WPConstants.STORAGE.USERNAME],
           roomKey: await loadStoredRoomKey(roomToJoin),
         }, stored);
+        return;
       }
+      WPWS.markApplicationReady();
     });
   }
 
@@ -1788,8 +1828,8 @@
   }
 
   // --- Action dispatch (from overlay events + background/popup messages) ---
-  document.addEventListener('wp-action', (e) => {
-    handleAction(e.detail, { source: 'local' }).catch(() => {});
+  WPOverlay.setActionDispatcher?.((detail) => {
+    handleAction(detail, { source: 'local' }).catch(() => {});
   });
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type !== 'watchparty-ext') return false;
@@ -1976,7 +2016,7 @@
     },
     [WPConstants.ACTION.ROOM_SETTINGS_UPDATE]: (m) => WPWS.send({ type: WPProtocol.COMMAND.ROOM_SETTINGS_UPDATE, payload: m.settings }),
     [WPConstants.ACTION.ROOM_OWNERSHIP_TRANSFER]: (m) => WPWS.send({ type: WPProtocol.COMMAND.ROOM_OWNERSHIP_TRANSFER, payload: { userId: m.targetUserId } }),
-    [WPConstants.ACTION.SESSION_USERNAME_UPDATE]: (m) => WPWS.send({ type: WPProtocol.COMMAND.SESSION_HELLO, payload: { username: m.username, sessionId } }),
+    [WPConstants.ACTION.SESSION_USERNAME_UPDATE]: (m) => sendSessionHello(m.username),
     [WPConstants.ACTION.ROOM_READY_CHECK_UPDATE]: (m) => WPWS.send({ type: WPProtocol.COMMAND.ROOM_READY_CHECK_UPDATE, payload: { action: m.readyAction } }),
     [WPConstants.ACTION.ROOM_BOOKMARK_ADD]: (m) => WPWS.send({ type: WPProtocol.COMMAND.ROOM_BOOKMARK_ADD, payload: { time: resolveBookmarkTime(m.time), label: m.label } }),
     [WPConstants.ACTION.ROOM_BOOKMARK_SEEK]: (m) => seekToBookmarkTime(m.time),
