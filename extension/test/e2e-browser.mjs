@@ -59,13 +59,7 @@ async function assertPass(label, task) {
 async function readPopupCachedRoomKey(page) {
   return page.evaluate(async () => {
     const roomId = document.getElementById('room-id-display')?.textContent?.trim();
-    const storageKey = roomId ? `wpRoomKey:${roomId}` : null;
-    if (!storageKey) return null;
-    const [local, session] = await Promise.all([
-      chrome.storage.local.get(storageKey),
-      chrome.storage.session.get(storageKey),
-    ]);
-    return (session && session[storageKey]) || (local && local[storageKey]?.value) || null;
+    return roomId ? WPRoomKeys.getAccessKey(roomId) : null;
   });
 }
 
@@ -447,14 +441,17 @@ async function testOptionsRecoveryToolsClearOnlyRuntimeState() {
     const options = await openOptions(context, extId);
 
     await options.evaluate(async () => {
-      const roomKeyLocal = 'wpRoomKey:recovery-local-room';
-      const roomKeySession = 'wpRoomKey:recovery-session-room';
+      const accessKeyLocal = 'wpRoomAccessKey:recovery-local-room';
+      const e2eKeyLocal = 'wpRoomE2eKey:recovery-local-room';
+      const accessKeySession = 'wpRoomAccessKey:recovery-session-room';
+      const e2eKeySession = 'wpRoomE2eKey:recovery-session-room';
       await chrome.storage.local.set({
         wpBackendMode: 'live',
         wpAccentColor: '#112233',
         wpUsername: 'RecoveryHost',
         wpSessionId: '11111111-1111-4111-8111-111111111111',
-        [roomKeyLocal]: { value: 'local-room-key-123456', storedAt: Date.now() },
+        [accessKeyLocal]: { value: 'local-access-key-123456', storedAt: Date.now() },
+        [e2eKeyLocal]: { value: 'local-e2e-key-123456', storedAt: Date.now() },
       });
         await chrome.storage.session.set({
           wpBootstrapRoomIntent: {
@@ -485,7 +482,8 @@ async function testOptionsRecoveryToolsClearOnlyRuntimeState() {
           claimedAt: Date.now(),
         },
         savedAuthKey: 'auth-key-fixture',
-        [roomKeySession]: 'session-room-key-654321',
+        [accessKeySession]: 'session-access-key-654321',
+        [e2eKeySession]: 'session-e2e-key-654321',
       });
     });
 
@@ -514,20 +512,22 @@ async function testOptionsRecoveryToolsClearOnlyRuntimeState() {
     assert(Object.values(postBootstrapState.sessionValues).every((value) => value === undefined), 'Clear Staged Handoff removes staged/session runtime markers');
 
     await options.click('#btn-clear-room-keys');
-    const roomKeysCleared = await assertPass('Options recovery clears cached room keys', () => options.waitForFunction(() => {
+    await assertPass('Options recovery clears cached private invite keys', () => options.waitForFunction(() => {
       const feedback = document.getElementById('recovery-feedback')?.textContent || '';
-      return feedback.includes('room key') || feedback.includes('No cached room keys');
+      return feedback.includes('private invite key') || feedback.includes('No cached private invite keys');
     }, { timeout: TIMEOUT }));
 
     const keyState = await options.evaluate(async () => {
       const local = await chrome.storage.local.get(null);
       const session = await chrome.storage.session.get(null);
+      const isRoomKey = (key) => key.startsWith('wpRoomAccessKey:')
+        || key.startsWith('wpRoomE2eKey:');
       return {
-        localKeys: Object.keys(local).filter((key) => key.startsWith('wpRoomKey:')),
-        sessionKeys: Object.keys(session).filter((key) => key.startsWith('wpRoomKey:')),
+        localKeys: Object.keys(local).filter(isRoomKey),
+        sessionKeys: Object.keys(session).filter(isRoomKey),
       };
     });
-    assert(keyState.localKeys.length === 0 && keyState.sessionKeys.length === 0, 'Cached room keys are removed from both storage areas');
+    assert(keyState.localKeys.length === 0 && keyState.sessionKeys.length === 0, 'Cached private invite keys are removed from both storage areas');
 
     await options.click('#btn-reset-runtime');
     const runtimeReset = await assertPass('Options reset action reports success', () => options.waitForFunction(() => {
@@ -641,7 +641,7 @@ async function testPopupFirstJoinMissingRoomShowsImmediateError() {
 }
 
 async function testPopupShowsImmediateInvalidRoomKeyErrorAfterHostUpdatesInviteKey() {
-  console.log('\n-- Test: Popup surfaces invalid old room keys after the host updates the invite key --');
+  console.log('\n-- Test: Popup surfaces invalid old access keys after the host updates the invite key --');
   const hostCtx = await launchWithExtension();
   const peerCtx = await launchWithExtension();
   try {
@@ -656,12 +656,10 @@ async function testPopupShowsImmediateInvalidRoomKeyErrorAfterHostUpdatesInviteK
     );
     const roomState = await hostPopup.evaluate(async () => {
       const roomId = document.getElementById('room-id-display')?.textContent?.trim();
-      const storageKey = roomId ? `wpRoomKey:${roomId}` : null;
-      const local = storageKey ? await chrome.storage.local.get(storageKey) : {};
-      const session = storageKey ? await chrome.storage.session.get(storageKey) : {};
       return {
         roomId,
-        roomKey: (session && storageKey && session[storageKey]) || (local && storageKey && local[storageKey]?.value) || null,
+        accessKey: roomId ? await WPRoomKeys.getAccessKey(roomId) : null,
+        e2eKey: roomId ? await WPRoomKeys.getE2eKey(roomId) : null,
       };
     });
 
@@ -677,7 +675,7 @@ async function testPopupShowsImmediateInvalidRoomKeyErrorAfterHostUpdatesInviteK
         const key = await readPopupCachedRoomKey(hostPopup);
         return key === 'UpdatedRoomKey-12345' ? key : null;
       },
-      { timeout: TIMEOUT, intervalMs: 100, label: 'host room-key cache to update' }
+      { timeout: TIMEOUT, intervalMs: 100, label: 'host access-key cache to update' }
     );
 
     const peerStremio = await openStremio(peerCtx);
@@ -685,15 +683,15 @@ async function testPopupShowsImmediateInvalidRoomKeyErrorAfterHostUpdatesInviteK
     let peerPopup = await openPopup(peerCtx, peerExtId);
     await peerPopup.fill('#username-input', 'PeerKeyJoiner');
     await peerPopup.click('#lobby-tab-join');
-    await peerPopup.fill('#room-id-input', `${roomState.roomId}#key=${roomState.roomKey}`);
+    await peerPopup.fill('#room-id-input', `${roomState.roomId}#accessKey=${roomState.accessKey}&e2eKey=${roomState.e2eKey}`);
     await peerPopup.click('#btn-join');
 
-    const invalidKeyShown = await assertPass('Popup surfaces the invalid old room key immediately', () => peerPopup.waitForFunction(
+    const invalidKeyShown = await assertPass('Popup surfaces the invalid old access key immediately', () => peerPopup.waitForFunction(
       () => {
         const error = document.getElementById('join-error');
         return !!error
           && !error.classList.contains('hidden')
-          && /room key is invalid/i.test(error.textContent || '');
+          && /access key is invalid/i.test(error.textContent || '');
       },
       { timeout: TIMEOUT }
     ));
@@ -703,10 +701,10 @@ async function testPopupShowsImmediateInvalidRoomKeyErrorAfterHostUpdatesInviteK
         !document.getElementById('view-lobby').classList.contains('hidden')
         && document.getElementById('view-room').classList.contains('hidden')
       );
-      assert(stillLobby, 'Popup stays in the lobby after the invalid old room key');
+      assert(stillLobby, 'Popup stays in the lobby after the invalid old access key');
     }
 
-    await peerPopup.fill('#room-id-input', `${roomState.roomId}#key=${updatedRoomKey}`);
+    await peerPopup.fill('#room-id-input', `${roomState.roomId}#accessKey=${updatedRoomKey}&e2eKey=${roomState.e2eKey}`);
     await peerPopup.click('#btn-join');
     let joinedWithNewKey = true;
     try {
@@ -714,9 +712,9 @@ async function testPopupShowsImmediateInvalidRoomKeyErrorAfterHostUpdatesInviteK
         () => !document.getElementById('view-room').classList.contains('hidden'),
         { timeout: TIMEOUT }
       );
-      assert(true, 'Popup still joins successfully with the updated room key');
+      assert(true, 'Popup still joins successfully with the updated access key');
     } catch {
-      const peerAttached = await assertPass('Peer overlay still attaches after joining with the updated room key', () => peerStremio.waitForFunction(
+      const peerAttached = await assertPass('Peer overlay still attaches after joining with the updated access key', () => peerStremio.waitForFunction(
         () => !document.getElementById('wp-sidebar')?.innerText?.includes('Not in a room'),
         { timeout: TIMEOUT }
       ));
@@ -730,7 +728,7 @@ async function testPopupShowsImmediateInvalidRoomKeyErrorAfterHostUpdatesInviteK
             () => !document.getElementById('view-room').classList.contains('hidden'),
             { timeout: TIMEOUT }
           );
-          assert(true, 'Popup still joins successfully with the updated room key');
+          assert(true, 'Popup still joins successfully with the updated access key');
           peerPopup = reopenedPeerPopup;
         } catch {
           joinedWithNewKey = false;
@@ -748,12 +746,12 @@ async function testPopupShowsImmediateInvalidRoomKeyErrorAfterHostUpdatesInviteK
       assert(peerRoomState.roomId === roomState.roomId, 'Updated key join lands in the expected room');
       assert(peerRoomState.role === 'Synced', 'Updated key join preserves the peer role');
       assert(peerRoomState.count === '2 watching', 'Updated key join shows both room members');
-      const peerAttached = await assertPass('Peer overlay attaches after joining with the updated room key', () => peerStremio.waitForFunction(
+      const peerAttached = await assertPass('Peer overlay attaches after joining with the updated access key', () => peerStremio.waitForFunction(
         () => !document.getElementById('wp-sidebar')?.innerText?.includes('Not in a room'),
         { timeout: TIMEOUT }
       ));
     } else {
-      assert(false, 'Popup still joins successfully with the updated room key');
+      assert(false, 'Popup still joins successfully with the updated access key');
     }
 
     await peerPopup.close().catch(() => {});
@@ -955,7 +953,7 @@ async function testCreateRoomFlow() {
         roomButtonClipboardText.includes(`/r/${roomId}`),
         `Room panel Copy Invite writes the room link to the clipboard (${roomButtonClipboardText || 'empty'})`
       );
-      const roomKeyHelpStable = await stremio.evaluate(async () => {
+      const accessKeyHelpStable = await stremio.evaluate(async () => {
         const help = document.getElementById('wp-room-key-help');
         const row = document.querySelector('label[for="wp-session-autopause"]');
         const input = document.getElementById('wp-session-autopause');
@@ -984,7 +982,7 @@ async function testCreateRoomFlow() {
         observer.disconnect();
         return !seenTexts.some((text) => /Loading invite key/i.test(text));
       });
-      assert(roomKeyHelpStable, 'Room key helper text stays stable while auto-pause toggles update');
+      assert(accessKeyHelpStable, 'Invite-key helper text stays stable while auto-pause toggles update');
       await openSidebarPanel(stremio, 'prefs');
       const prefsReady = await stremio.evaluate(() => ({
         soundToggle: !!document.getElementById('wp-settings-sound'),
@@ -1079,7 +1077,7 @@ async function testDisconnectedLeaveStillRemovesRoomAfterReconnect() {
 }
 
 async function testPopupReloadReadsWrappedLocalRoomKeyFallback() {
-  console.log('\n-- Test: Popup can rebuild invite links from wrapped local room-key storage --');
+  console.log('\n-- Test: Popup can rebuild access-only invite links from local access-key storage --');
   const context = await launchWithExtension();
   try {
     const stremio = await openStremio(context);
@@ -1096,21 +1094,28 @@ async function testPopupReloadReadsWrappedLocalRoomKeyFallback() {
       async () => {
         const roomId = document.getElementById('room-id-display')?.textContent;
         if (!roomId) return false;
-        const storageKey = `wpRoomKey:${roomId}`;
-        const stored = await chrome.storage.local.get(storageKey);
-        return typeof stored?.[storageKey]?.value === 'string' && stored?.[storageKey]?.value.length >= 16
-          && typeof stored?.[storageKey]?.storedAt === 'number';
+        const accessKey = `wpRoomAccessKey:${roomId}`;
+        const e2eKey = `wpRoomE2eKey:${roomId}`;
+        const local = await chrome.storage.local.get([accessKey, e2eKey]);
+        const session = await chrome.storage.session.get([accessKey, e2eKey]);
+        return typeof local?.[accessKey]?.value === 'string' && local?.[accessKey]?.value.length >= 16
+          && typeof local?.[accessKey]?.storedAt === 'number'
+          && local?.[e2eKey] === undefined
+          && typeof session?.[e2eKey] === 'string' && session?.[e2eKey].length >= 16;
       },
       { timeout: TIMEOUT }
     );
 
     const roomState = await popup.evaluate(async () => {
       const roomId = document.getElementById('room-id-display').textContent;
-      const storageKey = `wpRoomKey:${roomId}`;
-      const stored = await chrome.storage.local.get(storageKey);
-      const roomKey = stored?.[storageKey]?.value || '';
-      await chrome.storage.session.remove(storageKey);
-      return { roomId, roomKey };
+      const accessKeyStorageKey = `wpRoomAccessKey:${roomId}`;
+      const e2eKeyStorageKey = `wpRoomE2eKey:${roomId}`;
+      const local = await chrome.storage.local.get([accessKeyStorageKey, e2eKeyStorageKey]);
+      const session = await chrome.storage.session.get([e2eKeyStorageKey]);
+      const accessKey = local?.[accessKeyStorageKey]?.value || '';
+      const e2eKey = session?.[e2eKeyStorageKey] || '';
+      await chrome.storage.session.remove([accessKeyStorageKey, e2eKeyStorageKey]);
+      return { roomId, accessKey, e2eKey };
     });
 
     await popup.close();
@@ -1123,17 +1128,21 @@ async function testPopupReloadReadsWrappedLocalRoomKeyFallback() {
     const rebuiltInvite = await pollUntil(async () => {
       const value = await popup.evaluate(async (expected) => {
         const invite = await buildInviteUrlWithKey(expected.roomId);
-        return (typeof invite === 'string' && invite.endsWith(`#key=${expected.roomKey}`)) ? invite : null;
+        return (typeof invite === 'string'
+          && invite.includes(`accessKey=${expected.accessKey}`)
+          && !invite.includes('e2eKey=')) ? invite : null;
       }, roomState);
       return value || null;
     }, {
       timeout: TIMEOUT,
       intervalMs: 250,
-      label: 'rebuilt invite link from wrapped local room-key fallback',
+      label: 'rebuilt invite link from local access-key recovery',
     });
     assert(
-      typeof rebuiltInvite === 'string' && rebuiltInvite.endsWith(`#key=${roomState.roomKey}`),
-      `Popup rebuilds the invite link from wrapped local-storage fallback (${rebuiltInvite})`
+      typeof rebuiltInvite === 'string'
+        && rebuiltInvite.includes(`accessKey=${roomState.accessKey}`)
+        && !rebuiltInvite.includes('e2eKey='),
+      `Popup rebuilds an access-only invite after session-only E2E key is cleared (${rebuiltInvite})`
     );
 
     await popup.close();

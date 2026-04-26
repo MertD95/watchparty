@@ -28,7 +28,7 @@ const WPModals = (() => {
   }
 
   // --- Ready check modal (Popover API) ---
-  function showReadyCheck(action, confirmed, total, myUserId) {
+  function showReadyCheck(action, confirmed, total, myUserId, dispatchAction = null) {
     let modal = document.getElementById('wp-ready-modal');
     if (action === 'cancelled' || action === 'completed') {
       if (localCountdownTimer) { clearInterval(localCountdownTimer); localCountdownTimer = null; }
@@ -55,8 +55,11 @@ const WPModals = (() => {
       `;
       document.getElementById('wp-overlay')?.appendChild(modal);
       modal.showPopover();
-      document.getElementById('wp-ready-confirm').addEventListener('click', () => {
-        document.dispatchEvent(new CustomEvent('wp-action', { detail: { action: WPConstants.ACTION.ROOM_READY_CHECK_UPDATE, readyAction: 'confirm' } }));
+      document.getElementById('wp-ready-confirm').addEventListener('click', (event) => {
+        const accepted = typeof dispatchAction === 'function'
+          ? dispatchAction(WPConstants.ACTION.ROOM_READY_CHECK_UPDATE, { readyAction: 'confirm' }, event)
+          : false;
+        if (!accepted) return;
         document.getElementById('wp-ready-confirm').disabled = true;
         document.getElementById('wp-ready-confirm').textContent = 'Waiting...';
         const countEl = document.getElementById('wp-ready-count');

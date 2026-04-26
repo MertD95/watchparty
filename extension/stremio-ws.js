@@ -29,6 +29,7 @@ const WPWS = (() => {
   let clockOffset = 0;
   let clockSamples = [];
   let clockSyncTimer = null;
+  /** @type {string} */
   let backendMode = BACKEND_MODES.AUTO;
   let resolvedBackend = null;
   let lastSeq = 0; // Track last received sequence number for reconnect replay
@@ -41,6 +42,10 @@ const WPWS = (() => {
 
   // Auto mode only prefers localhost for unpacked/dev installs.
   const isDevInstall = !('update_url' in chrome.runtime.getManifest());
+
+  function formatErrorMessage(error) {
+    return error instanceof Error ? error.message : String(error);
+  }
 
   async function probeLocalBackend() {
     try {
@@ -85,16 +90,16 @@ const WPWS = (() => {
   async function connect() {
     if (ws) return;
     const url = await getWsUrl();
-    try { ws = new WebSocket(url); } catch (e) { console.warn('[WatchParty] WebSocket creation failed:', e.message); scheduleReconnect(); return; }
+    try { ws = new WebSocket(url); } catch (e) { console.warn('[WatchParty] WebSocket creation failed:', formatErrorMessage(e)); scheduleReconnect(); return; }
 
     ws.onopen = () => {
       reconnectAttempts = 0;
       // Keepalive ping every 25s
-      clearInterval(keepAliveTimer);
-      lastPongTime = Date.now(); // Reset on connect
-      keepAliveTimer = setInterval(() => {
+      WPRuntimeClock.clearInterval(keepAliveTimer);
+      lastPongTime = WPRuntimeClock.now(); // Reset on connect
+      keepAliveTimer = WPRuntimeClock.setInterval(() => {
         if (ws?.readyState === WebSocket.OPEN) {
-          send({ type: WPProtocol.COMMAND.SESSION_CLOCK_PING, payload: { clientTime: Date.now() } });
+          send({ type: WPProtocol.COMMAND.SESSION_CLOCK_PING, payload: { clientTime: WPRuntimeClock.now() } });
           checkHeartbeat();
         }
       }, KEEPALIVE_INTERVAL_MS);
@@ -122,8 +127,8 @@ const WPWS = (() => {
     };
 
     ws.onclose = () => {
-      clearInterval(keepAliveTimer);
-      for (const t of pendingPingTimers) clearTimeout(t);
+      WPRuntimeClock.clearInterval(keepAliveTimer);
+      for (const t of pendingPingTimers) WPRuntimeClock.clearTimeout(t);
       pendingPingTimers = [];
       ws = null;
       markApplicationPending();
@@ -136,10 +141,10 @@ const WPWS = (() => {
 
   function disconnect(options = {}) {
     const { resetReplay = false } = options;
-    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-    clearInterval(clockSyncTimer);
+    if (reconnectTimer) { WPRuntimeClock.clearTimeout(reconnectTimer); reconnectTimer = null; }
+    WPRuntimeClock.clearInterval(clockSyncTimer);
     clockSyncTimer = null;
-    for (const t of pendingPingTimers) clearTimeout(t);
+    for (const t of pendingPingTimers) WPRuntimeClock.clearTimeout(t);
     pendingPingTimers = [];
     sendQueue = [];
     markApplicationPending();
@@ -150,7 +155,7 @@ const WPWS = (() => {
       ws.close();
       ws = null;
     }
-    clearInterval(keepAliveTimer);
+    WPRuntimeClock.clearInterval(keepAliveTimer);
     keepAliveTimer = null;
     if (onDisconnectHandler) onDisconnectHandler();
   }
@@ -158,9 +163,9 @@ const WPWS = (() => {
   function scheduleReconnect() {
     if (reconnectTimer) return;
     const base = Math.min(RECONNECT_BASE_MS * Math.pow(2, reconnectAttempts), RECONNECT_MAX_MS);
-    const delay = base + Math.random() * base * 0.2;
+    const delay = base + WPRuntimeClock.random() * base * 0.2;
     reconnectAttempts++;
-    reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, delay);
+    reconnectTimer = WPRuntimeClock.setTimeout(() => { reconnectTimer = null; connect(); }, delay);
   }
 
   let sendQueue = [];
@@ -232,8 +237,8 @@ const WPWS = (() => {
   function startClockSync() {
     clockSamples = [];
     sendClockPings();
-    clearInterval(clockSyncTimer);
-    clockSyncTimer = setInterval(() => {
+    WPRuntimeClock.clearInterval(clockSyncTimer);
+    clockSyncTimer = WPRuntimeClock.setInterval(() => {
       clockSamples = [];
       sendClockPings();
     }, CLOCK_RESYNC_INTERVAL_MS);
@@ -242,10 +247,10 @@ const WPWS = (() => {
   let pendingPingTimers = [];
   function sendClockPings() {
     // Cancel any pending pings from a previous sync round (prevents stale pings after reconnect)
-    for (const t of pendingPingTimers) clearTimeout(t);
+    for (const t of pendingPingTimers) WPRuntimeClock.clearTimeout(t);
     pendingPingTimers = [];
     for (let i = 0; i < CLOCK_SAMPLES; i++) {
-      pendingPingTimers.push(setTimeout(() => send({ type: WPProtocol.COMMAND.SESSION_CLOCK_PING, payload: { clientTime: Date.now() } }), i * 200));
+      pendingPingTimers.push(WPRuntimeClock.setTimeout(() => send({ type: WPProtocol.COMMAND.SESSION_CLOCK_PING, payload: { clientTime: WPRuntimeClock.now() } }), i * 200));
     }
   }
 
@@ -253,15 +258,15 @@ const WPWS = (() => {
   const HEARTBEAT_TIMEOUT_MS = 60000; // Disconnect if no pong for 60s
 
   function checkHeartbeat() {
-    if (lastPongTime > 0 && Date.now() - lastPongTime > HEARTBEAT_TIMEOUT_MS && ws?.readyState === WebSocket.OPEN) {
+    if (lastPongTime > 0 && WPRuntimeClock.now() - lastPongTime > HEARTBEAT_TIMEOUT_MS && ws?.readyState === WebSocket.OPEN) {
       ws.close(4000, 'Heartbeat timeout');
     }
   }
 
   function handleClockPong(p) {
     if (!p?.clientTime || !p?.serverTime) return;
-    lastPongTime = Date.now();
-    const now = Date.now();
+    lastPongTime = WPRuntimeClock.now();
+    const now = WPRuntimeClock.now();
     const rtt = now - p.clientTime;
     const offset = p.serverTime - p.clientTime - rtt / 2;
     clockSamples.push({ rtt, offset });

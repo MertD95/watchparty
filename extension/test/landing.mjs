@@ -632,7 +632,7 @@ async function main() {
       () => getComputedStyle(document.getElementById('uuid-modal')).display !== 'none' && window.__joinMessages.length === 0,
       { timeout: 3000 }
     ));
-    await page.fill('#uuid-input', `http://localhost:${pagePort}/r/room-private#key=invite-private-room-key`);
+    await page.fill('#uuid-input', `http://localhost:${pagePort}/r/room-private#accessKey=invite-private-room-key&e2eKey=invite-e2e-room-key`);
     await page.click('#uuid-submit-btn');
     await page.waitForFunction(() => window.__joinMessages.length > 0 && window.__bridgeMessages.some((entry) => entry.type === 'watchparty-open-stremio'), { timeout: 3000 });
     const privateJoinAction = await page.evaluate(() => ({
@@ -641,7 +641,8 @@ async function main() {
       navTarget: window.__navTargets[0] || null,
     }));
     ok(privateJoinAction.joinMessage?.roomId === 'room-private', 'private invite flow posts the invite room ID after key entry');
-    ok(privateJoinAction.joinMessage?.roomKey === 'invite-private-room-key', 'private invite flow forwards the entered room key');
+    ok(privateJoinAction.joinMessage?.accessKey === 'invite-private-room-key', 'private invite flow forwards the entered access key');
+    ok(privateJoinAction.joinMessage?.e2eKey === 'invite-e2e-room-key', 'private invite flow forwards the entered E2E key');
     ok(privateJoinAction.openMessage?.url === 'https://web.stremio.com', 'private invite flow asks the extension background to open or focus Stremio Web');
     ok(privateJoinAction.navTarget == null, 'private invite flow keeps the landing page in place during the handoff');
 
@@ -732,7 +733,7 @@ async function main() {
       { timeout: 5000 }
     ));
 
-    await page.goto(`http://localhost:${pagePort}/r/test-room-123#key=redirect-room-key-1234`, { waitUntil: 'domcontentloaded' });
+    await page.goto(`http://localhost:${pagePort}/r/test-room-123#accessKey=redirect-room-key-1234&e2eKey=redirect-e2e-key-1234`, { waitUntil: 'domcontentloaded' });
 
     await expectPass(ok, 'redirect page posts the join-room message immediately', () =>
       page.waitForFunction(() => window.__joinMessages.length > 0, { timeout: 3000 })
@@ -740,7 +741,9 @@ async function main() {
 
     const joinMessage = await page.evaluate(() => window.__joinMessages[0] || null);
     ok(joinMessage?.roomId === 'test-room-123', 'redirect page posts the correct room ID');
-    ok(joinMessage?.roomKey === 'redirect-room-key-1234', 'redirect page forwards the invite room key to the extension bridge');
+    ok(joinMessage?.accessKey === 'redirect-room-key-1234', 'redirect page forwards the invite access key to the extension bridge');
+    ok(joinMessage?.e2eKey === 'redirect-e2e-key-1234', 'redirect page forwards the invite E2E key to the extension bridge');
+    ok(!page.url().includes('accessKey='), 'redirect page removes invite keys from the visible URL after handoff');
 
     await expectPass(ok, 'redirect page shows the missing-extension warning when no extension responds', () => page.waitForFunction(
       () => getComputedStyle(document.getElementById('no-ext-warning')).display !== 'none',

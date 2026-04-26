@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 
+const RUNTIME_CLOCK_PATH = path.resolve('extension', 'runtime-clock.js');
 const SYNC_PATH = path.resolve('extension', 'stremio-sync.js');
 
 let passed = 0;
@@ -78,7 +79,11 @@ function createFakeClock() {
 }
 
 function loadSyncEngine(clock = createFakeClock()) {
-  const source = `${fs.readFileSync(SYNC_PATH, 'utf8')}\n;globalThis.__WPSync = WPSync;`;
+  const source = [
+    fs.readFileSync(RUNTIME_CLOCK_PATH, 'utf8'),
+    fs.readFileSync(SYNC_PATH, 'utf8'),
+    ';globalThis.__WPSync = WPSync;',
+  ].join('\n');
   const context = vm.createContext({
     console,
     setInterval: clock.setInterval,

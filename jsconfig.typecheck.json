@@ -1,0 +1,37 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "noImplicitAny": false,
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM"],
+    "skipLibCheck": true
+  },
+  "files": [
+    "extension/types/watchparty-globals.d.ts",
+    "extension/wp-actions.js",
+    "extension/constants.js",
+    "extension/runtime-clock.js",
+    "extension/background-coordinator-kernel.js",
+    "extension/wp-room-domain.js",
+    "extension/wp-direct-play-domain.js",
+    "extension/direct-play.js",
+    "extension/wp-protocol.js",
+    "extension/stremio-crypto.js",
+    "extension/runtime-state.js",
+    "extension/room-keys.js",
+    "extension/stremio-sync.js",
+    "extension/stremio-ws.js",
+    "extension/stremio-profile.js",
+    "extension/stremio-runtime-model.js",
+    "extension/stremio-controller-kernel.js",
+    "extension/stremio-adapter.js",
+    "extension/utils.js",
+    "extension/background.js",
+    "extension/content.js",
+    "extension/sidepanel.js",
+    "extension/options.js",
+    "extension/stremio-content.js"
+  ]
+}

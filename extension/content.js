@@ -97,12 +97,14 @@ window.addEventListener('message', (event) => {
 
   if (event.data?.type === 'watchparty-join-room' && event.data.roomId) {
     const username = typeof event.data.username === 'string' ? event.data.username.trim() : '';
-    const roomKey = event.data.roomKey || event.data.cryptoKey;
+    const accessKey = event.data.accessKey;
+    const e2eKey = event.data.e2eKey;
     sendRuntimeMessage({
       action: WPConstants.ACTION.ROOM_JOIN,
       roomId: event.data.roomId,
       username,
-      roomKey,
+      accessKey,
+      e2eKey,
       preferDirectJoin: event.data.preferDirectJoin === true,
     });
   }
@@ -117,6 +119,8 @@ window.addEventListener('message', (event) => {
       public: event.data.public || false,
       listed: event.data.listed !== false,
       roomName: event.data.roomName,
+      accessKey: event.data.accessKey,
+      e2eKey: event.data.e2eKey,
     });
   }
 

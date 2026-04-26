@@ -121,14 +121,14 @@
 
       <h2>Local storage</h2>
       <p>
-        The extension stores room state, room keys, display name, and user preferences in Chrome extension storage
-        so it can recover sessions and keep extension surfaces in sync. Sensitive Stremio auth state is kept in memory
-        and is not persisted in extension storage.
+        The extension stores room state, private-room access keys, display name, and user preferences in Chrome extension
+        storage so it can recover sessions and keep extension surfaces in sync. End-to-end chat keys and sensitive Stremio
+        auth state are kept in memory-backed session storage and are not persisted across browser restarts.
       </p>
 
       <h2>Security</h2>
       <p>
-        Private room keys are attached to invite links and used by the extension for private-room access. Local development
+        Private-room access keys are attached to invite links and used by the extension for private-room access. Local development
         and operational endpoints are restricted separately from the public production room flow.
       </p>
 

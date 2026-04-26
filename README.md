@@ -42,7 +42,7 @@ npm run syntax
 npm run test:fast
 npm run test:landing
 npm run test:sidepanel-integration
-npm run test:integration
+npm run test:sidepanel-integration
 npm run test:browser
 npm run test:full
 npm run build:store-package
@@ -65,7 +65,6 @@ npm run gen:icons
 - `localhost:11470` is the Stremio local service, not just a development host
 - The Stremio auth key is forwarded to the background worker and kept in memory only; it is not persisted in extension storage
 - `npm run test:sidepanel-integration` is the specific sidepanel-backed integration suite
-- `npm run test:integration` is kept as a compatibility alias for `test:sidepanel-integration`
 - The website can auto-deploy through Cloudflare Pages Git integration, but the browser extension is not published to the Chrome Web Store by a normal push
 - `npm run build:store-package` creates a Chrome Web Store bundle under `dist/chrome-web-store/` and strips dev-only localhost landing origins from the packaged manifest
 - Deployment and external-service hardening notes live in `SECURITY.md`

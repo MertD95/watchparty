@@ -1119,13 +1119,13 @@
     <a href="https://web.stremio.com" class="btn btn-primary" id="redirect-btn" style="display:none">Open Stremio Web</a>
   </div>
 
-  <!-- Private room key / invite modal -->
+  <!-- Private access key / invite modal -->
   <div id="uuid-modal" class="modal-overlay" style="display:none">
     <div class="modal-box">
       <h3 id="uuid-title">Private Room</h3>
-      <p id="uuid-description">Enter the room key, or paste the full invite link shared by the host.</p>
+      <p id="uuid-description">Enter the access key, or paste the full invite link shared by the host.</p>
       <div class="modal-error" id="uuid-error" style="display:none"></div>
-      <input type="text" id="uuid-input" placeholder="Paste room key or invite link" />
+      <input type="text" id="uuid-input" placeholder="Paste access key or invite link" />
       <div class="modal-actions">
         <button class="btn-cancel" id="uuid-cancel-btn">Cancel</button>
         <button class="btn-primary" id="uuid-submit-btn">Join Room</button>
@@ -1403,35 +1403,50 @@
 
     let pendingPrivateJoin = null;
 
+    function parseInviteKeysFromHash(hash) {
+      const params = new URLSearchParams(String(hash || '').replace(/^#/, ''));
+      return {
+        accessKey: params.get('accessKey') || '',
+        e2eKey: params.get('e2eKey') || '',
+      };
+    }
+
     function getInviteRoomKeyFromHash() {
-      const keyMatch = window.location.hash.match(/(?:^#|[&#])key=([A-Za-z0-9_-]+)/);
-      return keyMatch ? keyMatch[1] : '';
+      return parseInviteKeysFromHash(window.location.hash).accessKey;
+    }
+
+    function clearInviteHashFromAddressBar() {
+      const params = new URLSearchParams(String(window.location.hash || '').replace(/^#/, ''));
+      if (!params.has('accessKey') && !params.has('e2eKey')) return;
+      if (typeof history?.replaceState !== 'function') return;
+      history.replaceState(history.state, document.title, `${location.pathname}${location.search}`);
     }
 
     function parsePrivateJoinInput(value, expectedRoomId) {
       const trimmed = (value || '').trim();
-      if (!trimmed) return { roomId: expectedRoomId || '', roomKey: '' };
+      if (!trimmed) return { roomId: expectedRoomId || '', accessKey: '', e2eKey: '' };
       try {
         const parsed = new URL(trimmed, location.origin);
         const roomMatch = parsed.pathname.match(/^\/r\/([a-z0-9-]+)$/i);
         if (roomMatch) {
-          const keyMatch = parsed.hash.match(/(?:^#|[&#])key=([A-Za-z0-9_-]+)/);
+          const keys = parseInviteKeysFromHash(parsed.hash);
           return {
             roomId: roomMatch[1],
-            roomKey: keyMatch ? keyMatch[1] : '',
+            ...keys,
           };
         }
       } catch {}
       if (!expectedRoomId) {
-        const inlineMatch = trimmed.match(/^([a-z0-9-]+)(?:#key=([A-Za-z0-9_-]+))?$/i);
+        const inlineMatch = trimmed.match(/^([a-z0-9-]+)(?:#(.+))?$/i);
         if (inlineMatch) {
+          const keys = parseInviteKeysFromHash(inlineMatch[2] || '');
           return {
             roomId: inlineMatch[1],
-            roomKey: inlineMatch[2] || '',
+            ...keys,
           };
         }
       }
-      return { roomId: expectedRoomId || '', roomKey: trimmed };
+      return { roomId: expectedRoomId || '', accessKey: trimmed, e2eKey: '' };
     }
 
     function navigateToUrl(url) {
@@ -1827,18 +1842,23 @@
       if (!ensureExtensionInstalled()) return;
       const username = ensurePreferredUsername();
       if (!username) return;
-      const roomKey = (typeof options.roomKey === 'string' && options.roomKey.trim())
-        ? options.roomKey.trim()
-        : getInviteRoomKeyFromHash();
-      // Tell the content script to store the room ID (and room/E2E key) in chrome.storage
+      const hashKeys = parseInviteKeysFromHash(window.location.hash);
+      const accessKey = (typeof options.accessKey === 'string' && options.accessKey.trim())
+        ? options.accessKey.trim()
+        : hashKeys.accessKey;
+      const e2eKey = (typeof options.e2eKey === 'string' && options.e2eKey.trim())
+        ? options.e2eKey.trim()
+        : hashKeys.e2eKey;
+      // Tell the content script to store the room ID plus access/E2E keys in chrome.storage
       window.postMessage({
         type: 'watchparty-join-room',
         roomId,
         username,
-        roomKey: roomKey || undefined,
-        cryptoKey: roomKey || undefined,
+        accessKey: accessKey || undefined,
+        e2eKey: e2eKey || undefined,
         preferDirectJoin: options.preferDirectJoin === true,
       }, location.origin);
+      clearInviteHashFromAddressBar();
       scheduleLandingPresenceRefresh();
       if (options.preferDirectJoin === true) {
         handoffToStremio('https://web.stremio.com');
@@ -1895,7 +1915,7 @@
       handoffToStremio('https://web.stremio.com');
     }
 
-    // --- Private room key / invite modal ---
+    // --- Private access key / invite modal ---
     function openPrivateJoinModal(options = {}) {
       pendingPrivateJoin = {
         roomId: options.roomId || '',
@@ -1910,12 +1930,12 @@
       if (titleEl) titleEl.textContent = hasSpecificRoom ? 'Private Room' : 'Join via Invite';
       if (descriptionEl) {
         descriptionEl.textContent = hasSpecificRoom
-          ? 'Enter the room key, or paste the full invite link shared by the host.'
-          : 'Paste the full private-room invite link, or enter roomId#key if you already have both.';
+          ? 'Enter the access key, or paste the full invite link shared by the host.'
+          : 'Paste the full private-room invite link, or enter the room ID plus #accessKey=... if you already have both.';
       }
       document.getElementById('uuid-modal').style.display = 'flex';
       inputEl.value = '';
-      inputEl.placeholder = hasSpecificRoom ? 'Paste room key or invite link' : 'Paste the full invite link';
+      inputEl.placeholder = hasSpecificRoom ? 'Paste access key or invite link' : 'Paste the full invite link';
       document.getElementById('uuid-error').style.display = 'none';
       inputEl.focus();
     }
@@ -1928,9 +1948,9 @@
       const input = document.getElementById('uuid-input');
       const pendingJoin = pendingPrivateJoin;
       const joinRequest = parsePrivateJoinInput(input.value, pendingJoin?.roomId || '');
-      if (!joinRequest.roomId || !joinRequest.roomKey) {
+      if (!joinRequest.roomId || !joinRequest.accessKey) {
         input.focus();
-        document.getElementById('uuid-error').textContent = 'Enter the room key, or paste a full invite link.';
+        document.getElementById('uuid-error').textContent = 'Enter the access key, or paste a full invite link.';
         document.getElementById('uuid-error').style.display = 'block';
         return;
       }
@@ -1941,7 +1961,8 @@
         pendingJoin?.metaType || '',
         {
           preferDirectJoin: pendingJoin?.preferDirectJoin === true,
-          roomKey: joinRequest.roomKey,
+          accessKey: joinRequest.accessKey,
+          e2eKey: joinRequest.e2eKey,
         },
       );
     }
@@ -1999,11 +2020,19 @@
       document.getElementById('page-landing').style.display = 'none';
       document.getElementById('page-redirect').style.display = 'block';
       document.getElementById('redirect-room-id').textContent = roomId;
-      const roomKey = getInviteRoomKeyFromHash();
+      const inviteKeys = parseInviteKeysFromHash(window.location.hash);
       const username = normalizeUsername(localStorage.getItem(WEBSITE_USERNAME_KEY) || '');
+      const joinMessage = () => ({
+        type: 'watchparty-join-room',
+        roomId,
+        username: username || undefined,
+        accessKey: inviteKeys.accessKey || undefined,
+        e2eKey: inviteKeys.e2eKey || undefined,
+      });
+      clearInviteHashFromAddressBar();
 
       // Tell content script to store room ID
-      window.postMessage({ type: 'watchparty-join-room', roomId, username: username || undefined, roomKey, cryptoKey: roomKey || undefined }, window.location.origin);
+      window.postMessage(joinMessage(), window.location.origin);
 
       // Check if extension is installed
       const extCheck = setTimeout(() => {
@@ -2021,7 +2050,7 @@
           document.getElementById('redirect-status').textContent = 'Extension detected! Redirecting to Stremio Web...';
 
           // Tell extension about the pending room
-          window.postMessage({ type: 'watchparty-join-room', roomId, username: username || undefined, roomKey, cryptoKey: roomKey || undefined }, window.location.origin);
+          window.postMessage(joinMessage(), window.location.origin);
 
           setTimeout(() => {
             handoffToStremio('https://web.stremio.com');
@@ -2032,7 +2061,7 @@
       // Also check via attribute (content.js sets this synchronously)
       if (document.documentElement.hasAttribute('data-watchparty-ext')) {
         clearTimeout(extCheck);
-        window.postMessage({ type: 'watchparty-join-room', roomId, username: username || undefined, roomKey, cryptoKey: roomKey || undefined }, window.location.origin);
+        window.postMessage(joinMessage(), window.location.origin);
         document.getElementById('redirect-status').textContent = 'Redirecting to Stremio Web...';
         setTimeout(() => {
           handoffToStremio('https://web.stremio.com');

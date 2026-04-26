@@ -20,6 +20,31 @@
   };
   let typingIdleTimer = null;
   let typingSent = false;
+  const actionRoutesByValue = Object.freeze(
+    Object.values(WPConstants.ACTION_ROUTES || {}).reduce((routes, route) => {
+      if (route?.action) routes[route.action] = route;
+      return routes;
+    }, {})
+  );
+
+  function inputById(id) {
+    const el = document.getElementById(id);
+    return el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement ? el : null;
+  }
+
+  function pruneOldChildren(container, max = 200) {
+    while (container.childElementCount > max && container.firstChild) {
+      container.removeChild(container.firstChild);
+    }
+  }
+
+  function isTrustedUserEvent(event) {
+    return !event || event.isTrusted !== false;
+  }
+
+  function getActionRoute(action) {
+    return actionRoutesByValue[action] || null;
+  }
 
   function normalizeHexColor(value, fallback = '#6366f1') {
     const trimmed = typeof value === 'string' ? value.trim() : '';
@@ -58,12 +83,15 @@
   }
 
   function loadLocalPreferences(callback) {
-    chrome.storage.local.get([
+    WPRuntimeState.get([
       WPConstants.STORAGE.ACCENT_COLOR,
       WPConstants.STORAGE.COMPACT_CHAT,
-    ], (result) => {
+    ]).then((result) => {
       localPreferences.accentColor = normalizeHexColor(result[WPConstants.STORAGE.ACCENT_COLOR] || '#6366f1');
       localPreferences.compactChat = !!result[WPConstants.STORAGE.COMPACT_CHAT];
+      applyLocalPreferences();
+      callback?.();
+    }).catch(() => {
       applyLocalPreferences();
       callback?.();
     });
@@ -235,11 +263,16 @@
     updateTypingIndicator();
   }
 
-  function sendAction(detail) {
+  /** @param {Event | null} [event] */
+  function sendAction(detail, event = null) {
+    const route = getActionRoute(detail?.action);
+    if (!route?.sources?.includes('sidepanel')) return false;
+    if (route.requiresTrustedEvent === true && !isTrustedUserEvent(event)) return false;
     chrome.runtime.sendMessage({
       type: 'watchparty-ext',
       ...detail,
     }).catch(() => {});
+    return true;
   }
 
   function stopTypingSignal() {
@@ -260,8 +293,10 @@
     }, 1200);
   }
 
-  function onChatInput() {
-    const input = document.getElementById('chat-input');
+  /** @param {Event | null} [event] */
+  function onChatInput(event = null) {
+    if (!isTrustedUserEvent(event)) return;
+    const input = inputById('chat-input');
     const hasText = !!input?.value.trim();
     if (!hasText) {
       stopTypingSignal();
@@ -280,9 +315,16 @@
     const color = getUserColor(userId);
     const div = document.createElement('div');
     div.className = 'chat-msg';
-    div.innerHTML = `<span class="chat-name" style="color:${color}">${escapeHtml(name)}</span> <span class="chat-text">${escapeHtml(content)}</span>`;
+    const sender = document.createElement('span');
+    sender.className = 'chat-name';
+    sender.style.color = color;
+    sender.textContent = name;
+    const text = document.createElement('span');
+    text.className = 'chat-text';
+    text.textContent = content;
+    div.append(sender, ' ', text);
     container.appendChild(div);
-    while (container.childElementCount > 200) container.removeChild(container.firstChild);
+    pruneOldChildren(container);
     container.scrollTop = container.scrollHeight;
   }
 
@@ -301,13 +343,23 @@
     const sender = WPUtils.getMatchingRoomUser(currentRoomState, msg.user, null);
     const colorKey = sender?.sessionId || msg.sessionId || msg.user;
     div.className = 'bookmark-msg';
-    div.innerHTML = `Pinned by <span class="chat-name" style="color:${getUserColor(colorKey)}">${escapeHtml(msg.userName || 'Unknown')}</span> at <button class="bookmark-time" type="button">${mins}:${secs}</button>`;
-    div.querySelector('.bookmark-time')?.addEventListener('click', () => {
-      sendAction({ action: WPConstants.ACTION.ROOM_BOOKMARK_SEEK, time: msg.time });
-      showToast(`Seeking to ${mins}:${secs}`);
+    div.append('Pinned by ');
+    const senderName = document.createElement('span');
+    senderName.className = 'chat-name';
+    senderName.style.color = getUserColor(colorKey);
+    senderName.textContent = msg.userName || 'Unknown';
+    const timeButton = document.createElement('button');
+    timeButton.className = 'bookmark-time';
+    timeButton.type = 'button';
+    timeButton.textContent = `${mins}:${secs}`;
+    div.append(senderName, ' at ', timeButton);
+    timeButton.addEventListener('click', (event) => {
+      if (sendAction({ action: WPConstants.ACTION.ROOM_BOOKMARK_SEEK, time: msg.time }, event)) {
+        showToast(`Seeking to ${mins}:${secs}`);
+      }
     });
     container.appendChild(div);
-    while (container.childElementCount > 200) container.removeChild(container.firstChild);
+    pruneOldChildren(container);
     container.scrollTop = container.scrollHeight;
   }
 
@@ -325,25 +377,26 @@
     }
   }
 
-  function sendChat() {
-    const input = document.getElementById('chat-input');
+  /** @param {Event | null} [event] */
+  function sendChat(event = null) {
+    const input = inputById('chat-input');
     const content = input?.value.trim();
     if (!content) return;
-    sendAction({ action: WPConstants.ACTION.ROOM_CHAT_SEND, content });
+    if (!sendAction({ action: WPConstants.ACTION.ROOM_CHAT_SEND, content }, event)) return;
     appendChat(currentSessionId || currentUserId, 'You', content);
-    input.value = '';
+    if (input) input.value = '';
     stopTypingSignal();
   }
 
   function bindChat() {
-    document.getElementById('chat-send')?.addEventListener('click', sendChat);
+    document.getElementById('chat-send')?.addEventListener('click', (event) => sendChat(event));
     document.getElementById('chat-input')?.addEventListener('keydown', (event) => {
       if (event.key === 'Enter') {
         event.preventDefault();
-        sendChat();
+        sendChat(event);
       }
     });
-    document.getElementById('chat-input')?.addEventListener('input', onChatInput);
+    document.getElementById('chat-input')?.addEventListener('input', (event) => onChatInput(event));
     document.getElementById('chat-input')?.addEventListener('blur', stopTypingSignal);
   }
 
@@ -358,6 +411,7 @@
     const syncIndicator = document.getElementById('sync-indicator');
     const peopleCount = document.getElementById('people-count');
     const chatMessages = document.getElementById('chat-messages');
+    if (!status || !users || !usersEmpty || !chatContainer || !chatEmpty || !syncIndicator || !peopleCount) return;
 
     setHeroCopy('Create or join on WatchParty, then use this panel for quick room context.');
     updateRoomCodeChip(null);
@@ -393,6 +447,7 @@
     const users = document.getElementById('users');
     const usersEmpty = document.getElementById('users-empty');
     const peopleCount = document.getElementById('people-count');
+    if (!users || !usersEmpty || !peopleCount) return;
     const entries = Array.isArray(roomState?.users) ? roomState.users : [];
     if (entries.length === 0) {
       users.classList.add('hidden');
@@ -409,7 +464,8 @@
     peopleCount.textContent = `${entries.length} watching`;
 
     const ownerUser = WPUtils.getCanonicalOwnerUser(roomState);
-    users.innerHTML = entries.map((entry) => {
+    WPDOM.clear(users);
+    for (const entry of entries) {
       const color = getUserColor(entry.sessionId || entry.id);
       const isCrown = (!!ownerUser && ownerUser.id === entry.id)
         || (!ownerUser && amIHost() && isMe(entry.id));
@@ -420,18 +476,18 @@
       else if (entry.playbackStatus === 'paused') playbackState = 'Paused';
       else if (entry.playbackStatus === 'playing') playbackState = 'Playing';
       const playback = getPlaybackSummary(entry);
-      const subline = [crown, playbackState, you].filter(Boolean).map(escapeHtml).join(' | ');
-      return `
-        <div class="user${entry.status === 'away' ? ' user-away' : ''}">
-          <span class="user-dot" style="background:${color}"></span>
-          <div class="user-copy">
-            <span class="user-name">${escapeHtml(entry.name)}</span>
-            <span class="user-subline">${subline}</span>
-          </div>
-          ${playback.label ? `<span class="user-playhead" title="${escapeHtml(playback.title)}">${escapeHtml(playback.label)}</span>` : ''}
-        </div>
-      `;
-    }).join('');
+      const subline = [crown, playbackState, you].filter(Boolean).join(' | ');
+      const row = WPDOM.el('div', { className: `user${entry.status === 'away' ? ' user-away' : ''}` });
+      row.appendChild(WPDOM.el('span', { className: 'user-dot', style: { background: WPDOM.safeColor(color) } }));
+      row.appendChild(WPDOM.el('div', { className: 'user-copy' }, [
+        WPDOM.el('span', { className: 'user-name', text: entry.name || 'Unknown' }),
+        WPDOM.el('span', { className: 'user-subline', text: subline }),
+      ]));
+      if (playback.label) {
+        row.appendChild(WPDOM.el('span', { className: 'user-playhead', title: playback.title, text: playback.label }));
+      }
+      users.appendChild(row);
+    }
   }
 
   function renderStatus(roomState) {
@@ -439,6 +495,7 @@
     const syncIndicator = document.getElementById('sync-indicator');
     const chatContainer = document.getElementById('chat-container');
     const chatEmpty = document.getElementById('chat-empty');
+    if (!status || !syncIndicator || !chatContainer || !chatEmpty) return;
     const roomTitle = getRoomDisplayName(roomState);
     const userCount = roomState.users?.length || 0;
     const isHost = amIHost();
@@ -458,10 +515,10 @@
 
     const linkHtml = [];
     if (detailUrl) {
-      linkHtml.push(`<a class="session-link" href="${detailUrl}" target="_blank" rel="noreferrer">Open title</a>`);
+      linkHtml.push(`<a class="session-link" href="${escapeHtml(detailUrl)}" target="_blank" rel="noreferrer">Open title</a>`);
     }
     if (directStreamUrl) {
-      linkHtml.push(`<a class="session-link" href="${directStreamUrl}" target="_blank" rel="noreferrer">Open host stream</a>`);
+      linkHtml.push(`<a class="session-link" href="${escapeHtml(directStreamUrl)}" target="_blank" rel="noreferrer">Open host stream</a>`);
     }
 
     status.innerHTML = `
@@ -486,16 +543,18 @@
     `;
 
     document.getElementById('sp-copy-invite')?.addEventListener('click', () => copyInvite(roomState));
-    document.getElementById('sp-ready-check')?.addEventListener('click', () => {
-      sendAction({ action: WPConstants.ACTION.ROOM_READY_CHECK_UPDATE, readyAction: 'initiate' });
-      showToast('Ready check started');
+    document.getElementById('sp-ready-check')?.addEventListener('click', (event) => {
+      if (sendAction({ action: WPConstants.ACTION.ROOM_READY_CHECK_UPDATE, readyAction: 'initiate' }, event)) {
+        showToast('Ready check started');
+      }
     });
-    document.getElementById('sp-bookmark')?.addEventListener('click', () => {
-      sendAction({ action: WPConstants.ACTION.ROOM_BOOKMARK_ADD });
-      showToast('Bookmark sent');
+    document.getElementById('sp-bookmark')?.addEventListener('click', (event) => {
+      if (sendAction({ action: WPConstants.ACTION.ROOM_BOOKMARK_ADD }, event)) {
+        showToast('Bookmark sent');
+      }
     });
-    document.getElementById('sp-leave')?.addEventListener('click', () => {
-      sendAction({ action: WPConstants.ACTION.ROOM_LEAVE });
+    document.getElementById('sp-leave')?.addEventListener('click', (event) => {
+      sendAction({ action: WPConstants.ACTION.ROOM_LEAVE }, event);
     });
 
     if (!isHost && roomState.player) {

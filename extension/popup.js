@@ -16,8 +16,8 @@ function getErrorMessage(errorLike, fallback) {
   if (!errorLike) return fallback;
   const code = typeof errorLike?.code === 'string' ? errorLike.code : '';
   if (code === 'ROOM_NOT_FOUND') return 'Room not found. Check the room ID or invite link and try again.';
-  if (code === 'ROOM_KEY_REQUIRED') return 'This private room requires a room key.';
-  if (code === 'INVALID_ROOM_KEY') return 'The room key is invalid. Paste the full invite link or a fresh room key.';
+  if (code === 'ROOM_KEY_REQUIRED') return 'This private room requires an access key.';
+  if (code === 'INVALID_ROOM_KEY') return 'The access key is invalid. Paste the full invite link or a fresh key.';
   if (code === 'USERNAME_IN_USE') return 'That display name is already in use in this room. Choose another one.';
   if (code === 'VALIDATION_FAILED') return 'That request was rejected. Check the room details and try again.';
   if (code === 'NOT_OWNER') return 'Only the host can do that.';
@@ -190,25 +190,28 @@ async function buildInviteUrlWithKey(roomId) {
 
 function parseRoomJoinInput(rawValue) {
   const value = (rawValue || '').trim();
-  if (!value) return { roomId: '', roomKey: null };
-  const directRoomIdMatch = value.match(/^([a-z0-9-]{8,})(?:#key=([A-Za-z0-9_-]+))?$/i);
+  if (!value) return { roomId: '', accessKey: null, e2eKey: null };
+  const directRoomIdMatch = value.match(/^([a-z0-9-]{8,})(?:#(.+))?$/i);
   if (directRoomIdMatch) {
+    const params = new URLSearchParams(directRoomIdMatch[2] || '');
     return {
       roomId: directRoomIdMatch[1],
-      roomKey: directRoomIdMatch[2] || null,
+      accessKey: params.get('accessKey') || null,
+      e2eKey: params.get('e2eKey') || null,
     };
   }
   try {
     const parsed = new URL(value);
     const roomMatch = parsed.pathname.match(/^\/r\/([a-z0-9-]+)$/i);
-    if (!roomMatch) return { roomId: value, roomKey: null };
-    const keyMatch = parsed.hash.match(/(?:^#|[&#])key=([A-Za-z0-9_-]+)/);
+    if (!roomMatch) return { roomId: value, accessKey: null, e2eKey: null };
+    const params = new URLSearchParams(parsed.hash.replace(/^#/, ''));
     return {
       roomId: roomMatch[1],
-      roomKey: keyMatch ? keyMatch[1] : null,
+      accessKey: params.get('accessKey') || null,
+      e2eKey: params.get('e2eKey') || null,
     };
   } catch {
-    return { roomId: value, roomKey: null };
+    return { roomId: value, accessKey: null, e2eKey: null };
   }
 }
 
@@ -321,9 +324,9 @@ function setBackendMode(mode) {
   currentWsConnected = false;
   renderBackendControls();
   setWsStatus(false);
-  chrome.storage.local.set({
+  setExtensionState({
     [WPConstants.STORAGE.BACKEND_MODE]: normalizedMode,
-  });
+  }).catch(() => {});
   setExtensionState({
     [WPConstants.STORAGE.WS_CONNECTED]: false,
     [WPConstants.STORAGE.ACTIVE_BACKEND]: null,
@@ -436,9 +439,9 @@ chrome.runtime.sendMessage(
     applyStatusResponse(response);
 
     // Load saved username
-    chrome.storage.local.get(WPConstants.STORAGE.USERNAME, (result) => {
+    getExtensionState(WPConstants.STORAGE.USERNAME).then((result) => {
       if (result[WPConstants.STORAGE.USERNAME]) $('username-input').value = result[WPConstants.STORAGE.USERNAME];
-    });
+    }).catch(() => {});
 
     // Show room view if already in a room
     if (response.room) {
@@ -573,7 +576,7 @@ $('btn-create').addEventListener('click', () => {
   }
   $('create-error').classList.add('hidden');
 
-  chrome.storage.local.set({ [WPConstants.STORAGE.USERNAME]: username });
+  setExtensionState({ [WPConstants.STORAGE.USERNAME]: username }).catch(() => {});
 
   const isPublic = $('public-check')?.checked || false;
   const isListed = $('listed-check')?.checked !== false;
@@ -629,7 +632,7 @@ $('btn-join').addEventListener('click', () => {
   if (!roomId) { $('room-id-input').focus(); return; }
 
   $('join-error').classList.add('hidden');
-  chrome.storage.local.set({ [WPConstants.STORAGE.USERNAME]: username });
+  setExtensionState({ [WPConstants.STORAGE.USERNAME]: username }).catch(() => {});
 
   // Arm the watcher before sending join-room so fast local updates aren't missed.
   const stopWaiting = waitForRoomState({
@@ -643,7 +646,8 @@ $('btn-join').addEventListener('click', () => {
     action: WPConstants.ACTION.ROOM_JOIN,
     username,
     roomId,
-    roomKey: parsedJoin.roomKey || undefined,
+    accessKey: parsedJoin.accessKey || undefined,
+    e2eKey: parsedJoin.e2eKey || undefined,
   }, (response) => {
     if (handleSendMessageFailure(
       response,

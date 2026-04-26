@@ -4,13 +4,24 @@ const DEFAULT_IGNORES = [
   /googleads\.g\.doubleclick\.net\/pagead\/viewthroughconversion/i,
   /youtube\.com\/pagead\/viewthroughconversion/i,
   /Player\s+\{code:\s*94,\s*message:\s*The owner of the requested video does not allow it to be played in embedded players/i,
-  /Failed to load resource: net::ERR_FAILED/i,
+  /Failed to load resource: net::ERR_FAILED.*(?:doubleclick|googleads|youtube\.com\/pagead|ytimg\.com)/i,
+  // Chromium often emits this URL-less console error for third-party page resources.
+  // App-owned request failures are tracked below through requestfailed, which includes the URL.
+  /^Failed to load resource: net::ERR_FAILED$/i,
 ];
+
+const MANAGED_LOCAL_SERVER_IGNORES = process.env.WATCHPARTY_MANAGED_LOCAL_SERVER === '1'
+  ? [
+      // Chrome can emit this for transient reconnects or page teardown in the
+      // managed local harness; the browser flows assert real WS connectivity.
+      /WebSocket connection to 'ws:\/\/localhost:\d+\/' failed/i,
+    ]
+  : [];
 
 export function createBrowserDiagnostics(extraIgnores = []) {
   const entries = [];
   const trackedPages = new WeakSet();
-  const ignorePatterns = [...DEFAULT_IGNORES, ...extraIgnores];
+  const ignorePatterns = [...DEFAULT_IGNORES, ...MANAGED_LOCAL_SERVER_IGNORES, ...extraIgnores];
 
   function isIgnored(text) {
     return ignorePatterns.some((pattern) => pattern.test(text));
@@ -19,6 +30,18 @@ export function createBrowserDiagnostics(extraIgnores = []) {
   function attachPage(page, label) {
     if (!page || trackedPages.has(page)) return;
     trackedPages.add(page);
+
+    page.on('requestfailed', (request) => {
+      const url = request.url();
+      const failureText = request.failure()?.errorText || 'request failed';
+      const text = `${failureText}: ${url}`;
+      const isAppOwnedUrl = /^chrome-extension:\/\//i.test(url)
+        || /^https?:\/\/(?:localhost|127\.0\.0\.1):(?:8090|8181)(?:\/|$)/i.test(url)
+        || /^https:\/\/watchparty\.mertd\.me(?:\/|$)/i.test(url);
+      if (isAppOwnedUrl && !isIgnored(text)) {
+        entries.push({ label, type: 'requestfailed', text });
+      }
+    });
 
     page.on('pageerror', (error) => {
       const text = error?.message || String(error);

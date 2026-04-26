@@ -1,6 +1,7 @@
 // WatchParty — E2E Encryption Module
 // Provides AES-256-GCM encryption for chat messages using the Web Crypto API.
-// Key is shared via the invite URL fragment (never sent to server).
+// E2E key is shared via the invite URL fragment and is distinct from the
+// private-room access key sent to the server.
 // Exposes: WPCrypto global used by stremio-content.js
 
 const WPCrypto = (() => {

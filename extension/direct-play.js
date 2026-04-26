@@ -76,7 +76,13 @@ const WPDirectPlay = (() => {
     if (filename) hints.filename = filename;
     if (typeof value.notWebReady === 'boolean') hints.notWebReady = value.notWebReady;
     if (value.proxyHeaders && typeof value.proxyHeaders === 'object' && !Array.isArray(value.proxyHeaders)) {
-      hints.proxyHeaders = value.proxyHeaders;
+      const sanitizedHeaderNames = Object.keys(value.proxyHeaders)
+        .map((name) => String(name || '').trim().toLowerCase())
+        .filter((name) => /^[a-z0-9-]{1,100}$/.test(name))
+        .slice(0, 20);
+      if (sanitizedHeaderNames.length > 0) {
+        hints.proxyHeaders = Object.fromEntries(sanitizedHeaderNames.map((name) => [name, true]));
+      }
     }
     return Object.keys(hints).length > 0 ? hints : undefined;
   }

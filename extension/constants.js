@@ -104,6 +104,7 @@ const WPConstants = (() => {
   }
 
   const ACTION = WPAction;
+  const ACTION_ROUTES = WPActionRoutes;
 
   // Chrome storage keys — single source of truth across all extension files
   const STORAGE = Object.freeze({
@@ -129,8 +130,9 @@ const WPConstants = (() => {
     DEFERRED_LEAVE_ROOM: 'wpDeferredLeaveRoom',
     CONTROLLER_TAB: 'wpControllerTab', // controller-tab lease { leaseId, tabId, sessionId, claimedAt }
     ACTIVE_VIDEO_TAB: 'wpActiveVideoTab', // active video-tab lease { leaseId, tabId, sessionId, claimedAt }
-    // Dynamic key helper for per-room encryption keys
-    roomKey(roomId) { return `wpRoomKey:${roomId}`; },
+    // Dynamic key helpers for per-room access and chat encryption keys.
+    roomAccessKey(roomId) { return `wpRoomAccessKey:${roomId}`; },
+    roomE2eKey(roomId) { return `wpRoomE2eKey:${roomId}`; },
   });
 
   // Storage contract — keep long-lived preferences in local storage, runtime room
@@ -187,7 +189,8 @@ const WPConstants = (() => {
         public: command.public === true,
         listed: command.listed !== false,
         roomName: typeof command.roomName === 'string' && command.roomName.trim() ? command.roomName.trim() : undefined,
-        roomKey: typeof command.roomKey === 'string' && command.roomKey.trim() ? command.roomKey.trim() : undefined,
+        accessKey: typeof command.accessKey === 'string' && command.accessKey.trim() ? command.accessKey.trim() : undefined,
+        e2eKey: typeof command.e2eKey === 'string' && command.e2eKey.trim() ? command.e2eKey.trim() : undefined,
         requestedAt: normalizeRequestedAt(command.requestedAt),
       };
     },
@@ -198,7 +201,8 @@ const WPConstants = (() => {
         action: ACTION.ROOM_JOIN,
         roomId,
         username: typeof command.username === 'string' ? command.username.trim() : '',
-        roomKey: typeof command.roomKey === 'string' && command.roomKey.trim() ? command.roomKey.trim() : undefined,
+        accessKey: typeof command.accessKey === 'string' && command.accessKey.trim() ? command.accessKey.trim() : undefined,
+        e2eKey: typeof command.e2eKey === 'string' && command.e2eKey.trim() ? command.e2eKey.trim() : undefined,
         preferDirectJoin: command.preferDirectJoin === true,
         requestedAt: normalizeRequestedAt(command.requestedAt),
       };
@@ -214,6 +218,7 @@ const WPConstants = (() => {
       }
       if (value.action === ACTION.ROOM_JOIN) {
         const normalized = this.buildJoin(value);
+        if (!normalized) return null;
         return this.isExpired(normalized.requestedAt, now) ? null : normalized;
       }
       return null;
@@ -298,8 +303,8 @@ const WPConstants = (() => {
 
   const ROOM_KEYS = Object.freeze({
     LOCAL_TTL_MS: ROOM_KEY_LOCAL_TTL_MS,
-    encodeForLocal(roomKey) {
-      const value = typeof roomKey === 'string' ? roomKey.trim() : '';
+    encodeForLocal(keyValue) {
+      const value = typeof keyValue === 'string' ? keyValue.trim() : '';
       if (!value) return null;
       return {
         value,
@@ -348,5 +353,6 @@ const WPConstants = (() => {
     ADAPTER_ROUTE,
     ADAPTER_AVAILABILITY,
     ACTION,
+    ACTION_ROUTES,
   };
 })();

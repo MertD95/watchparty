@@ -8,6 +8,7 @@
 import { readFileSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import vm from 'node:vm';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const EXT = resolve(__dirname, '..');
@@ -95,6 +96,7 @@ function extractSentActions(source, actionMap) {
     /chrome\.runtime\.sendMessage\s*\(\s*\{[^}]*action:\s*(?:'([^']+)'|WPConstants\.ACTION\.(\w+))/g,
     /CustomEvent\s*\(\s*'wp-action'\s*,\s*\{\s*detail:\s*\{[^}]*action:\s*(?:'([^']+)'|WPConstants\.ACTION\.(\w+))/g,
     /dispatchAction\s*\(\s*(?:'([^']+)'|WPConstants\.ACTION\.(\w+))/g,
+    /sendAction\s*\(\s*\{[^}]*action:\s*(?:'([^']+)'|WPConstants\.ACTION\.(\w+))/g,
     /sendRuntimeMessage\s*\(\s*\{[^}]*action:\s*(?:'([^']+)'|WPConstants\.ACTION\.(\w+))/g,
   ];
   for (const pattern of patterns) {
@@ -105,6 +107,24 @@ function extractSentActions(source, actionMap) {
     }
   }
   return actions;
+}
+
+function loadGeneratedActionContract(source) {
+  const context = {};
+  vm.runInNewContext(`${source}\nthis.WPAction = WPAction;\nthis.WPActionRoutes = WPActionRoutes;`, context);
+  return {
+    actions: context.WPAction || {},
+    routes: context.WPActionRoutes || {},
+  };
+}
+
+function findActionKey(actionMap, actionValue) {
+  return Object.entries(actionMap).find(([, value]) => value === actionValue)?.[0] || null;
+}
+
+function getActionRoute(actionMap, routes, actionValue) {
+  const key = findActionKey(actionMap, actionValue);
+  return key ? routes[key] : null;
 }
 
 function extractProtocolSwitchCases(source, prefix) {
@@ -151,8 +171,15 @@ console.log('\n=== Message Routing Table Test ===\n');
 
 const bgSource = readSrc('background.js');
 const contentSource = readSrc('stremio-content.js');
+const runtimeClockSource = readSrc('runtime-clock.js');
+const coordinatorKernelSource = readSrc('background-coordinator-kernel.js');
+const controllerKernelSource = readSrc('stremio-controller-kernel.js');
+const stremioAdapterSource = readSrc('stremio-adapter.js');
+const runtimeModelSource = readSrc('stremio-runtime-model.js');
 const bridgeSource = readSrc('content.js');
+const privateKeysSource = readSrc('room-keys.js');
 const overlaySource = readSrc('stremio-overlay.js');
+const modalSource = readSrc('stremio-overlay-modals.js');
 const popupSource = readSrc('popup.js');
 const sidepanelSource = readSrc('sidepanel.js');
 const actionsSource = readSrc('wp-actions.js');
@@ -162,7 +189,7 @@ const protocolSource = readSrc('wp-protocol.js');
 const wsSource = readSrc('stremio-ws.js');
 const manifest = JSON.parse(readSrc('manifest.json'));
 
-const ACTION_MAP = extractObjectMap(actionsSource, 'ACTION');
+const { actions: ACTION_MAP, routes: ACTION_ROUTES } = loadGeneratedActionContract(actionsSource);
 const COMMAND_MAP = extractObjectMap(protocolSource, 'COMMAND');
 const EVENT_MAP = extractObjectMap(protocolSource, 'EVENT');
 const ERROR_CODE_MAP = extractObjectMap(protocolSource, 'ERROR_CODE');
@@ -174,8 +201,11 @@ let contentCases = extractSwitchCases(contentSource, 'action');
 if (contentCases.size === 0) contentCases = extractObjectHandlerKeys(contentSource, 'actionHandlers', ACTION_MAP);
 
 const overlaySends = extractSentActions(overlaySource, ACTION_MAP);
+const modalSends = extractSentActions(modalSource, ACTION_MAP);
 const popupSends = extractSentActions(popupSource, ACTION_MAP);
 const bridgeSends = extractSentActions(bridgeSource, ACTION_MAP);
+const sidepanelSends = extractSentActions(sidepanelSource, ACTION_MAP);
+const optionsSends = extractSentActions(optionsSource, ACTION_MAP);
 const contentEventCases = extractProtocolSwitchCases(contentSource, 'EVENT');
 const commandSends = new Set([...extractProtocolSends(contentSource), ...extractProtocolSends(wsSource)]);
 const contentErrorCodes = extractProtocolErrorCodes(contentSource);
@@ -187,9 +217,10 @@ const wsOnOpenBlock = wsSource.slice(wsSource.indexOf('ws.onopen'), wsSource.ind
 console.log('--- Parsed routing table ---');
 console.log(`  background.js cases:     ${[...bgCases].sort().join(', ')}`);
 console.log(`  stremio-content cases:   ${[...contentCases].sort().join(', ')}`);
-console.log(`  overlay sends:           ${[...overlaySends].sort().join(', ')}`);
+console.log(`  overlay sends:           ${[...new Set([...overlaySends, ...modalSends])].sort().join(', ')}`);
 console.log(`  popup sends:             ${[...popupSends].sort().join(', ')}`);
 console.log(`  landing bridge sends:    ${[...bridgeSends].sort().join(', ')}`);
+console.log(`  sidepanel sends:         ${[...sidepanelSends].sort().join(', ')}`);
 
 const BG_ONLY_ACTIONS = new Set([
   ACTION_MAP.STATUS_GET,
@@ -240,7 +271,7 @@ const BG_NON_UI_SENDERS = new Set([
 ]);
 
 console.log('\n--- Test 1: Overlay actions -> stremio-content ---');
-for (const action of overlaySends) {
+for (const action of new Set([...overlaySends, ...modalSends])) {
   ok(contentCases.has(action), `overlay sends '${action}' -> stremio-content has case`);
 }
 
@@ -263,8 +294,13 @@ for (const action of [
   ok(bgCases.has(action) || BG_ONLY_ACTIONS.has(action), `landing bridge action '${action}' resolves in background`);
 }
 
+console.log('\n--- Test 2c: Sidepanel and options actions -> background ---');
+for (const action of new Set([...sidepanelSends, ...optionsSends])) {
+  ok(bgCases.has(action) || BG_ONLY_ACTIONS.has(action), `surface action '${action}' resolves in background`);
+}
+
 console.log('\n--- Test 3: Forwarded actions -> stremio-content ---');
-const allSenderActions = new Set([...overlaySends, ...popupSends]);
+const allSenderActions = new Set([...overlaySends, ...modalSends, ...popupSends, ...sidepanelSends]);
 for (const action of allSenderActions) {
   if (BG_ONLY_ACTIONS.has(action)) continue;
   ok(contentCases.has(action), `forwarded '${action}' -> stremio-content has case`);
@@ -273,13 +309,14 @@ for (const action of allSenderActions) {
 console.log('\n--- Test 4: No dead cases in background ---');
 for (const action of bgCases) {
   if (BG_NON_UI_SENDERS.has(action) || BG_ONLY_ACTIONS.has(action)) continue;
-  ok(allSenderActions.has(action), `background case '${action}' is sent by overlay or popup`);
+  ok(allSenderActions.has(action), `background case '${action}' is sent by an extension UI surface`);
 }
 
 console.log('\n--- Test 5: Action contract sanity ---');
 ok(Object.keys(ACTION_MAP).length >= 20, `wp-actions.js exposes ${Object.keys(ACTION_MAP).length} actions`);
 ok(actionsSource.includes('AUTO-GENERATED'), 'wp-actions.js is generated');
 ok(constantsSource.includes('const ACTION = WPAction;'), 'constants.js consumes the generated action contract');
+ok(constantsSource.includes('const ACTION_ROUTES = WPActionRoutes;'), 'constants.js consumes generated action routing metadata');
 ok(constantsSource.includes('BOOTSTRAP_ROOM_INTENT'), 'constants.js defines bootstrap room intent');
 ok(constantsSource.includes('STORAGE_CONTRACT'), 'constants.js documents the storage contract');
 ok(constantsSource.includes('SESSION_RUNTIME'), 'constants.js defines session runtime storage keys');
@@ -288,14 +325,29 @@ ok(constantsSource.includes('CONTROLLER_TAB_LEASE'), 'constants.js defines contr
 ok(constantsSource.includes('VIDEO_TAB_LEASE'), 'constants.js defines active video lease contract');
 ok(constantsSource.includes('fence: Number.isFinite(fence)') && bgSource.includes('(currentLease?.fence ?? 0) + 1'), 'controller/video leases carry a monotonic fencing token');
 ok(Array.isArray(stremioManifestScript?.js) && stremioManifestScript.js.includes('wp-actions.js'), 'manifest Stremio content script includes generated action contract');
+ok(stremioManifestScript?.js?.includes('stremio-controller-kernel.js') && stremioManifestScript?.js?.includes('stremio-adapter.js'), 'manifest loads controller kernel and Stremio adapter before content orchestrator');
+ok(stremioManifestScript?.js?.includes('private-room-keys.js') && stremioManifestScript.js.indexOf('private-room-keys.js') < stremioManifestScript.js.indexOf('stremio-content.js'), 'manifest loads private-room key domain helper before content orchestrator');
+ok(stremioManifestScript?.js?.includes('runtime-clock.js') && contentSource.includes('WPRuntimeClock.setInterval'), 'content runtime timers route through runtime clock seam');
+ok(bgSource.includes("importScripts('background-coordinator-kernel.js')") && coordinatorKernelSource.includes('function deriveMode'), 'background derives coordinator state through coordinator kernel');
 ok(bgSource.includes('const STREMIO_CONTENT_SCRIPT_FILES') && bgSource.includes('MANIFEST.content_scripts'), 'background derives update reinjection files from manifest');
 ok(bgSource.includes('files: STREMIO_CONTENT_SCRIPT_FILES'), 'background update reinjection uses the manifest-derived content script list');
 ok(bgSource.includes('urlMatchesOrigins(url.trim(), STREMIO_WEB_ORIGINS)') && bgSource.includes('url: requestedUrl'), 'background validates and navigates requested Stremio URLs when focusing an existing tab');
 ok(bgSource.includes('shouldNavigateExistingStremioTab(requestedUrl)'), 'background only redirects existing Stremio tabs for specific requested routes');
+ok(contentSource.includes('WPControllerKernel.getControllerActions(WPConstants.ACTION_ROUTES)') && controllerKernelSource.includes("route?.target === 'controller'"), 'stremio-content derives controller action routing through the controller kernel');
+ok(contentSource.includes('WPControllerKernel.reduceRoomState') && controllerKernelSource.includes('function reduceRoomState'), 'stremio-content delegates room deltas to the controller reducer');
+ok(contentSource.includes('WPStremioAdapter.buildRuntimeSnapshot') && stremioAdapterSource.includes('function classifyAvailability'), 'stremio-content delegates Stremio route availability to the adapter');
+ok(stremioAdapterSource.includes('WPStremioRuntimeModel.deriveAdapterAvailability') && runtimeModelSource.includes('function deriveAdapterAvailability'), 'adapter availability is centralized in the runtime model');
+ok(runtimeClockSource.includes('configureForTests') && runtimeClockSource.includes('random'), 'runtime clock exposes deterministic time and jitter injection');
+ok(privateKeysSource.includes('ROOM_ACCESS_KEY_PREFIX') && privateKeysSource.includes('ROOM_E2E_KEY_PREFIX'), 'room access and E2E keys use separate storage namespaces');
+ok(!privateKeysSource.includes('get: getAccessKey') && !privateKeysSource.includes('set: setAccessKey'), 'private key storage does not expose legacy get/set aliases');
+ok(contentSource.includes('payload.accessKey = pendingCreatedPrivateKeys.accessKey') && !contentSource.includes('payload.roomKey = pendingCreatedPrivateKey'), 'private-room create sends access key without reusing the E2E key');
+ok(bridgeSource.includes('const accessKey = event.data.accessKey') && bridgeSource.includes('const e2eKey = event.data.e2eKey') && !bridgeSource.includes('event.data.roomKey') && !bridgeSource.includes('event.data.cryptoKey'), 'landing bridge accepts only separate modern invite access and E2E keys');
+ok(overlaySource.includes('isOverlayRoutedAction') && overlaySource.includes("sources?.includes('overlay')"), 'overlay dispatch only accepts generated overlay-routed actions');
+ok(sidepanelSource.includes("sources?.includes('sidepanel')") && sidepanelSource.includes('isTrustedUserEvent'), 'sidepanel dispatch only accepts generated sidepanel-routed trusted actions');
 ok(!wsOnOpenBlock.includes('flushQueue()'), 'stremio-ws does not flush queued room actions on raw socket open');
 ok(wsSource.includes('markApplicationReady') && contentSource.includes('WPWS.markApplicationReady()'), 'stremio-content marks WS app-ready after room lifecycle recovery');
 ok(overlaySource.includes('setActionDispatcher') && contentSource.includes('WPOverlay.setActionDispatcher'), 'overlay actions use a private content-script dispatcher');
-ok(!overlaySource.includes("CustomEvent('wp-action'") && !contentSource.includes("addEventListener('wp-action'"), 'overlay actions do not use document-wide CustomEvent routing');
+ok(!`${overlaySource}\n${modalSource}`.includes("CustomEvent('wp-action'") && !contentSource.includes("addEventListener('wp-action'"), 'overlay actions do not use document-wide CustomEvent routing');
 ok(overlaySource.includes('isTrustedUserEvent') && overlaySource.includes('event.isTrusted !== false'), 'overlay action controls reject synthetic page events');
 ok(overlaySource.includes('renderBookmarkHistory(roomState.bookmarks)') && sidepanelSource.includes('renderBookmarkHistory(roomState)'), 'overlay and sidepanel hydrate bookmark history from room snapshots');
 ok(!sidepanelSource.includes('PENDING_ACTION'), 'sidepanel does not use transient action storage');
@@ -304,6 +356,61 @@ ok(!contentSource.includes('PENDING_ACTION'), 'stremio-content does not use tran
 ok(!contentSource.includes('PENDING_ROOM_CREATE'), 'stremio-content does not stage create commands in storage');
 ok(!contentSource.includes('PENDING_LEAVE_ROOM'), 'stremio-content does not depend on old pending leave storage state');
 ok(optionsSource.includes('btn-copy-diagnostics'), 'options exposes diagnostics actions');
+
+const storageOwners = new Set(['runtime-state.js', 'room-keys.js']);
+const storageCheckedFiles = [
+  'background.js',
+  'content.js',
+  'popup.js',
+  'options.js',
+  'sidepanel.js',
+  'stremio-content.js',
+  'stremio-overlay.js',
+  'stremio-profile.js',
+  'runtime-state.js',
+  'room-keys.js',
+];
+const rawStorageCall = /chrome\.storage\.(?:local|session|sync)\.(?:get|set|remove|clear)\s*\(/g;
+for (const file of storageCheckedFiles) {
+  const source = readSrc(file);
+  const calls = [...source.matchAll(rawStorageCall)].map((match) => match[0]);
+  ok(storageOwners.has(file) || calls.length === 0, `${file} routes raw storage operations through storage repositories`);
+}
+
+console.log('\n--- Test 5b: Generated action routes ---');
+for (const [key, action] of Object.entries(ACTION_MAP)) {
+  const route = ACTION_ROUTES[key];
+  ok(route?.action === action, `ACTION_ROUTES.${key} maps to '${action}'`);
+  ok(Array.isArray(route?.sources) && route.sources.length > 0, `ACTION_ROUTES.${key} declares sources`);
+  ok(typeof route?.target === 'string' && route.target.length > 0, `ACTION_ROUTES.${key} declares target`);
+}
+for (const key of Object.keys(ACTION_ROUTES)) {
+  ok(Object.hasOwn(ACTION_MAP, key), `ACTION_ROUTES.${key} has a matching ACTION`);
+}
+for (const action of new Set([...overlaySends, ...modalSends])) {
+  const route = getActionRoute(ACTION_MAP, ACTION_ROUTES, action);
+  ok(route?.sources?.includes('overlay'), `overlay action '${action}' is allowed by generated routes`);
+  ok(route?.requiresTrustedEvent === true, `overlay action '${action}' requires a trusted UI event`);
+}
+for (const action of popupSends) {
+  const route = getActionRoute(ACTION_MAP, ACTION_ROUTES, action);
+  ok(route?.sources?.includes('popup'), `popup action '${action}' is allowed by generated routes`);
+}
+for (const action of bridgeSends) {
+  const route = getActionRoute(ACTION_MAP, ACTION_ROUTES, action);
+  ok(route?.sources?.includes('watchparty-bridge'), `landing bridge action '${action}' is allowed by generated routes`);
+}
+for (const action of sidepanelSends) {
+  const route = getActionRoute(ACTION_MAP, ACTION_ROUTES, action);
+  ok(route?.sources?.includes('sidepanel'), `sidepanel action '${action}' is allowed by generated routes`);
+}
+for (const action of optionsSends) {
+  const route = getActionRoute(ACTION_MAP, ACTION_ROUTES, action);
+  ok(route?.sources?.includes('options'), `options action '${action}' is allowed by generated routes`);
+}
+for (const key of ['ROOM_MEMBER_PRESENCE_PUBLISH', 'ROOM_MEMBER_PLAYBACK_STATUS_PUBLISH', 'ROOM_PLAYBACK_REQUEST_SYNC']) {
+  ok(ACTION_ROUTES[key]?.activeVideoOnly === true, `ACTION_ROUTES.${key} preserves the active-video-only invariant`);
+}
 
 console.log('\n=== Protocol Completeness Tests ===\n');
 console.log(`  COMMAND types: ${Object.keys(COMMAND_MAP).length}`);

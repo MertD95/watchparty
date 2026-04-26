@@ -1,6 +1,7 @@
 const WPRuntimeState = (() => {
   'use strict';
 
+  /** @type {Set<string>} */
   const SESSION_KEYS = new Set([
     ...WPConstants.STORAGE_CONTRACT.SESSION_RUNTIME,
     ...WPConstants.STORAGE_CONTRACT.BOOTSTRAP_SESSION,
@@ -29,7 +30,9 @@ const WPRuntimeState = (() => {
   async function set(values) {
     if (!values || typeof values !== 'object') return;
 
+    /** @type {Record<string, any>} */
     const sessionValues = {};
+    /** @type {Record<string, any>} */
     const localValues = {};
     for (const [key, value] of Object.entries(values)) {
       if (SESSION_KEYS.has(key)) sessionValues[key] = value;

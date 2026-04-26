@@ -38,7 +38,7 @@ const WPProfile = (() => {
         readAt: Date.now(),
       };
 
-      chrome.storage.local.set({ [WPConstants.STORAGE.STREMIO_PROFILE]: data });
+      WPRuntimeState.set({ [WPConstants.STORAGE.STREMIO_PROFILE]: data }).catch(() => {});
       if (authKey) {
         chrome.runtime.sendMessage({
           type: 'watchparty-ext',

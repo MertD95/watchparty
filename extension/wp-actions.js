@@ -54,3 +54,245 @@ const WPAction = (() => {
 
   return ACTION;
 })();
+
+const WPActionRoutes = (() => {
+  'use strict';
+
+  return Object.freeze({
+    STATUS_GET: Object.freeze({
+      action: WPAction.STATUS_GET,
+      sources: Object.freeze(['popup', 'sidepanel', 'options', 'watchparty-bridge']),
+      target: 'background',
+    }),
+    STATUS_UPDATED: Object.freeze({
+      action: WPAction.STATUS_UPDATED,
+      sources: Object.freeze(['background']),
+      target: 'extension-surfaces',
+    }),
+    STREMIO_STATUS_UPDATED: Object.freeze({
+      action: WPAction.STREMIO_STATUS_UPDATED,
+      sources: Object.freeze(['background']),
+      target: 'watchparty-bridge',
+    }),
+    PROFILE_UPDATED: Object.freeze({
+      action: WPAction.PROFILE_UPDATED,
+      sources: Object.freeze(['background', 'stremio-profile']),
+      target: 'background',
+    }),
+    SURFACE_READY: Object.freeze({
+      action: WPAction.SURFACE_READY,
+      sources: Object.freeze(['watchparty-bridge', 'stremio-content']),
+      target: 'background',
+    }),
+    PROBE_SURFACE: Object.freeze({
+      action: WPAction.PROBE_SURFACE,
+      sources: Object.freeze(['background']),
+      target: 'extension-surfaces',
+    }),
+    OPEN_SIDEBAR: Object.freeze({
+      action: WPAction.OPEN_SIDEBAR,
+      sources: Object.freeze(['background']),
+      target: 'stremio-content',
+    }),
+    BOOTSTRAP_PENDING: Object.freeze({
+      action: WPAction.BOOTSTRAP_PENDING,
+      sources: Object.freeze(['background']),
+      target: 'stremio-content',
+    }),
+    SESSION_STATE_PUBLISH: Object.freeze({
+      action: WPAction.SESSION_STATE_PUBLISH,
+      sources: Object.freeze(['stremio-content']),
+      target: 'background',
+    }),
+    CONTROLLER_RELEASED: Object.freeze({
+      action: WPAction.CONTROLLER_RELEASED,
+      sources: Object.freeze(['stremio-content']),
+      target: 'background',
+    }),
+    CONTROLLER_LEASE_CLAIM: Object.freeze({
+      action: WPAction.CONTROLLER_LEASE_CLAIM,
+      sources: Object.freeze(['stremio-content']),
+      target: 'background',
+    }),
+    CONTROLLER_LEASE_RELEASE: Object.freeze({
+      action: WPAction.CONTROLLER_LEASE_RELEASE,
+      sources: Object.freeze(['stremio-content']),
+      target: 'background',
+    }),
+    ACTIVE_VIDEO_LEASE_CLAIM: Object.freeze({
+      action: WPAction.ACTIVE_VIDEO_LEASE_CLAIM,
+      sources: Object.freeze(['stremio-content']),
+      target: 'background',
+    }),
+    ACTIVE_VIDEO_LEASE_RELEASE: Object.freeze({
+      action: WPAction.ACTIVE_VIDEO_LEASE_RELEASE,
+      sources: Object.freeze(['stremio-content']),
+      target: 'background',
+    }),
+    ROOM_CREATE: Object.freeze({
+      action: WPAction.ROOM_CREATE,
+      sources: Object.freeze(['popup', 'watchparty-bridge', 'background']),
+      target: 'controller',
+    }),
+    ROOM_JOIN: Object.freeze({
+      action: WPAction.ROOM_JOIN,
+      sources: Object.freeze(['popup', 'watchparty-bridge', 'background']),
+      target: 'controller',
+    }),
+    ROOM_LEAVE: Object.freeze({
+      action: WPAction.ROOM_LEAVE,
+      sources: Object.freeze(['overlay', 'popup', 'sidepanel']),
+      target: 'controller',
+      requiresTrustedEvent: true,
+    }),
+    ROOM_CHAT_EVENT: Object.freeze({
+      action: WPAction.ROOM_CHAT_EVENT,
+      sources: Object.freeze(['stremio-content', 'background']),
+      target: 'extension-surfaces',
+    }),
+    ROOM_TYPING_EVENT: Object.freeze({
+      action: WPAction.ROOM_TYPING_EVENT,
+      sources: Object.freeze(['stremio-content', 'background']),
+      target: 'extension-surfaces',
+    }),
+    ROOM_BOOKMARK_EVENT: Object.freeze({
+      action: WPAction.ROOM_BOOKMARK_EVENT,
+      sources: Object.freeze(['stremio-content', 'background']),
+      target: 'extension-surfaces',
+    }),
+    ROOM_REACTION_EVENT: Object.freeze({
+      action: WPAction.ROOM_REACTION_EVENT,
+      sources: Object.freeze(['stremio-content', 'background']),
+      target: 'stremio-content',
+    }),
+    ROOM_ERROR_EVENT: Object.freeze({
+      action: WPAction.ROOM_ERROR_EVENT,
+      sources: Object.freeze(['stremio-content', 'background']),
+      target: 'extension-surfaces',
+    }),
+    ROOM_VISIBILITY_UPDATE: Object.freeze({
+      action: WPAction.ROOM_VISIBILITY_UPDATE,
+      sources: Object.freeze(['overlay']),
+      target: 'controller',
+      requiresTrustedEvent: true,
+    }),
+    ROOM_SETTINGS_UPDATE: Object.freeze({
+      action: WPAction.ROOM_SETTINGS_UPDATE,
+      sources: Object.freeze(['overlay']),
+      target: 'controller',
+      requiresTrustedEvent: true,
+    }),
+    ROOM_OWNERSHIP_TRANSFER: Object.freeze({
+      action: WPAction.ROOM_OWNERSHIP_TRANSFER,
+      sources: Object.freeze(['overlay']),
+      target: 'controller',
+      requiresTrustedEvent: true,
+    }),
+    SESSION_USERNAME_UPDATE: Object.freeze({
+      action: WPAction.SESSION_USERNAME_UPDATE,
+      sources: Object.freeze(['overlay']),
+      target: 'controller',
+      requiresTrustedEvent: true,
+    }),
+    ROOM_READY_CHECK_UPDATE: Object.freeze({
+      action: WPAction.ROOM_READY_CHECK_UPDATE,
+      sources: Object.freeze(['overlay', 'sidepanel']),
+      target: 'controller',
+      requiresTrustedEvent: true,
+    }),
+    ROOM_BOOKMARK_ADD: Object.freeze({
+      action: WPAction.ROOM_BOOKMARK_ADD,
+      sources: Object.freeze(['overlay', 'sidepanel']),
+      target: 'controller',
+      requiresTrustedEvent: true,
+    }),
+    ROOM_BOOKMARK_SEEK: Object.freeze({
+      action: WPAction.ROOM_BOOKMARK_SEEK,
+      sources: Object.freeze(['sidepanel']),
+      target: 'controller',
+      requiresTrustedEvent: true,
+    }),
+    ROOM_CHAT_SEND: Object.freeze({
+      action: WPAction.ROOM_CHAT_SEND,
+      sources: Object.freeze(['overlay', 'sidepanel']),
+      target: 'controller',
+      requiresTrustedEvent: true,
+    }),
+    ROOM_TYPING_SEND: Object.freeze({
+      action: WPAction.ROOM_TYPING_SEND,
+      sources: Object.freeze(['overlay', 'sidepanel']),
+      target: 'controller',
+      requiresTrustedEvent: true,
+    }),
+    ROOM_REACTION_SEND: Object.freeze({
+      action: WPAction.ROOM_REACTION_SEND,
+      sources: Object.freeze(['overlay']),
+      target: 'controller',
+      requiresTrustedEvent: true,
+    }),
+    ROOM_MEMBER_PRESENCE_PUBLISH: Object.freeze({
+      action: WPAction.ROOM_MEMBER_PRESENCE_PUBLISH,
+      sources: Object.freeze(['stremio-content', 'background']),
+      target: 'controller',
+      activeVideoOnly: true,
+    }),
+    ROOM_MEMBER_PLAYBACK_STATUS_PUBLISH: Object.freeze({
+      action: WPAction.ROOM_MEMBER_PLAYBACK_STATUS_PUBLISH,
+      sources: Object.freeze(['stremio-content', 'background']),
+      target: 'controller',
+      activeVideoOnly: true,
+    }),
+    ROOM_PLAYBACK_REQUEST_SYNC: Object.freeze({
+      action: WPAction.ROOM_PLAYBACK_REQUEST_SYNC,
+      sources: Object.freeze(['overlay']),
+      target: 'controller',
+      requiresTrustedEvent: true,
+      activeVideoOnly: true,
+    }),
+    ROOM_RESUME: Object.freeze({
+      action: WPAction.ROOM_RESUME,
+      sources: Object.freeze(['popup', 'options', 'watchparty-bridge']),
+      target: 'background',
+    }),
+    APP_OPTIONS_OPEN: Object.freeze({
+      action: WPAction.APP_OPTIONS_OPEN,
+      sources: Object.freeze(['watchparty-bridge']),
+      target: 'background',
+    }),
+    APP_STREMIO_OPEN: Object.freeze({
+      action: WPAction.APP_STREMIO_OPEN,
+      sources: Object.freeze(['popup', 'options', 'watchparty-bridge']),
+      target: 'background',
+    }),
+    CLIPBOARD_COPY: Object.freeze({
+      action: WPAction.CLIPBOARD_COPY,
+      sources: Object.freeze(['shared-utils', 'options']),
+      target: 'background',
+    }),
+    SERVER_DIAGNOSTICS_GET: Object.freeze({
+      action: WPAction.SERVER_DIAGNOSTICS_GET,
+      sources: Object.freeze(['options']),
+      target: 'background',
+    }),
+    LOCAL_LANDING_ACCESS_SYNC: Object.freeze({
+      action: WPAction.LOCAL_LANDING_ACCESS_SYNC,
+      sources: Object.freeze(['options']),
+      target: 'background',
+    }),
+    AUTH_KEY_SAVE: Object.freeze({
+      action: WPAction.AUTH_KEY_SAVE,
+      sources: Object.freeze(['stremio-profile']),
+      target: 'background',
+    }),
+    AUTH_KEY_CLEAR: Object.freeze({
+      action: WPAction.AUTH_KEY_CLEAR,
+      sources: Object.freeze(['options']),
+      target: 'background',
+    }),
+    OFFSCREEN_COPY: Object.freeze({
+      action: WPAction.OFFSCREEN_COPY,
+      sources: Object.freeze(['background']),
+      target: 'offscreen',
+    }),
+  });
+})();

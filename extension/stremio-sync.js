@@ -118,7 +118,7 @@ const WPSync = (() => {
     const latencyCompensation = clockOffset / 1000;
     const drift = (remote.time + latencyCompensation) - video.currentTime;
     lastDrift = drift;
-    const now = Date.now();
+    const now = WPRuntimeClock.now();
 
     // Don't correct drift while either side is buffering — causes cascading seeks
     if (peerBuffering || hostBuffering) return;
@@ -137,7 +137,7 @@ const WPSync = (() => {
           seekInProgress = false;
         }, { once: true });
         // Safety: if seeked never fires (e.g., video element destroyed), clear flags after timeout
-        setTimeout(() => {
+        WPRuntimeClock.setTimeout(() => {
           if (seekInProgress) { seekInProgress = false; isSyncing = false; }
         }, 3000);
         correcting = false;
@@ -175,7 +175,7 @@ const WPSync = (() => {
 
   function onTimeUpdate() {
     if (!isHost) return;
-    const now = Date.now();
+    const now = WPRuntimeClock.now();
     if (now - lastReportTime < SYNC_REPORT_INTERVAL) return;
     lastReportTime = now;
     report({ action: 'tick' });
@@ -184,9 +184,9 @@ const WPSync = (() => {
   function restartPausedHeartbeat() {
     stopPausedHeartbeat();
     if (!video || !isHost) return;
-    pausedHeartbeat = setInterval(() => {
+    pausedHeartbeat = WPRuntimeClock.setInterval(() => {
       if (!video || !isHost || isSyncing || !video.paused) return;
-      const now = Date.now();
+      const now = WPRuntimeClock.now();
       if (now - lastReportTime < PAUSED_HEARTBEAT_INTERVAL - 50) return;
       lastReportTime = now;
       report({ action: 'tick' });
@@ -195,7 +195,7 @@ const WPSync = (() => {
 
   function stopPausedHeartbeat() {
     if (!pausedHeartbeat) return;
-    clearInterval(pausedHeartbeat);
+    WPRuntimeClock.clearInterval(pausedHeartbeat);
     pausedHeartbeat = null;
   }
 

@@ -29,9 +29,15 @@ const WPOverlay = (() => {
   };
   let actionDispatcher = null;
   const pendingActions = [];
-  let roomKeyRenderSeq = 0;
-  let roomKeyDraftRoomId = null;
-  let roomKeyDraftValue = '';
+  const actionRoutesByValue = Object.freeze(
+    Object.values(WPConstants.ACTION_ROUTES || {}).reduce((routes, route) => {
+      if (route?.action) routes[route.action] = route;
+      return routes;
+    }, {})
+  );
+  let accessKeyRenderSeq = 0;
+  let accessKeyDraftRoomId = null;
+  let accessKeyDraftValue = '';
 
   // --- Emoji picker (emoji-picker-element library) ---
   function loadEmojiPicker() {
@@ -50,7 +56,7 @@ const WPOverlay = (() => {
   let activePopupMsg = null;
   let reactionTarget = null; // { pills } — when set, emoji picker adds a reaction instead of inserting into chat
 
-  function buildMsgEl(nameHtml, textHtml) {
+  function buildMsgEl({ userName, color, text, gifUrl }) {
     const div = document.createElement('div');
     div.className = 'wp-chat-msg';
 
@@ -60,13 +66,35 @@ const WPOverlay = (() => {
 
     const content = document.createElement('div');
     content.className = 'wp-msg-content';
-    content.innerHTML = `${nameHtml} ${textHtml}`;
+    content.appendChild(WPDOM.el('span', {
+      className: 'wp-chat-name',
+      text: userName || 'Unknown',
+      style: { color: WPDOM.safeColor(color) },
+    }));
+    content.appendChild(document.createTextNode(' '));
+    const safeGifUrl = WPDOM.safeUrl(gifUrl, { allowHash: false });
+    if (safeGifUrl) {
+      const img = document.createElement('img');
+      img.className = 'wp-chat-gif';
+      img.src = safeGifUrl;
+      img.alt = 'GIF';
+      content.appendChild(img);
+    } else {
+      content.appendChild(WPDOM.el('span', { className: 'wp-chat-text', text: text || '' }));
+    }
     row.appendChild(content);
 
     // Toolbar: small react icon, appears on hover, INSIDE the message row
     const toolbar = document.createElement('div');
     toolbar.className = 'wp-msg-toolbar';
-    toolbar.innerHTML = '<button class="wp-msg-react-trigger" title="Add Reaction" aria-label="Add Reaction">☺</button>';
+    const reactButton = WPDOM.el('button', {
+      className: 'wp-msg-react-trigger',
+      title: 'Add Reaction',
+      type: 'button',
+      text: '\u263a',
+    });
+    reactButton.setAttribute('aria-label', 'Add Reaction');
+    toolbar.appendChild(reactButton);
     row.appendChild(toolbar);
     div.appendChild(row);
 
@@ -105,7 +133,8 @@ const WPOverlay = (() => {
       const pill = document.createElement('button');
       pill.className = 'wp-react-pill wp-pill-mine';
       pill.dataset.emoji = emoji;
-      pill.innerHTML = `<span class="wp-pill-emoji">${escapeHtml(emoji)}</span><span class="wp-pill-count">1</span>`;
+      pill.appendChild(WPDOM.el('span', { className: 'wp-pill-emoji', text: emoji }));
+      pill.appendChild(WPDOM.el('span', { className: 'wp-pill-count', text: '1' }));
       // No per-pill listener — handled by delegated click on #wp-chat-messages
       pillsContainer.appendChild(pill);
     }
@@ -235,14 +264,22 @@ const WPOverlay = (() => {
     return !event || event.isTrusted !== false;
   }
 
+  function isOverlayRoutedAction(action) {
+    return actionRoutesByValue[action]?.sources?.includes('overlay') === true;
+  }
+
   function dispatchAction(action, detail = {}, event = null) {
     if (!isTrustedUserEvent(event)) return false;
+    if (!isOverlayRoutedAction(action)) return false;
     const message = { action, ...detail };
     if (typeof actionDispatcher === 'function') {
       actionDispatcher(message);
       return true;
     }
-    if (pendingActions.length < 20) pendingActions.push(message);
+    if (pendingActions.length < 20) {
+      pendingActions.push(message);
+      return true;
+    }
     return false;
   }
 
@@ -303,41 +340,41 @@ const WPOverlay = (() => {
     }
     localPreferences.username = username;
     cachedUsername = username;
-    chrome.storage.local.set({ [WPConstants.STORAGE.USERNAME]: username });
+    WPRuntimeState.set({ [WPConstants.STORAGE.USERNAME]: username }).catch(() => {});
     dispatchAction(WPConstants.ACTION.SESSION_USERNAME_UPDATE, { username }, event);
     refreshLocalSettingsCard();
     return true;
   }
 
-  function normalizeRoomKeyInput(value) {
+  function normalizeAccessKeyInput(value) {
     const trimmed = typeof value === 'string' ? value.trim() : '';
     return /^[A-Za-z0-9_-]{16,200}$/.test(trimmed) ? trimmed : null;
   }
 
-  function getStoredRoomKey(roomId) {
-    return WPRoomKeys.get(roomId);
+  function getStoredAccessKey(roomId) {
+    return WPRoomKeys.getAccessKey(roomId);
   }
 
-  function clearRoomKeyDraft(roomId) {
-    if (!roomId || roomKeyDraftRoomId === roomId) {
-      roomKeyDraftRoomId = null;
-      roomKeyDraftValue = '';
+  function clearAccessKeyDraft(roomId) {
+    if (!roomId || accessKeyDraftRoomId === roomId) {
+      accessKeyDraftRoomId = null;
+      accessKeyDraftValue = '';
     }
   }
 
-  function getRoomKeyHelpText(roomState, isHost, hasRoomKey) {
+  function getAccessKeyHelpText(roomState, isHost, hasAccessKey) {
     const othersInRoom = Math.max(0, (roomState?.users?.length || 0) - 1);
     if (isHost) {
       return othersInRoom > 0
         ? 'Change the invite key when you are alone in the room to avoid breaking private-room peers.'
         : 'Changing the invite key updates future invite links for this private room.';
     }
-    return hasRoomKey
+    return hasAccessKey
       ? 'This invite key is part of the room link for this browser.'
       : 'Paste a full invite link when joining private rooms so the key reaches this browser.';
   }
 
-  async function handleRoomKeySave(roomState, isHost, event = null) {
+  async function handleAccessKeySave(roomState, isHost, event = null) {
     if (!isTrustedUserEvent(event)) return;
     const input = document.getElementById('wp-room-key-input');
     const button = document.getElementById('wp-room-key-save');
@@ -348,7 +385,7 @@ const WPOverlay = (() => {
       return;
     }
 
-    const nextKey = normalizeRoomKeyInput(input.value);
+    const nextKey = normalizeAccessKeyInput(input.value);
     if (!nextKey) {
       showToast('Use 16-200 letters, numbers, underscores, or hyphens.', 3000);
       input.focus();
@@ -361,14 +398,14 @@ const WPOverlay = (() => {
       return;
     }
 
-    const existingKey = await getStoredRoomKey(roomId);
+    const existingKey = await getStoredAccessKey(roomId);
     if (existingKey === nextKey) {
       showToast('That invite key is already active for this private room.', 2200);
       return;
     }
 
-    roomKeyDraftRoomId = roomId;
-    roomKeyDraftValue = nextKey;
+    accessKeyDraftRoomId = roomId;
+    accessKeyDraftValue = nextKey;
     if (button) {
       button.disabled = true;
       button.textContent = 'Updating...';
@@ -377,7 +414,7 @@ const WPOverlay = (() => {
     dispatchAction(WPConstants.ACTION.ROOM_VISIBILITY_UPDATE, {
       public: false,
       listed: roomState?.listed !== false,
-      roomKey: nextKey,
+      accessKey: nextKey,
     }, event);
     showToast('Invite key updated for future room links.', 2200);
 
@@ -390,40 +427,40 @@ const WPOverlay = (() => {
     }, 250);
   }
 
-  function renderRoomKeyControls(roomState, isHost) {
+  function renderAccessKeyControls(roomState, isHost) {
     const input = document.getElementById('wp-room-key-input');
     const help = document.getElementById('wp-room-key-help');
     const button = document.getElementById('wp-room-key-save');
     if (!input || !help) {
-      clearRoomKeyDraft(roomState?.id);
+      clearAccessKeyDraft(roomState?.id);
       return;
     }
 
     const roomId = roomState?.id;
     input.oninput = () => {
-      roomKeyDraftRoomId = roomId || null;
-      roomKeyDraftValue = input.value;
+      accessKeyDraftRoomId = roomId || null;
+      accessKeyDraftValue = input.value;
     };
     input.onkeydown = (event) => {
       if (event.key === 'Enter' && isHost) {
         event.preventDefault();
-        handleRoomKeySave(roomState, isHost, event).catch(() => { });
+        handleAccessKeySave(roomState, isHost, event).catch(() => { });
       }
     };
     if (button) {
-      button.onclick = (event) => { handleRoomKeySave(roomState, isHost, event).catch(() => { }); };
+      button.onclick = (event) => { handleAccessKeySave(roomState, isHost, event).catch(() => { }); };
     }
 
     if (!roomId || roomState?.public !== false) {
       input.dataset.roomId = '';
-      input.dataset.roomKeyLoaded = '';
-      clearRoomKeyDraft(roomId);
+      input.dataset.accessKeyLoaded = '';
+      clearAccessKeyDraft(roomId);
       return;
     }
 
     const roomChanged = input.dataset.roomId !== roomId;
-    const isEditing = document.activeElement === input && roomKeyDraftRoomId === roomId;
-    const hasLoadedKey = input.dataset.roomKeyLoaded === 'true';
+    const isEditing = document.activeElement === input && accessKeyDraftRoomId === roomId;
+    const hasLoadedKey = input.dataset.accessKeyLoaded === 'true';
     const keepVisibleState = (!roomChanged && (hasLoadedKey || !!input.value)) || isEditing;
 
     input.dataset.roomId = roomId;
@@ -439,25 +476,25 @@ const WPOverlay = (() => {
       button.textContent = 'Update Key';
     }
 
-    const renderSeq = ++roomKeyRenderSeq;
-    getStoredRoomKey(roomId).then((roomKey) => {
-      if (renderSeq !== roomKeyRenderSeq) return;
+    const renderSeq = ++accessKeyRenderSeq;
+    getStoredAccessKey(roomId).then((accessKey) => {
+      if (renderSeq !== accessKeyRenderSeq) return;
 
       input.disabled = false;
       input.readOnly = !isHost;
-      input.dataset.roomKeyLoaded = roomKey ? 'true' : '';
+      input.dataset.accessKeyLoaded = accessKey ? 'true' : '';
       if (!isEditing) {
-        input.value = roomKey || '';
-        clearRoomKeyDraft(roomId);
-      } else if (roomKeyDraftRoomId === roomId) {
-        input.value = roomKeyDraftValue;
+        input.value = accessKey || '';
+        clearAccessKeyDraft(roomId);
+      } else if (accessKeyDraftRoomId === roomId) {
+        input.value = accessKeyDraftValue;
       }
-      help.textContent = getRoomKeyHelpText(roomState, isHost, !!roomKey);
+      help.textContent = getAccessKeyHelpText(roomState, isHost, !!accessKey);
     }).catch(() => {
-      if (renderSeq !== roomKeyRenderSeq) return;
+      if (renderSeq !== accessKeyRenderSeq) return;
       input.disabled = false;
       input.readOnly = !isHost;
-      input.dataset.roomKeyLoaded = '';
+      input.dataset.accessKeyLoaded = '';
       help.textContent = isHost
         ? 'WatchParty could not load the invite key on this browser.'
         : 'Invite key unavailable on this browser.';
@@ -1087,10 +1124,11 @@ const WPOverlay = (() => {
       // Local echo + dedup tracking (same pattern as text chat)
       const container = document.getElementById('wp-chat-messages');
       if (container) {
-        const div = buildMsgEl(
-          `<span class="wp-chat-name" style="color:${getUserColor(cachedSessionId || cachedUserId)}">${escapeHtml(cachedUsername)}</span>`,
-          `<img class="wp-chat-gif" src="${escapeHtml(img.dataset.url)}" alt="GIF" />`
-        );
+        const div = buildMsgEl({
+          userName: cachedUsername,
+          color: getUserColor(cachedSessionId || cachedUserId),
+          gifUrl: img.dataset.url,
+        });
         div.classList.add('wp-chat-local');
         container.appendChild(div);
         container.scrollTop = container.scrollHeight;
@@ -1100,22 +1138,42 @@ const WPOverlay = (() => {
       $('wp-chat-input')?.focus();
     });
 
+    function renderGifResults(container, gifs) {
+      container.replaceChildren();
+      if (!gifs.length) {
+        const empty = document.createElement('div');
+        empty.style.cssText = 'text-align:center;color:#666;padding:16px';
+        empty.textContent = 'No GIFs found';
+        container.appendChild(empty);
+        return;
+      }
+      for (const gif of gifs) {
+        const img = document.createElement('img');
+        img.className = 'wp-gif-item';
+        img.src = gif.url;
+        img.dataset.url = gif.url;
+        img.alt = gif.title || 'GIF';
+        img.loading = 'lazy';
+        container.appendChild(img);
+      }
+    }
+
+    function renderGifSearchError(container) {
+      container.replaceChildren();
+      const error = document.createElement('div');
+      error.style.cssText = 'text-align:center;color:#666;padding:16px';
+      error.textContent = 'Search failed';
+      container.appendChild(error);
+    }
+
     async function searchGifs(query) {
       const results = $('wp-gif-results');
       try {
-        // Tenor API browser key (public, restricted by HTTP referrer — standard for client-side GIF search)
-        const TENOR_KEY = 'AIzaSyAyimkuYQYF_FXVALexPuGQctUWRURdCYQ';
-        const endpoint = query === 'trending'
-          ? `https://tenor.googleapis.com/v2/featured?key=${TENOR_KEY}&limit=20&media_filter=tinygif`
-          : `https://tenor.googleapis.com/v2/search?key=${TENOR_KEY}&q=${encodeURIComponent(query)}&limit=20&media_filter=tinygif`;
-        const res = await fetch(endpoint);
-        if (!res.ok) throw new Error(`Tenor API ${res.status}`);
-        const data = await res.json();
-        results.innerHTML = (data.results || []).map(g => {
-          const url = g.media_formats?.tinygif?.url || g.media_formats?.gif?.url || '';
-          return url ? `<img class="wp-gif-item" src="${escapeHtml(url)}" data-url="${escapeHtml(url)}" loading="lazy" />` : '';
-        }).join('');
-      } catch { results.innerHTML = '<div style="text-align:center;color:#666;padding:16px">Search failed</div>'; }
+        const response = await WPGifProvider.search(query, { limit: 20 });
+        renderGifResults(results, response.results || []);
+      } catch {
+        renderGifSearchError(results);
+      }
     }
   }
 
@@ -1144,10 +1202,11 @@ const WPOverlay = (() => {
     // Optimistic local echo — show message immediately
     const container = document.getElementById('wp-chat-messages');
     if (container) {
-      const div = buildMsgEl(
-        `<span class="wp-chat-name" style="color:${getUserColor(cachedSessionId || cachedUserId)}">${escapeHtml(cachedUsername)}</span>`,
-        `<span class="wp-chat-text">${escapeHtml(content)}</span>`
-      );
+      const div = buildMsgEl({
+        userName: cachedUsername,
+        color: getUserColor(cachedSessionId || cachedUserId),
+        text: content,
+      });
       div.classList.add('wp-chat-local');
       container.appendChild(div);
       pruneChildren(container);
@@ -1169,7 +1228,7 @@ const WPOverlay = (() => {
     const previousRoomId = cachedRoomState?.id;
     cachedRoomState = roomState || null;
     if (previousRoomId && previousRoomId !== roomState?.id) {
-      clearRoomKeyDraft(previousRoomId);
+      clearAccessKeyDraft(previousRoomId);
       clearDisplayedBookmarks();
     }
     cachedIsHost = !!isHost;
@@ -1304,8 +1363,8 @@ const WPOverlay = (() => {
       autoPauseToggle.checked = autoPause;
     }
 
-    const roomKeySection = container.querySelector('#wp-room-key-section');
-    roomKeySection?.classList.toggle('wp-hidden-el', !isPrivateRoom);
+    const accessKeySection = container.querySelector('#wp-room-key-section');
+    accessKeySection?.classList.toggle('wp-hidden-el', !isPrivateRoom);
 
     container.querySelector('#wp-copy-invite-btn').onclick = async (event) => {
       if (!isTrustedUserEvent(event)) return;
@@ -1336,7 +1395,7 @@ const WPOverlay = (() => {
         dispatchAction(WPConstants.ACTION.ROOM_SETTINGS_UPDATE, { settings: { autoPauseOnDisconnect: !!event.target.checked } }, event);
       };
     }
-    renderRoomKeyControls(roomState, isHost);
+    renderAccessKeyControls(roomState, isHost);
   }
 
   function buildAccentSwatchButtons() {
@@ -1366,20 +1425,20 @@ const WPOverlay = (() => {
       });
       container.querySelector('#wp-settings-compact')?.addEventListener('change', (event) => {
         if (!isTrustedUserEvent(event)) return;
-        chrome.storage.local.set({ [WPConstants.STORAGE.COMPACT_CHAT]: !!event.target.checked });
+        WPRuntimeState.set({ [WPConstants.STORAGE.COMPACT_CHAT]: !!event.target.checked }).catch(() => {});
       });
       container.querySelector('#wp-settings-sound')?.addEventListener('change', (event) => {
         if (!isTrustedUserEvent(event)) return;
-        chrome.storage.local.set({ [WPConstants.STORAGE.REACTION_SOUND]: !!event.target.checked });
+        WPRuntimeState.set({ [WPConstants.STORAGE.REACTION_SOUND]: !!event.target.checked }).catch(() => {});
       });
       container.querySelector('#wp-settings-floating')?.addEventListener('change', (event) => {
         if (!isTrustedUserEvent(event)) return;
-        chrome.storage.local.set({ [WPConstants.STORAGE.FLOATING_REACTIONS]: !!event.target.checked });
+        WPRuntimeState.set({ [WPConstants.STORAGE.FLOATING_REACTIONS]: !!event.target.checked }).catch(() => {});
       });
       container.querySelectorAll('.wp-color-btn').forEach((button) => {
         button.addEventListener('click', (event) => {
           if (!isTrustedUserEvent(event)) return;
-          chrome.storage.local.set({ [WPConstants.STORAGE.ACCENT_COLOR]: button.dataset.color || '#6366f1' });
+          WPRuntimeState.set({ [WPConstants.STORAGE.ACCENT_COLOR]: button.dataset.color || '#6366f1' }).catch(() => {});
         });
       });
     }
@@ -1427,7 +1486,7 @@ const WPOverlay = (() => {
       return;
     }
 
-    const name = escapeHtml(roomState.meta?.name || roomState.meta?.id || 'Host stream');
+    const name = roomState.meta?.name || roomState.meta?.id || 'Host stream';
     const detailUrl = hasMeta
       ? `https://web.stremio.com/#/detail/${encodeURIComponent(roomState.meta.type)}/${encodeURIComponent(roomState.meta.id)}`
       : '';
@@ -1438,15 +1497,21 @@ const WPOverlay = (() => {
     }
 
     const label = hasMeta ? 'Host is watching:' : 'Host shared a stream:';
-    const primaryLinkHtml = hasMeta
-      ? `<a href="${detailUrl}" class="wp-content-link-a">${name}</a>`
-      : `<span class="wp-content-link-a">${name}</span>`;
-    const directLinkHtml = directStreamUrl
-      ? ` <span class="wp-content-label">&middot;</span> <a href="${directStreamUrl}" class="wp-content-link-a">Open host stream</a>`
-      : '';
-
     contentLink.classList.remove('wp-hidden-el');
-    contentLink.innerHTML = `<span class="wp-content-label">${label}</span> ${primaryLinkHtml}${directLinkHtml}`;
+    WPDOM.clear(contentLink);
+    contentLink.appendChild(WPDOM.el('span', { className: 'wp-content-label', text: label }));
+    contentLink.appendChild(document.createTextNode(' '));
+    if (hasMeta) {
+      contentLink.appendChild(WPDOM.el('a', { className: 'wp-content-link-a', href: detailUrl, text: name }));
+    } else {
+      contentLink.appendChild(WPDOM.el('span', { className: 'wp-content-link-a', text: name }));
+    }
+    if (directStreamUrl) {
+      contentLink.appendChild(document.createTextNode(' '));
+      contentLink.appendChild(WPDOM.el('span', { className: 'wp-content-label', text: '\u00b7' }));
+      contentLink.appendChild(document.createTextNode(' '));
+      contentLink.appendChild(WPDOM.el('a', { className: 'wp-content-link-a', href: directStreamUrl, text: 'Open host stream' }));
+    }
     renderCache.lastContentLinkKey = contentLinkKey;
   }
 
@@ -1481,7 +1546,8 @@ const WPOverlay = (() => {
     const canonicalOwner = WPUtils.getCanonicalOwnerUser(roomState);
     const canonicalOwnerId = canonicalOwner?.id || roomState.owner || null;
     const canonicalOwnerSessionId = canonicalOwner?.sessionId || roomState.ownerSessionId || null;
-    usersDiv.innerHTML = roomState.users.map(u => {
+    WPDOM.clear(usersDiv);
+    for (const u of roomState.users) {
       const isMe = WPUtils.isCurrentSessionUser(u, userId, cachedSessionId);
       const isOwner = (
         (!!canonicalOwnerSessionId && !!u.sessionId && u.sessionId === canonicalOwnerSessionId)
@@ -1492,7 +1558,7 @@ const WPOverlay = (() => {
       const crown = isOwner ? '<span class="wp-crown">👑</span>' : '';
       const you = isMe ? ' <span class="wp-you">(you)</span>' : '';
       const transferBtn = (isHost && !isMe && !isOwner)
-        ? `<button class="wp-transfer-btn" data-uid="${u.id}" title="Transfer host">Make Host</button>`
+        ? `<button class="wp-transfer-btn" data-uid="${escapeHtml(u.id)}" title="Transfer host">Make Host</button>`
         : '';
       let statusIcon = '';
       if (u.playbackStatus === 'buffering') statusIcon = '<span class="wp-user-status wp-status-buffering" title="Buffering">⟳</span>';
@@ -1503,8 +1569,35 @@ const WPOverlay = (() => {
         ? `<span class="wp-user-playhead" title="${escapeHtml(playback.title)}">${escapeHtml(playback.label)}</span>`
         : '';
       const awayClass = u.status === 'away' ? ' wp-user-away' : '';
-      return `<div class="wp-user${awayClass}"><span class="wp-user-dot" style="background:${color}"></span><span class="wp-user-main">${crown}<span class="wp-user-name">${escapeHtml(u.name)}</span>${you}</span>${statusIcon}${playbackLabel}${transferBtn}</div>`;
-    }).join('');
+      const row = WPDOM.el('div', { className: `wp-user${awayClass}` });
+      row.appendChild(WPDOM.el('span', { className: 'wp-user-dot', style: { background: WPDOM.safeColor(color) } }));
+      const main = WPDOM.el('span', { className: 'wp-user-main' });
+      if (isOwner) main.appendChild(WPDOM.el('span', { className: 'wp-crown', text: '\u{1f451}' }));
+      main.appendChild(WPDOM.el('span', { className: 'wp-user-name', text: u.name || 'Unknown' }));
+      if (isMe) {
+        main.appendChild(document.createTextNode(' '));
+        main.appendChild(WPDOM.el('span', { className: 'wp-you', text: '(you)' }));
+      }
+      row.appendChild(main);
+      const statusByPlayback = {
+        buffering: ['wp-user-status wp-status-buffering', 'Buffering', '\u27f3'],
+        paused: ['wp-user-status wp-status-paused', 'Paused', '\u275a\u275a'],
+        playing: ['wp-user-status wp-status-playing', 'Playing', '\u25b6'],
+      };
+      const status = statusByPlayback[u.playbackStatus];
+      if (status) row.appendChild(WPDOM.el('span', { className: status[0], title: status[1], text: status[2] }));
+      if (playback.label) row.appendChild(WPDOM.el('span', { className: 'wp-user-playhead', title: playback.title, text: playback.label }));
+      if (isHost && !isMe && !isOwner) {
+        row.appendChild(WPDOM.el('button', {
+          className: 'wp-transfer-btn',
+          type: 'button',
+          title: 'Transfer host',
+          text: 'Make Host',
+          dataset: { uid: u.id },
+        }));
+      }
+      usersDiv.appendChild(row);
+    }
     usersDiv.onclick = (e) => {
       if (!isTrustedUserEvent(e)) return;
       const btn = e.target.closest('.wp-transfer-btn');
@@ -1577,14 +1670,14 @@ const WPOverlay = (() => {
     // Use sessionId for stable color (same user = same color across tabs and chat history)
     const color = getUserColor(msgSessionId || msg.user);
     // Detect GIF messages: [gif:URL] — only allow https:// URLs
-    const gifMatch = msg.content.match(/^\[gif:(https:\/\/[^\]]+)\]$/);
-    const contentHtml = gifMatch
-      ? `<img class="wp-chat-gif" src="${escapeHtml(gifMatch[1])}" alt="GIF" />`
-      : `<span class="wp-chat-text">${escapeHtml(msg.content)}</span>`;
-    const div = buildMsgEl(
-      `<span class="wp-chat-name" style="color:${color}">${escapeHtml(userName)}</span>`,
-      contentHtml
-    );
+    const messageContent = String(msg.content || '');
+    const gifMatch = messageContent.match(/^\[gif:(https:\/\/[^\]]+)\]$/);
+    const div = buildMsgEl({
+      userName,
+      color,
+      text: gifMatch ? '' : messageContent,
+      gifUrl: gifMatch?.[1],
+    });
     container.appendChild(div);
     // Prune old DOM nodes to prevent memory buildup
     pruneChildren(container);
@@ -1629,8 +1722,13 @@ const WPOverlay = (() => {
       localPreferences.floatingReactions = floatingReactionsEnabled;
       shouldRefreshSettings = true;
     }
-    const currentRoomKeyStorageKey = cachedRoomState?.id ? WPConstants.STORAGE.roomKey(cachedRoomState.id) : null;
-    if (currentRoomKeyStorageKey && changes[currentRoomKeyStorageKey]) {
+    const currentPrivateKeyStorageKeys = cachedRoomState?.id
+      ? [
+          WPConstants.STORAGE.roomAccessKey(cachedRoomState.id),
+          WPConstants.STORAGE.roomE2eKey(cachedRoomState.id),
+        ]
+      : [];
+    if (currentPrivateKeyStorageKeys.some((key) => changes[key])) {
       shouldRefreshRoomControls = true;
     }
     if (shouldRefreshSettings) refreshLocalSettingsCard();
@@ -1654,7 +1752,8 @@ const WPOverlay = (() => {
     const userName = reactionUser?.name || '';
     const el = document.createElement('div');
     el.className = 'wp-floating-reaction';
-    el.innerHTML = `<span class="wp-reaction-emoji">${escapeHtml(emoji)}</span><span class="wp-reaction-name">${escapeHtml(userName)}</span>`;
+    el.appendChild(WPDOM.el('span', { className: 'wp-reaction-emoji', text: emoji }));
+    el.appendChild(WPDOM.el('span', { className: 'wp-reaction-name', text: userName }));
     el.style.left = (20 + Math.random() * 60) + '%';
     container.appendChild(el);
     setTimeout(() => el.remove(), 3000);
@@ -1684,7 +1783,7 @@ const WPOverlay = (() => {
 
   // --- Toast, Ready Check, Countdown: delegated to WPModals module ---
   function showToast(message, durationMs) { WPModals.showToast(message, durationMs); }
-  function showReadyCheck(action, confirmed, total, myUserId) { WPModals.showReadyCheck(action, confirmed, total, myUserId); }
+  function showReadyCheck(action, confirmed, total, myUserId) { WPModals.showReadyCheck(action, confirmed, total, myUserId, dispatchAction); }
   function showCountdown(seconds) { WPModals.showCountdown(seconds); }
 
   // --- Bookmarks ---
@@ -1720,8 +1819,24 @@ const WPOverlay = (() => {
     const sender = cachedRoomState?.users?.find((user) => user.id === msg.user);
     const colorKey = sender?.sessionId || msg.sessionId || msg.user;
     div.className = 'wp-chat-msg wp-bookmark-msg';
-    div.innerHTML = `<span class="wp-bookmark-icon">📌</span> <span class="wp-chat-name" style="color:${getUserColor(colorKey)}">${escapeHtml(msg.userName)}</span> bookmarked <button class="wp-bookmark-time" data-time="${msg.time}">${timeStr}</button> <span class="wp-chat-text">${msg.label ? escapeHtml(msg.label) : ''}</span>`;
-    div.querySelector('.wp-bookmark-time')?.addEventListener('click', (event) => {
+    div.appendChild(WPDOM.el('span', { className: 'wp-bookmark-icon', text: '\u{1f4cc}' }));
+    div.appendChild(document.createTextNode(' '));
+    div.appendChild(WPDOM.el('span', {
+      className: 'wp-chat-name',
+      text: msg.userName || 'Unknown',
+      style: { color: WPDOM.safeColor(getUserColor(colorKey)) },
+    }));
+    div.appendChild(document.createTextNode(' bookmarked '));
+    const timeButton = WPDOM.el('button', {
+      className: 'wp-bookmark-time',
+      type: 'button',
+      text: timeStr,
+      dataset: { time: msg.time },
+    });
+    div.appendChild(timeButton);
+    div.appendChild(document.createTextNode(' '));
+    div.appendChild(WPDOM.el('span', { className: 'wp-chat-text', text: msg.label || '' }));
+    timeButton.addEventListener('click', (event) => {
       if (!isTrustedUserEvent(event)) return;
       const video = document.querySelector('video');
       if (video) {
@@ -1746,25 +1861,15 @@ const WPOverlay = (() => {
   }
 
   async function buildInviteUrl(roomId) {
-    let inviteUrl = await new Promise((resolve) => {
-      chrome.storage.session.get(WPConstants.STORAGE.ACTIVE_BACKEND, (sessionResult) => {
-        const sessionActiveBackend = !chrome.runtime?.id || chrome.runtime.lastError
-          ? undefined
-          : sessionResult?.[WPConstants.STORAGE.ACTIVE_BACKEND];
-        chrome.storage.local.get([WPConstants.STORAGE.BACKEND_MODE, WPConstants.STORAGE.ACTIVE_BACKEND], (result) => {
-          resolve(WPConstants.BACKEND.buildInviteUrl(
-            roomId,
-            result[WPConstants.STORAGE.BACKEND_MODE],
-            sessionActiveBackend ?? result[WPConstants.STORAGE.ACTIVE_BACKEND]
-          ));
-        });
-      });
-    });
-    let roomKey = null;
-    if (typeof WPCrypto !== 'undefined' && WPCrypto.isEnabled()) {
-      roomKey = await WPCrypto.exportKey();
-    }
-    if (roomKey) return `${inviteUrl}#key=${roomKey}`;
+    const result = await WPRuntimeState.get([
+      WPConstants.STORAGE.BACKEND_MODE,
+      WPConstants.STORAGE.ACTIVE_BACKEND,
+    ]).catch(() => ({}));
+    const inviteUrl = WPConstants.BACKEND.buildInviteUrl(
+      roomId,
+      result[WPConstants.STORAGE.BACKEND_MODE],
+      result[WPConstants.STORAGE.ACTIVE_BACKEND]
+    );
     return WPRoomKeys.appendToInviteUrl(roomId, inviteUrl);
   }
 

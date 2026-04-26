@@ -9,28 +9,29 @@
     "gen:icons": "node tools/generate-icons.mjs",
     "gen:store-assets": "node extension/test/run-with-local-server.mjs tools/generate-store-assets.mjs",
     "test": "npm run test:fast",
-    "test:ci-fast": "npm run syntax && npm run test:routing && npm run test:sync-engine && npm run test:crypto",
-    "test:fast": "npm run syntax && npm run test:routing && npm run test:landing && npm run test:sync-engine && npm run test:crypto",
-    "test:integration": "npm run test:sidepanel-integration",
-    "test:full": "npm run test:fast && npm run test:integration && npm run test:browser",
+    "typecheck:js": "tsc -p jsconfig.typecheck.json",
+    "test:ci-fast": "npm run syntax && npm run typecheck:js && npm run test:routing && npm run test:runtime-kernels && npm run test:sync-engine && npm run test:crypto",
+    "test:fast": "npm run syntax && npm run typecheck:js && npm run test:routing && npm run test:runtime-kernels && npm run test:landing && npm run test:sync-engine && npm run test:crypto",
+    "test:full": "npm run test:fast && npm run test:sidepanel-integration && npm run test:browser",
     "test:routing": "node extension/test/routing.mjs",
     "test:browser": "node extension/test/run-with-local-server.mjs extension/test/e2e-browser.mjs",
     "test:sidepanel": "node extension/test/run-with-local-server.mjs extension/test/sidepanel.mjs",
     "test:sidepanel-integration": "npm run test:sidepanel",
+    "test:runtime-kernels": "node extension/test/runtime-kernels.mjs",
     "test:crypto": "node extension/test/crypto.mjs",
     "test:landing": "node extension/test/landing.mjs",
     "test:sync-engine": "node extension/test/sync-engine.mjs",
-    "debug:invalid-room-key": "node tools/debug-invalid-room-key.mjs",
+    "debug:invalid-access-key": "node tools/debug-invalid-access-key.mjs",
     "debug:production-smoke": "node tools/production-smoke.mjs",
     "syntax": "node scripts/syntax-check.mjs"
   },
   "devDependencies": {
     "chokidar": "^4.0.0",
-    "playwright": "^1.59.1"
+    "playwright": "^1.59.1",
+    "typescript": "^6.0.3"
   },
   "dependencies": {
     "emoji-picker-element": "^1.29.1",
-    "emoji-picker-element-data": "^1.8.0",
-    "ws": "^8.20.0"
+    "emoji-picker-element-data": "^1.8.0"
   }
 }

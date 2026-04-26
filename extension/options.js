@@ -2,6 +2,16 @@
 
 const $ = (id) => document.getElementById(id);
 
+function buttonById(id) {
+  const el = $(id);
+  return el instanceof HTMLButtonElement ? el : null;
+}
+
+function setHidden(el, hidden) {
+  if (!el) return;
+  el.classList.toggle('hidden', !!hidden);
+}
+
 let lastStatus = null;
 let refreshTimer = null;
 let backendMutationInFlight = false;
@@ -59,12 +69,12 @@ function getExtensionState(keys) {
   return WPRuntimeState.get(keys);
 }
 
-function removeExtensionState(keys) {
-  return WPRuntimeState.remove(keys);
+function setExtensionState(values) {
+  return WPRuntimeState.set(values);
 }
 
-function collectRoomKeyStorageKeys() {
-  return WPRoomKeys.collectStorageKeys();
+function removeExtensionState(keys) {
+  return WPRuntimeState.remove(keys);
 }
 
 function copyTextToClipboard(text) {
@@ -88,6 +98,7 @@ function setBackendButtonsState(selectedMode, options = {}) {
   const pendingMode = options.pendingMode || null;
   const disabled = !!options.disabled;
   document.querySelectorAll('#backend-toggle .backend-btn').forEach((btn) => {
+    if (!(btn instanceof HTMLButtonElement)) return;
     const isActive = btn.dataset.mode === selectedMode;
     const isPending = btn.dataset.mode === pendingMode;
     btn.classList.toggle('active', isActive);
@@ -110,13 +121,15 @@ function renderBackend(status) {
   const displayBackendKey = WPConstants.BACKEND.resolveKey(selectedMode, status?.activeBackend);
   const info = WPConstants.BACKEND.getInfo(displayBackendKey);
   const nextUrl = status?.activeBackendUrl || info.wsUrl;
+  const backendNote = $('backend-note');
+  if (!backendNote) return;
   if (selectedMode === WPConstants.BACKEND.MODES.AUTO) {
-    $('backend-note').textContent = status?.activeBackend
+    backendNote.textContent = status?.activeBackend
       ? `Auto mode is selected. Current backend: ${info.label}${status.activeBackendUrl ? ` (${status.activeBackendUrl})` : ''}.`
       : 'Auto mode is selected. Installed builds use the live backend. Unpacked development builds may use localhost when it is available.';
     return;
   }
-  $('backend-note').textContent = `${info.label} mode is selected. ${status?.wsConnected ? `Connected via ${nextUrl}.` : `Next connection will use ${nextUrl}.`}`;
+  backendNote.textContent = `${info.label} mode is selected. ${status?.wsConnected ? `Connected via ${nextUrl}.` : `Next connection will use ${nextUrl}.`}`;
 }
 
 function renderSession(status) {
@@ -128,11 +141,12 @@ function renderSession(status) {
   const hasResumeTarget = !!room || !!currentRoomId || bootstrapPending;
   const roomPill = $('pill-room');
   const roomCard = $('session-card');
-  const resumeBtn = $('btn-resume-room');
+  const resumeBtn = buttonById('btn-resume-room');
+  if (!roomPill || !roomCard || !resumeBtn) return;
 
   if (!hasResumeTarget) {
-    roomPill.classList.add('hidden');
-    roomCard.classList.add('hidden');
+    setHidden(roomPill, true);
+    setHidden(roomCard, true);
     resumeBtn.textContent = 'Go to Room in Stremio';
     resumeBtn.disabled = true;
     return;
@@ -142,13 +156,13 @@ function renderSession(status) {
   resumeBtn.disabled = false;
 
   if (!room) {
-    roomPill.classList.remove('hidden');
+    setHidden(roomPill, false);
     setPill(
       'pill-room',
       bootstrapPending ? 'Room handoff pending' : 'Room available to resume',
       'warn'
     );
-    roomCard.classList.remove('hidden');
+    setHidden(roomCard, false);
     setText(
       'session-title',
       bootstrapPending
@@ -165,9 +179,9 @@ function renderSession(status) {
   }
 
   const userCount = Array.isArray(room.users) ? room.users.length : 0;
-  roomPill.classList.remove('hidden');
+  setHidden(roomPill, false);
   setPill('pill-room', room.public === false ? 'Invite key room active' : 'Open-join room active', 'success');
-  roomCard.classList.remove('hidden');
+  setHidden(roomCard, false);
   setText('session-title', getRoomDisplayName(status));
   setText(
     'session-meta',
@@ -178,14 +192,25 @@ function renderSession(status) {
 function renderIssueList(id, issues, emptyText) {
   const el = $(id);
   if (!el) return;
+  el.replaceChildren();
   if (!Array.isArray(issues) || issues.length === 0) {
-    el.innerHTML = `<li class="diag-list-empty">${emptyText}</li>`;
+    const empty = document.createElement('li');
+    empty.className = 'diag-list-empty';
+    empty.textContent = emptyText;
+    el.appendChild(empty);
     return;
   }
-  el.innerHTML = issues.slice(0, 4).map((issue) => {
+  for (const issue of issues.slice(0, 4)) {
     const scope = issue.roomId ? `Room ${issue.roomId.slice(0, 8)}` : (issue.clientId ? `Client ${issue.clientId.slice(0, 8)}` : 'Global');
-    return `<li><strong>[${issue.severity || 'info'}]</strong> ${issue.code || 'unknown'}<br>${scope} - ${issue.message || ''}</li>`;
-  }).join('');
+    const item = document.createElement('li');
+    const strong = document.createElement('strong');
+    strong.textContent = `[${issue.severity || 'info'}]`;
+    item.appendChild(strong);
+    item.append(` ${issue.code || 'unknown'}`);
+    item.appendChild(document.createElement('br'));
+    item.append(`${scope} - ${issue.message || ''}`);
+    el.appendChild(item);
+  }
 }
 
 function renderLocalLandingAccess(status) {
@@ -317,15 +342,15 @@ function renderStatus(status) {
   setPill('pill-backend', `${backendInfo.label} backend`, status?.wsConnected ? 'success' : 'warn');
 
   if (!status) {
-    $('hero-note').textContent = 'Could not read extension status. Refresh and try again.';
+    setText('hero-note', 'Could not read extension status. Refresh and try again.');
   } else if (status.room) {
-    $('hero-note').textContent = 'A room is active. Open it in Stremio.';
+    setText('hero-note', 'A room is active. Open it in Stremio.');
   } else if (status.bootstrapPending) {
-    $('hero-note').textContent = 'WatchParty is staged. Finish in Stremio.';
+    setText('hero-note', 'WatchParty is staged. Finish in Stremio.');
   } else if (status.hasStremioTab) {
-    $('hero-note').textContent = 'Stremio is already open and ready.';
+    setText('hero-note', 'Stremio is already open and ready.');
   } else {
-    $('hero-note').textContent = 'No room is active. Create or join on WatchParty, then continue in Stremio.';
+    setText('hero-note', 'No room is active. Create or join on WatchParty, then continue in Stremio.');
   }
 
   renderSession(status);
@@ -419,7 +444,7 @@ function buildDiagnosticsText(status) {
 
 async function runRecoveryAction(buttonId, work, messages) {
   if (recoveryMutationInFlight) return;
-  const button = $(buttonId);
+  const button = buttonById(buttonId);
   const originalLabel = button?.textContent || '';
   recoveryMutationInFlight = true;
   if (button) {
@@ -462,26 +487,19 @@ async function clearBootstrapHandoff() {
   return 1;
 }
 
-async function clearRoomKeys() {
-  const { localKeys, sessionKeys } = await collectRoomKeyStorageKeys();
-  await Promise.all([
-    localKeys.length > 0 ? chrome.storage.local.remove(localKeys).catch(() => {}) : Promise.resolve(),
-    sessionKeys.length > 0 ? chrome.storage.session.remove(sessionKeys).catch(() => {}) : Promise.resolve(),
-  ]);
-  return new Set([...localKeys, ...sessionKeys]).size;
+async function clearPrivateKeys() {
+  const result = await WPRoomKeys.clearAll();
+  return result.count;
 }
 
 async function resetWatchPartyState() {
-  const { localKeys, sessionKeys } = await collectRoomKeyStorageKeys();
-  await removeExtensionState([...RECOVERY_RESET_LOCAL_KEYS, ...RECOVERY_RESET_SESSION_KEYS, ...localKeys]);
-  if (sessionKeys.length > 0) {
-    await chrome.storage.session.remove(sessionKeys).catch(() => {});
-  }
+  const privateKeys = await WPRoomKeys.clearAll();
+  await removeExtensionState([...RECOVERY_RESET_LOCAL_KEYS, ...RECOVERY_RESET_SESSION_KEYS]);
   await chrome.runtime.sendMessage({
     type: 'watchparty-ext',
     action: WPConstants.ACTION.AUTH_KEY_CLEAR,
   }).catch(() => {});
-  return RECOVERY_RESET_LOCAL_KEYS.length + RECOVERY_RESET_SESSION_KEYS.length + new Set([...localKeys, ...sessionKeys]).size;
+  return RECOVERY_RESET_LOCAL_KEYS.length + RECOVERY_RESET_SESSION_KEYS.length + privateKeys.count;
 }
 
 function bindRecoveryButtons() {
@@ -495,13 +513,13 @@ function bindRecoveryButtons() {
   });
 
   $('btn-clear-room-keys')?.addEventListener('click', () => {
-    runRecoveryAction('btn-clear-room-keys', clearRoomKeys, {
+    runRecoveryAction('btn-clear-room-keys', clearPrivateKeys, {
       pendingLabel: 'Clearing...',
-      pendingMessage: 'Removing cached room keys from local and session storage...',
+      pendingMessage: 'Removing cached room access and E2E keys from extension storage...',
       successWithCount: (count) => count > 0
-        ? `Cleared ${count} cached room key${count === 1 ? '' : 's'}.`
-        : 'No cached room keys were stored.',
-      errorMessage: 'Could not clear cached room keys.',
+        ? `Cleared ${count} cached private invite key${count === 1 ? '' : 's'}.`
+        : 'No cached private invite keys were stored.',
+      errorMessage: 'Could not clear cached private invite keys.',
     }).catch(() => {});
   });
 
@@ -516,7 +534,7 @@ function bindRecoveryButtons() {
 
   $('btn-copy-diagnostics')?.addEventListener('click', async () => {
     if (recoveryMutationInFlight) return;
-    const button = $('btn-copy-diagnostics');
+    const button = buttonById('btn-copy-diagnostics');
     const originalLabel = button?.textContent || '';
     if (button) {
       button.disabled = true;
@@ -541,7 +559,7 @@ async function toggleLocalLandingAccess() {
   const origins = Array.isArray(access?.origins) ? access.origins : [];
   if (!lastStatus?.isDevInstall || origins.length === 0) return;
 
-  const button = $('btn-toggle-local-landing');
+  const button = buttonById('btn-toggle-local-landing');
   const enable = access?.granted !== true;
 
   if (button) {
@@ -616,6 +634,7 @@ async function resumeRoom() {
 
 function bindBackendButtons() {
   document.querySelectorAll('#backend-toggle .backend-btn').forEach((btn) => {
+    if (!(btn instanceof HTMLButtonElement)) return;
     btn.addEventListener('click', async () => {
       const mode = WPConstants.BACKEND.normalizeMode(btn.dataset.mode);
       if (backendMutationInFlight) return;
@@ -628,7 +647,7 @@ function bindBackendButtons() {
       setBackendButtonsState(currentMode, { pendingMode: mode, disabled: true });
       setBackendFeedback(`Switching to ${WPConstants.BACKEND.getInfo(WPConstants.BACKEND.resolveKey(mode, lastStatus?.activeBackend)).label} mode...`);
       try {
-        await chrome.storage.local.set({ [WPConstants.STORAGE.BACKEND_MODE]: mode });
+        await setExtensionState({ [WPConstants.STORAGE.BACKEND_MODE]: mode });
         lastStatus = { ...(lastStatus || {}), backendMode: mode };
         renderBackend(lastStatus);
         await refreshStatus();
@@ -656,11 +675,12 @@ function init() {
   bindBackendButtons();
   bindRecoveryButtons();
   $('btn-toggle-local-landing')?.addEventListener('click', () => { toggleLocalLandingAccess().catch(() => {}); });
-  $('btn-open-watchparty').addEventListener('click', openWatchParty);
-  $('btn-open-stremio').addEventListener('click', openStremio);
-  $('btn-resume-room').addEventListener('click', () => { resumeRoom().catch(() => {}); });
-  $('btn-refresh').addEventListener('click', async () => {
-    const button = $('btn-refresh');
+  $('btn-open-watchparty')?.addEventListener('click', openWatchParty);
+  $('btn-open-stremio')?.addEventListener('click', openStremio);
+  $('btn-resume-room')?.addEventListener('click', () => { resumeRoom().catch(() => {}); });
+  $('btn-refresh')?.addEventListener('click', async () => {
+    const button = buttonById('btn-refresh');
+    if (!button) return;
     const originalLabel = button.textContent;
     button.disabled = true;
     button.textContent = 'Refreshing...';
@@ -700,11 +720,11 @@ function init() {
     if (!document.hidden) refreshStatus().catch(() => {});
   });
 
-  chrome.storage.local.get([WPConstants.STORAGE.BACKEND_MODE], (result) => {
+  getExtensionState([WPConstants.STORAGE.BACKEND_MODE]).then((result) => {
     renderStatus({
       backendMode: WPConstants.BACKEND.normalizeMode(result?.[WPConstants.STORAGE.BACKEND_MODE]),
     });
-  });
+  }).catch(() => {});
   startAutoRefresh();
   refreshStatus().catch(() => {});
 }

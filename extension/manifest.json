@@ -40,7 +40,7 @@
         "https://web.strem.io/*",
         "https://app.strem.io/*"
       ],
-      "js": ["wp-actions.js", "constants.js", "runtime-state.js", "room-keys.js", "wp-room-domain.js", "wp-direct-play-domain.js", "direct-play.js", "wp-protocol.js", "utils.js", "stremio-sync.js", "stremio-ws.js", "stremio-crypto.js", "stremio-overlay-theme.js", "stremio-overlay-modals.js", "stremio-overlay-shells.js", "stremio-overlay.js", "stremio-profile.js", "stremio-runtime-model.js", "stremio-content.js"],
+      "js": ["wp-actions.js", "constants.js", "runtime-clock.js", "runtime-state.js", "room-keys.js", "wp-room-domain.js", "wp-direct-play-domain.js", "direct-play.js", "wp-protocol.js", "utils.js", "stremio-sync.js", "stremio-ws.js", "stremio-crypto.js", "private-room-keys.js", "stremio-overlay-theme.js", "stremio-overlay-modals.js", "stremio-overlay-shells.js", "gif-provider.js", "stremio-overlay.js", "stremio-profile.js", "stremio-runtime-model.js", "stremio-controller-kernel.js", "stremio-adapter.js", "stremio-content.js"],
       "css": ["stremio-overlay.css"],
       "run_at": "document_end"
     },

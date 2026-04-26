@@ -118,12 +118,12 @@ const WPStremioRuntimeModel = (() => {
   }
 
   function deriveAdapterAvailability(snapshot) {
-    if (!snapshot.launchUrl && !snapshot.contentMeta) return WPConstants.ADAPTER_AVAILABILITY.UNAVAILABLE;
     if (snapshot.route === WPConstants.ADAPTER_ROUTE.DETAIL) return WPConstants.ADAPTER_AVAILABILITY.DETAIL_ONLY;
     if (snapshot.route !== WPConstants.ADAPTER_ROUTE.PLAYER) return WPConstants.ADAPTER_AVAILABILITY.UNAVAILABLE;
-    if (snapshot.joinHint?.mode === WPRoomDomain.JOIN_HINT_MODE.DIRECT) return WPConstants.ADAPTER_AVAILABILITY.DIRECT_JOIN_READY;
+    if (snapshot.joinHint?.mode === WPRoomDomain.JOIN_HINT_MODE.DIRECT && snapshot.launchUrl) return WPConstants.ADAPTER_AVAILABILITY.DIRECT_JOIN_READY;
     if (snapshot.joinHint?.mode === WPRoomDomain.JOIN_HINT_MODE.TITLE_ONLY) return WPConstants.ADAPTER_AVAILABILITY.MANUAL_JOIN_ONLY;
-    return WPConstants.ADAPTER_AVAILABILITY.PLAYER_PENDING;
+    if (snapshot.hasVideo || snapshot.launchUrl || snapshot.contentMeta) return WPConstants.ADAPTER_AVAILABILITY.PLAYER_PENDING;
+    return WPConstants.ADAPTER_AVAILABILITY.UNAVAILABLE;
   }
 
   function buildAdapterRuntimeInvariants(state) {
@@ -162,6 +162,7 @@ const WPStremioRuntimeModel = (() => {
     reduceControllerRuntimeState,
     createInitialAdapterRuntimeState,
     deriveAdapterRoute,
+    deriveAdapterAvailability,
     reduceAdapterRuntimeState,
   };
 })();

@@ -105,7 +105,7 @@ const WPUtils = (() => {
     } catch {}
 
     let textarea = null;
-    const active = document.activeElement;
+    const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     try {
       textarea = document.createElement('textarea');
       textarea.value = value;
@@ -125,7 +125,7 @@ const WPUtils = (() => {
       return false;
     } finally {
       textarea?.remove();
-      if (active && typeof active.focus === 'function') {
+      if (active) {
         try { active.focus({ preventScroll: true }); } catch { try { active.focus(); } catch {} }
       }
     }
@@ -189,5 +189,79 @@ const WPUtils = (() => {
     copyText,
     copyTextDeferred,
     copyTextViaExtension,
+  };
+})();
+
+const WPDOM = (() => {
+  'use strict';
+
+  function clear(node) {
+    if (!node) return;
+    while (node.firstChild) node.removeChild(node.firstChild);
+  }
+
+  function setText(node, value) {
+    if (node) node.textContent = value == null ? '' : String(value);
+  }
+
+  function safeColor(value, fallback = '#6366f1') {
+    const candidate = typeof value === 'string' ? value.trim() : '';
+    return /^#[0-9a-fA-F]{6}$/.test(candidate) ? candidate.toLowerCase() : fallback;
+  }
+
+  function safeUrl(value, options = {}) {
+    const raw = typeof value === 'string' ? value.trim() : '';
+    if (!raw) return null;
+    if (options.allowHash !== false && raw.startsWith('#/')) return raw;
+    try {
+      const url = new URL(raw, window.location.href);
+      return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function setHref(anchor, value, options = {}) {
+    if (!anchor) return null;
+    const href = safeUrl(value, options);
+    if (!href) {
+      anchor.removeAttribute('href');
+      return null;
+    }
+    anchor.href = href;
+    return href;
+  }
+
+  function el(tagName, options = {}, children = []) {
+    const node = document.createElement(tagName);
+    if (options.className) node.className = options.className;
+    if (options.text != null) node.textContent = String(options.text);
+    if (options.title != null) node.title = String(options.title);
+    if (options.type != null) node.setAttribute('type', String(options.type));
+    if (options.href != null && node instanceof HTMLAnchorElement) setHref(node, options.href, options);
+    if (options.dataset && typeof options.dataset === 'object') {
+      for (const [key, value] of Object.entries(options.dataset)) {
+        if (value != null) node.dataset[key] = String(value);
+      }
+    }
+    if (options.style && typeof options.style === 'object') {
+      for (const [key, value] of Object.entries(options.style)) {
+        if (value != null) node.style.setProperty(key, String(value));
+      }
+    }
+    for (const child of Array.isArray(children) ? children : [children]) {
+      if (child == null) continue;
+      node.appendChild(child instanceof Node ? child : document.createTextNode(String(child)));
+    }
+    return node;
+  }
+
+  return {
+    clear,
+    setText,
+    safeColor,
+    safeUrl,
+    setHref,
+    el,
   };
 })();
