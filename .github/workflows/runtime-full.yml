@@ -64,7 +64,7 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Run sidepanel integration suite
-        run: xvfb-run -a npm run test:integration
+        run: xvfb-run -a npm run test:sidepanel-integration
         env:
           WATCHPARTY_SERVER_ROOT: ${{ github.workspace }}/${{ env.SERVER_CHECKOUT_PATH }}
 

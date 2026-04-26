@@ -219,6 +219,6 @@ jobs:
 
       - name: Run sidepanel integration suite
         if: steps.coverage_gate.outputs.enabled == 'true'
-        run: xvfb-run -a npm run test:integration
+        run: xvfb-run -a npm run test:sidepanel-integration
         env:
           WATCHPARTY_SERVER_ROOT: ${{ github.workspace }}/${{ env.SERVER_CHECKOUT_PATH }}
