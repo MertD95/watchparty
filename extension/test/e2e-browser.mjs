@@ -1646,6 +1646,132 @@ async function cleanupTwoUsers({ ctx1, ctx2, popup1, popup2, stremio1, stremio2 
   await ctx2.close();
 }
 
+async function testInviteKeyAccessScenarios() {
+  console.log('\n-- Test: Invite-key access covers single-user, join failures, and occupied-room safeguards --');
+  const hostCtx = await launchWithExtension();
+  const peerCtx = await launchWithExtension();
+  try {
+    const roomApis = ['http://localhost:8181/rooms'];
+    const hostStremio = await openStremio(hostCtx);
+    const hostPopup = await openPopup(hostCtx, await getExtensionId(hostCtx));
+    await hostPopup.fill('#username-input', 'InviteHost');
+    await hostPopup.check('#public-check');
+    await hostPopup.click('#btn-create');
+    await hostPopup.waitForFunction(
+      () => !document.getElementById('view-room').classList.contains('hidden'),
+      { timeout: TIMEOUT }
+    );
+    const roomId = await hostPopup.evaluate(() => document.getElementById('room-id-display')?.textContent?.trim() || '');
+    assert(!!roomId, `Public room created before invite-key toggle: ${roomId?.substring(0, 8)}`);
+
+    await hostStremio.bringToFront();
+    await waitForSidebarRoomAttached(hostStremio);
+    await openSidebarPanel(hostStremio, 'room');
+    const privateRow = await hostStremio.$('label[for="wp-session-private"]');
+    const listedRow = await hostStremio.$('label[for="wp-session-listed"]');
+    assert(privateRow && listedRow, 'Single host sees invite-key and listing controls');
+
+    await privateRow.click();
+    const privateRoom = await waitForRoomSnapshot(
+      roomApis,
+      roomId,
+      (room) => room.public === false && room.listed !== false,
+      TIMEOUT,
+      250
+    );
+    assert(!!privateRoom, 'Single host can require an invite key');
+    await hostStremio.waitForFunction(() => {
+      const input = document.getElementById('wp-room-key-input');
+      return document.getElementById('wp-session-private')?.checked === true
+        && !!input
+        && !input.disabled
+        && /^[A-Za-z0-9_-]{16,200}$/.test(input.value || '');
+    }, { timeout: TIMEOUT });
+
+    const keys = await hostPopup.evaluate(async () => {
+      const id = document.getElementById('room-id-display')?.textContent?.trim();
+      return {
+        accessKey: id ? await WPRoomKeys.getAccessKey(id) : null,
+        e2eKey: id ? await WPRoomKeys.getE2eKey(id) : null,
+      };
+    });
+    assert(!!keys.accessKey, 'Host stores the generated invite access key');
+    assert(!!keys.e2eKey, 'Host stores the generated private-room E2E key');
+
+    await hostStremio.click('#wp-copy-invite-btn');
+    await assertPass('Private room copy includes invite keys', () => hostStremio.waitForFunction(
+      () => (document.getElementById('wp-toast')?.textContent || '').includes('Invite copied'),
+      { timeout: TIMEOUT }
+    ));
+    const inviteUrl = await readClipboardText(hostStremio);
+    assert(
+      inviteUrl.includes(`/r/${roomId}`)
+        && inviteUrl.includes(`accessKey=${keys.accessKey}`)
+        && inviteUrl.includes(`e2eKey=${keys.e2eKey}`),
+      'Private room invite link contains room ID, access key, and E2E key'
+    );
+
+    await listedRow.click();
+    const hiddenPrivateRoom = await waitForRoomGone(roomApis, roomId, TIMEOUT);
+    assert(hiddenPrivateRoom, 'Private room can be hidden from the WatchParty listing without changing access');
+    await listedRow.click();
+    const relistedPrivateRoom = await waitForRoomSnapshot(
+      roomApis,
+      roomId,
+      (room) => room.public === false && room.listed !== false,
+      TIMEOUT,
+      250
+    );
+    assert(!!relistedPrivateRoom, 'Private room can be relisted while retaining invite-key access');
+
+    const peerStremio = await openStremio(peerCtx);
+    const peerPopup = await openPopup(peerCtx, await getExtensionId(peerCtx));
+    await peerPopup.fill('#username-input', 'InvitePeer');
+    await peerPopup.click('#lobby-tab-join');
+    await peerPopup.fill('#room-id-input', roomId);
+    await peerPopup.click('#btn-join');
+    await assertPass('Private room rejects join without invite key', () => peerPopup.waitForFunction(
+      () => /requires an access key/i.test(document.getElementById('join-error')?.textContent || ''),
+      { timeout: TIMEOUT }
+    ));
+
+    await peerPopup.fill('#room-id-input', `${roomId}#accessKey=wrong-access-key-1234&e2eKey=${keys.e2eKey}`);
+    await peerPopup.click('#btn-join');
+    await assertPass('Private room rejects join with wrong invite key', () => peerPopup.waitForFunction(
+      () => /access key is invalid/i.test(document.getElementById('join-error')?.textContent || ''),
+      { timeout: TIMEOUT }
+    ));
+
+    await peerPopup.fill('#room-id-input', `${roomId}#accessKey=${keys.accessKey}&e2eKey=${keys.e2eKey}`);
+    await peerPopup.click('#btn-join');
+    await peerPopup.waitForFunction(
+      () => !document.getElementById('view-room').classList.contains('hidden'),
+      { timeout: TIMEOUT }
+    );
+    await waitForSidebarRoomAttached(peerStremio);
+    assert(true, 'Private room accepts the full invite link');
+
+    await hostStremio.bringToFront();
+    await openSidebarPanel(hostStremio, 'room');
+    await hostStremio.fill('#wp-room-key-input', 'UpdatedInviteKey-12345');
+    await hostStremio.click('#wp-room-key-save');
+    await assertPass('Occupied private room rejects invite-key rotation', () => hostStremio.waitForFunction(
+      () => /alone in the room/i.test(document.body?.innerText || ''),
+      { timeout: TIMEOUT }
+    ));
+    const keyAfterRejectedUpdate = await readPopupCachedRoomKey(hostPopup);
+    assert(keyAfterRejectedUpdate === keys.accessKey, 'Rejected occupied-room key update leaves the cached access key unchanged');
+
+    await peerPopup.close().catch(() => {});
+    await peerStremio.close().catch(() => {});
+    await hostPopup.close().catch(() => {});
+    await hostStremio.close().catch(() => {});
+  } finally {
+    await peerCtx.close();
+    await hostCtx.close();
+  }
+}
+
 // â”€â”€ Two-user: Host settings visible, peer settings restricted â”€â”€
 
 async function testHostVsPeerSettings() {
@@ -1668,24 +1794,22 @@ async function testHostVsPeerSettings() {
     assert(privateRow && listedRow, 'Host room toggle rows are mounted');
 
     await privateRow.click();
-    const privateListedRoom = await waitForRoomSnapshot(
-      roomApis,
-      env.roomId,
-      (room) => room.public === false && room.listed !== false,
-      TIMEOUT,
-      250
-    );
-    assert(!!privateListedRoom, 'Invite-key toggle updates the backend room visibility');
-
-    await privateRow.click();
-    const publicListedRoom = await waitForRoomSnapshot(
+    await assertPass('Invite-key toggle rejects an occupied public room', () => env.stremio1.waitForFunction(
+      () => {
+        const input = document.getElementById('wp-session-private');
+        const text = document.body?.innerText || '';
+        return !!input && input.checked === false && /alone in the room/i.test(text);
+      },
+      { timeout: TIMEOUT }
+    ));
+    const stillPublicRoom = await waitForRoomSnapshot(
       roomApis,
       env.roomId,
       (room) => room.public === true && room.listed !== false,
       TIMEOUT,
       250
     );
-    assert(!!publicListedRoom, 'Invite-key toggle can restore open-join backend visibility');
+    assert(!!stillPublicRoom, 'Occupied room stays open-join after invite-key toggle rejection');
 
     await listedRow.click();
     const hiddenFromListing = await waitForRoomGone(roomApis, env.roomId, TIMEOUT);
@@ -2415,6 +2539,7 @@ async function main() {
     testJoinRoomWithoutStremioTabAttachesLater,
     testPopupFirstRoomControlsWithoutStremioTab,
     testChatFlow,
+    testInviteKeyAccessScenarios,
     testHostVsPeerSettings,
     testThemePropagation,
     testPeerContentLink,

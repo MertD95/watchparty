@@ -818,7 +818,7 @@
     }
     if (!pendingVisibilityPrivateKeys || pendingVisibilityPrivateKeyRoomId !== roomId) return;
     await cachePrivateKeysForRoom(roomId, pendingVisibilityPrivateKeys);
-    if (typeof WPCrypto !== 'undefined') {
+    if (pendingVisibilityPrivateKeys.e2eKey && typeof WPCrypto !== 'undefined') {
       try {
         WPCrypto.clear();
         await WPCrypto.importKey(pendingVisibilityPrivateKeys.e2eKey);
@@ -1841,14 +1841,30 @@
         const existingAccessKey = await loadStoredAccessKey(roomId);
         const existingE2eKey = extOk() ? await WPRoomKeys.getE2eKey(roomId) : null;
         const usersInRoom = Array.isArray(roomState?.users) ? roomState.users.length : 0;
-        if (requestedAccessKey && existingAccessKey && requestedAccessKey !== existingAccessKey && usersInRoom > 1) {
+        const alreadyPrivate = roomState?.public === false;
+        const isChangingAccessKey = !!requestedAccessKey && requestedAccessKey !== existingAccessKey;
+        if (!alreadyPrivate && usersInRoom > 1) {
+          WPOverlay.showToast('Require invite key when you are alone in the room to avoid breaking peers on reconnect.', 3500);
+          refreshOverlay();
+          return;
+        }
+        if (alreadyPrivate && isChangingAccessKey && usersInRoom > 1) {
           WPOverlay.showToast('Change the access key when you are alone in the room to avoid breaking private-room peers.', 3500);
+          refreshOverlay();
+          return;
+        }
+        if (alreadyPrivate && !requestedAccessKey && !existingAccessKey) {
+          WPOverlay.showToast('This browser does not have the invite key for this private room.', 3000);
+          refreshOverlay();
           return;
         }
         const accessKey = requestedAccessKey || existingAccessKey || WPPrivateRoomKeys.generateAccessKey();
-        const e2eKey = normalizePrivateKeyInput(m.e2eKey) || existingE2eKey || await WPPrivateRoomKeys.generateE2eKey();
-        if (!accessKey || !e2eKey) {
+        const e2eKey = normalizePrivateKeyInput(m.e2eKey)
+          || existingE2eKey
+          || (!alreadyPrivate ? await WPPrivateRoomKeys.generateE2eKey() : null);
+        if (!accessKey || (!alreadyPrivate && !e2eKey)) {
           WPOverlay.showToast('Failed to generate a private access key.', 2500);
+          refreshOverlay();
           return;
         }
         pendingVisibilityPrivateKeys = { accessKey, e2eKey };
