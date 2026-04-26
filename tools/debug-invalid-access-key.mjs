@@ -4,7 +4,7 @@ import path from 'node:path';
 
 const workspace = path.resolve('C:/Users/mertd/WatchParty');
 const extensionPath = path.join(workspace, 'watchparty', 'extension');
-const root = path.join(workspace, '.tmp-invalid-room-key-debug');
+const root = path.join(workspace, '.tmp-invalid-access-key-debug');
 const hostProfile = path.join(root, 'host');
 const peerProfile = path.join(root, 'peer');
 
@@ -61,12 +61,12 @@ async function main() {
     await host.popup.waitForFunction(() => !document.getElementById('view-room').classList.contains('hidden'), { timeout: 25000 });
     const room = await host.popup.evaluate(async () => {
       const roomId = document.getElementById('room-id-display').textContent.trim();
-      const key = `wpRoomKey:${roomId}`;
+      const key = `wpRoomAccessKey:${roomId}`;
       const local = await chrome.storage.local.get(key);
       const session = await chrome.storage.session.get(key);
       return {
         roomId,
-        roomKey: session[key] || local[key]?.value || null,
+        accessKey: session[key] || local[key]?.value || null,
       };
     });
 
@@ -84,7 +84,7 @@ async function main() {
     await host.stremio.waitForTimeout(1500);
     const newKey = await host.popup.evaluate(async () => {
       const roomId = document.getElementById('room-id-display').textContent.trim();
-      const key = `wpRoomKey:${roomId}`;
+      const key = `wpRoomAccessKey:${roomId}`;
       const local = await chrome.storage.local.get(key);
       const session = await chrome.storage.session.get(key);
       return session[key] || local[key]?.value || null;
@@ -92,7 +92,7 @@ async function main() {
 
     await peer.popup.fill('#username-input', 'PeerKeyJoiner');
     await peer.popup.click('#lobby-tab-join');
-    await peer.popup.fill('#room-id-input', `${room.roomId}#key=${room.roomKey}`);
+    await peer.popup.fill('#room-id-input', `${room.roomId}#accessKey=${room.accessKey}`);
     await peer.popup.click('#btn-join');
     await peer.popup.waitForTimeout(6000);
 

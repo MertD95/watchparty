@@ -44,3 +44,197 @@ export const ACTION = Object.freeze({
   AUTH_KEY_CLEAR: 'auth.key.clear',
   OFFSCREEN_COPY: 'offscreen.copy',
 });
+
+export const ACTION_ROUTE = Object.freeze({
+  STATUS_GET: {
+    sources: ['popup', 'sidepanel', 'options', 'watchparty-bridge'],
+    target: 'background',
+  },
+  STATUS_UPDATED: {
+    sources: ['background'],
+    target: 'extension-surfaces',
+  },
+  STREMIO_STATUS_UPDATED: {
+    sources: ['background'],
+    target: 'watchparty-bridge',
+  },
+  PROFILE_UPDATED: {
+    sources: ['background', 'stremio-profile'],
+    target: 'background',
+  },
+  SURFACE_READY: {
+    sources: ['watchparty-bridge', 'stremio-content'],
+    target: 'background',
+  },
+  PROBE_SURFACE: {
+    sources: ['background'],
+    target: 'extension-surfaces',
+  },
+  OPEN_SIDEBAR: {
+    sources: ['background'],
+    target: 'stremio-content',
+  },
+  BOOTSTRAP_PENDING: {
+    sources: ['background'],
+    target: 'stremio-content',
+  },
+  SESSION_STATE_PUBLISH: {
+    sources: ['stremio-content'],
+    target: 'background',
+  },
+  CONTROLLER_RELEASED: {
+    sources: ['stremio-content'],
+    target: 'background',
+  },
+  CONTROLLER_LEASE_CLAIM: {
+    sources: ['stremio-content'],
+    target: 'background',
+  },
+  CONTROLLER_LEASE_RELEASE: {
+    sources: ['stremio-content'],
+    target: 'background',
+  },
+  ACTIVE_VIDEO_LEASE_CLAIM: {
+    sources: ['stremio-content'],
+    target: 'background',
+  },
+  ACTIVE_VIDEO_LEASE_RELEASE: {
+    sources: ['stremio-content'],
+    target: 'background',
+  },
+  ROOM_CREATE: {
+    sources: ['popup', 'watchparty-bridge', 'background'],
+    target: 'controller',
+  },
+  ROOM_JOIN: {
+    sources: ['popup', 'watchparty-bridge', 'background'],
+    target: 'controller',
+  },
+  ROOM_LEAVE: {
+    sources: ['overlay', 'popup', 'sidepanel'],
+    target: 'controller',
+    requiresTrustedEvent: true,
+  },
+  ROOM_CHAT_EVENT: {
+    sources: ['stremio-content', 'background'],
+    target: 'extension-surfaces',
+  },
+  ROOM_TYPING_EVENT: {
+    sources: ['stremio-content', 'background'],
+    target: 'extension-surfaces',
+  },
+  ROOM_BOOKMARK_EVENT: {
+    sources: ['stremio-content', 'background'],
+    target: 'extension-surfaces',
+  },
+  ROOM_REACTION_EVENT: {
+    sources: ['stremio-content', 'background'],
+    target: 'stremio-content',
+  },
+  ROOM_ERROR_EVENT: {
+    sources: ['stremio-content', 'background'],
+    target: 'extension-surfaces',
+  },
+  ROOM_VISIBILITY_UPDATE: {
+    sources: ['overlay'],
+    target: 'controller',
+    requiresTrustedEvent: true,
+  },
+  ROOM_SETTINGS_UPDATE: {
+    sources: ['overlay'],
+    target: 'controller',
+    requiresTrustedEvent: true,
+  },
+  ROOM_OWNERSHIP_TRANSFER: {
+    sources: ['overlay'],
+    target: 'controller',
+    requiresTrustedEvent: true,
+  },
+  SESSION_USERNAME_UPDATE: {
+    sources: ['overlay'],
+    target: 'controller',
+    requiresTrustedEvent: true,
+  },
+  ROOM_READY_CHECK_UPDATE: {
+    sources: ['overlay', 'sidepanel'],
+    target: 'controller',
+    requiresTrustedEvent: true,
+  },
+  ROOM_BOOKMARK_ADD: {
+    sources: ['overlay', 'sidepanel'],
+    target: 'controller',
+    requiresTrustedEvent: true,
+  },
+  ROOM_BOOKMARK_SEEK: {
+    sources: ['sidepanel'],
+    target: 'controller',
+    requiresTrustedEvent: true,
+  },
+  ROOM_CHAT_SEND: {
+    sources: ['overlay', 'sidepanel'],
+    target: 'controller',
+    requiresTrustedEvent: true,
+  },
+  ROOM_TYPING_SEND: {
+    sources: ['overlay', 'sidepanel'],
+    target: 'controller',
+    requiresTrustedEvent: true,
+  },
+  ROOM_REACTION_SEND: {
+    sources: ['overlay'],
+    target: 'controller',
+    requiresTrustedEvent: true,
+  },
+  ROOM_MEMBER_PRESENCE_PUBLISH: {
+    sources: ['stremio-content', 'background'],
+    target: 'controller',
+    activeVideoOnly: true,
+  },
+  ROOM_MEMBER_PLAYBACK_STATUS_PUBLISH: {
+    sources: ['stremio-content', 'background'],
+    target: 'controller',
+    activeVideoOnly: true,
+  },
+  ROOM_PLAYBACK_REQUEST_SYNC: {
+    sources: ['overlay'],
+    target: 'controller',
+    requiresTrustedEvent: true,
+    activeVideoOnly: true,
+  },
+  ROOM_RESUME: {
+    sources: ['popup', 'options', 'watchparty-bridge'],
+    target: 'background',
+  },
+  APP_OPTIONS_OPEN: {
+    sources: ['watchparty-bridge'],
+    target: 'background',
+  },
+  APP_STREMIO_OPEN: {
+    sources: ['popup', 'options', 'watchparty-bridge'],
+    target: 'background',
+  },
+  CLIPBOARD_COPY: {
+    sources: ['shared-utils', 'options'],
+    target: 'background',
+  },
+  SERVER_DIAGNOSTICS_GET: {
+    sources: ['options'],
+    target: 'background',
+  },
+  LOCAL_LANDING_ACCESS_SYNC: {
+    sources: ['options'],
+    target: 'background',
+  },
+  AUTH_KEY_SAVE: {
+    sources: ['stremio-profile'],
+    target: 'background',
+  },
+  AUTH_KEY_CLEAR: {
+    sources: ['options'],
+    target: 'background',
+  },
+  OFFSCREEN_COPY: {
+    sources: ['background'],
+    target: 'offscreen',
+  },
+});
