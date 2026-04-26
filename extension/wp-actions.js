@@ -296,3 +296,56 @@ const WPActionRoutes = (() => {
     }),
   });
 })();
+
+const WPActionContract = (() => {
+  'use strict';
+
+  const routesByAction = Object.freeze(
+    Object.values(WPActionRoutes).reduce((routes, route) => {
+      if (route?.action) routes[route.action] = route;
+      return routes;
+    }, {})
+  );
+
+  function getRoute(action) {
+    return routesByAction[action] || null;
+  }
+
+  function isKnownAction(action) {
+    return !!getRoute(action);
+  }
+
+  function isAllowedSource(action, source) {
+    return getRoute(action)?.sources?.includes(source) === true;
+  }
+
+  function isTarget(action, target) {
+    return getRoute(action)?.target === target;
+  }
+
+  function requiresTrustedEvent(action) {
+    return getRoute(action)?.requiresTrustedEvent === true;
+  }
+
+  function isActiveVideoOnly(action) {
+    return getRoute(action)?.activeVideoOnly === true;
+  }
+
+  function getActionsForTarget(target) {
+    return Object.freeze(
+      Object.values(WPActionRoutes)
+        .filter((route) => route?.target === target)
+        .map((route) => route.action)
+    );
+  }
+
+  return Object.freeze({
+    getRoute,
+    isKnownAction,
+    isAllowedSource,
+    isTarget,
+    requiresTrustedEvent,
+    isActiveVideoOnly,
+    getActionsForTarget,
+  });
+})();

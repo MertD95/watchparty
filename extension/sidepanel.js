@@ -20,12 +20,6 @@
   };
   let typingIdleTimer = null;
   let typingSent = false;
-  const actionRoutesByValue = Object.freeze(
-    Object.values(WPConstants.ACTION_ROUTES || {}).reduce((routes, route) => {
-      if (route?.action) routes[route.action] = route;
-      return routes;
-    }, {})
-  );
 
   function inputById(id) {
     const el = document.getElementById(id);
@@ -40,10 +34,6 @@
 
   function isTrustedUserEvent(event) {
     return !event || event.isTrusted !== false;
-  }
-
-  function getActionRoute(action) {
-    return actionRoutesByValue[action] || null;
   }
 
   function normalizeHexColor(value, fallback = '#6366f1') {
@@ -265,9 +255,8 @@
 
   /** @param {Event | null} [event] */
   function sendAction(detail, event = null) {
-    const route = getActionRoute(detail?.action);
-    if (!route?.sources?.includes('sidepanel')) return false;
-    if (route.requiresTrustedEvent === true && !isTrustedUserEvent(event)) return false;
+    if (!WPActionContract.isAllowedSource(detail?.action, 'sidepanel')) return false;
+    if (WPActionContract.requiresTrustedEvent(detail?.action) && !isTrustedUserEvent(event)) return false;
     chrome.runtime.sendMessage({
       type: 'watchparty-ext',
       ...detail,

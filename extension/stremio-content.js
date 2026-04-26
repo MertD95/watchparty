@@ -1656,22 +1656,39 @@
     activeVideo.currentTime = Math.max(0, targetTime);
   }
 
-  const CONTROLLER_ACTIONS = WPControllerKernel.getControllerActions(WPConstants.ACTION_ROUTES);
+  const CONTROLLER_ACTIONS = new Set(WPActionContract.getActionsForTarget('controller'));
 
-  function relayActionToController(message) {
+  function resolveActionSource(message, options = {}) {
+    if (typeof options.sourceSurface === 'string') return options.sourceSurface;
+    if (typeof message?.sourceSurface === 'string') return message.sourceSurface;
+    if (options.source === 'local') return 'overlay';
+    if (options.source === 'runtime') return 'background';
+    return null;
+  }
+
+  function isActionAllowedForSource(message, options = {}) {
+    return WPActionContract.isAllowedSource(message?.action, resolveActionSource(message, options));
+  }
+
+  function relayActionToController(message, sourceSurface) {
     if (!extOk()) return Promise.resolve({ ok: false });
     return chrome.runtime.sendMessage({
       type: 'watchparty-ext',
       ...message,
+      sourceSurface,
     }).catch(() => ({ ok: false }));
   }
 
   // --- Action dispatch (from overlay events + background/popup messages) ---
   WPOverlay.setActionDispatcher?.((detail) => {
-    handleAction(detail, { source: 'local' }).catch(() => {});
+    handleAction(detail, { source: 'local', sourceSurface: 'overlay' }).catch(() => {});
   });
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type !== 'watchparty-ext') return false;
+    if (!isActionAllowedForSource(message, { source: 'runtime' })) {
+      sendResponse({ handled: false, error: 'ACTION_SOURCE_NOT_ALLOWED' });
+      return true;
+    }
     if (message.action === WPConstants.ACTION.PROBE_SURFACE) {
       sendResponse({ surface: 'stremio' });
       return true;
@@ -1879,6 +1896,10 @@
   async function handleAction(message, options = {}) {
     const action = message?.action;
     if (!action) return { handled: false };
+    const sourceSurface = resolveActionSource(message, options);
+    if (!WPActionContract.isAllowedSource(action, sourceSurface)) {
+      return { handled: false, error: 'ACTION_SOURCE_NOT_ALLOWED' };
+    }
     if (CONTROLLER_ACTIONS.has(action) && !isControllerTab) {
       if (options.source === 'runtime' && action === WPConstants.ACTION.ROOM_CREATE) {
         stagePendingRoomCreateCommand({
@@ -1908,7 +1929,7 @@
           return { handled: true, staged: true };
         }
         if (options.source === 'runtime') return { handled: false };
-        await relayActionToController(message);
+        await relayActionToController(message, sourceSurface);
         return { handled: true, relayed: true };
       }
     }

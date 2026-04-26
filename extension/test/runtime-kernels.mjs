@@ -70,7 +70,7 @@ function createContext() {
   });
 
   loadScript(context, 'wp-actions.js', 'WPAction');
-  new vm.Script('globalThis.WPActionRoutes = WPActionRoutes;', { filename: 'wp-actions-routes' }).runInContext(context);
+  new vm.Script('globalThis.WPActionRoutes = WPActionRoutes; globalThis.WPActionContract = WPActionContract;', { filename: 'wp-actions-routes' }).runInContext(context);
   loadScript(context, 'constants.js', 'WPConstants');
   loadScript(context, 'wp-room-domain.js', 'WPRoomDomain');
   loadScript(context, 'wp-protocol.js', 'WPProtocol');
@@ -140,13 +140,38 @@ function testAdapterRuntimeSnapshot(context) {
     hasVideo: true,
     joinHint: {
       mode: WPRoomDomain.JOIN_HINT_MODE.DIRECT,
-      directJoinType: WPRoomDomain.DIRECT_JOIN_TYPE.PORTABLE,
+      directJoinType: WPRoomDomain.DIRECT_JOIN_TYPE.TORRENT_PORTABLE,
     },
   });
   ok(snapshot.route === WPConstants.ADAPTER_ROUTE.PLAYER, 'adapter classifies player routes');
   ok(snapshot.availability === WPConstants.ADAPTER_AVAILABILITY.DIRECT_JOIN_READY, 'adapter reports direct-join readiness');
   ok(snapshot.contentMeta?.id === 'tt1', 'adapter derives player metadata from route');
   ok(WPStremioRuntimeModel.deriveAdapterAvailability(snapshot) === snapshot.availability, 'adapter uses runtime-model availability derivation');
+
+  const detail = WPStremioAdapter.parseDetailHash('#/metadetails/series/tt2');
+  ok(detail?.type === 'series' && detail.id === 'tt2', 'adapter parses Stremio metadetails routes');
+
+  const player = WPStremioAdapter.parsePlayerHash('#/player/https%3A%2F%2Fexample.test%2Fstream/transport/meta/movie/tt9/video%3A1');
+  ok(player?.stream === 'https://example.test/stream' && player.videoId === 'video:1', 'adapter decodes player route fields');
+
+  const manual = WPStremioAdapter.buildRuntimeSnapshot({
+    hash: '#/player/stream-only',
+    joinHint: {
+      mode: WPRoomDomain.JOIN_HINT_MODE.TITLE_ONLY,
+      directJoinType: WPRoomDomain.DIRECT_JOIN_TYPE.NOT_WEB_READY,
+    },
+  });
+  ok(manual.availability === WPConstants.ADAPTER_AVAILABILITY.MANUAL_JOIN_ONLY, 'adapter reports manual-join-only when direct launch is unavailable');
+}
+
+function testGeneratedActionContract(context) {
+  console.log('\n-- Generated action contract --');
+  const { WPAction, WPActionContract } = context;
+  ok(WPActionContract.isAllowedSource(WPAction.ROOM_CHAT_SEND, 'overlay'), 'action contract allows overlay chat sends');
+  ok(WPActionContract.isAllowedSource(WPAction.ROOM_CHAT_SEND, 'sidepanel'), 'action contract allows sidepanel chat sends');
+  ok(!WPActionContract.isAllowedSource(WPAction.ROOM_CHAT_SEND, 'watchparty-bridge'), 'action contract rejects impossible chat send source');
+  ok(WPActionContract.requiresTrustedEvent(WPAction.ROOM_LEAVE), 'action contract preserves trusted-event requirement');
+  ok(WPActionContract.getActionsForTarget('controller').includes(WPAction.ROOM_JOIN), 'action contract derives controller-target actions');
 }
 
 function testCoordinatorKernel(context) {
@@ -187,6 +212,7 @@ function testCoordinatorKernel(context) {
 
 const context = createContext();
 await testRoomKeySplit(context);
+testGeneratedActionContract(context);
 testControllerRoomReducer(context);
 testAdapterRuntimeSnapshot(context);
 testCoordinatorKernel(context);

@@ -29,12 +29,6 @@ const WPOverlay = (() => {
   };
   let actionDispatcher = null;
   const pendingActions = [];
-  const actionRoutesByValue = Object.freeze(
-    Object.values(WPConstants.ACTION_ROUTES || {}).reduce((routes, route) => {
-      if (route?.action) routes[route.action] = route;
-      return routes;
-    }, {})
-  );
   let accessKeyRenderSeq = 0;
   let accessKeyDraftRoomId = null;
   let accessKeyDraftValue = '';
@@ -265,7 +259,7 @@ const WPOverlay = (() => {
   }
 
   function isOverlayRoutedAction(action) {
-    return actionRoutesByValue[action]?.sources?.includes('overlay') === true;
+    return WPActionContract.isAllowedSource(action, 'overlay');
   }
 
   function dispatchAction(action, detail = {}, event = null) {

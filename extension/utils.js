@@ -138,6 +138,7 @@ const WPUtils = (() => {
     try {
       const response = await chrome.runtime.sendMessage({
         type: 'watchparty-ext',
+        sourceSurface: 'shared-utils',
         action: WPAction.CLIPBOARD_COPY,
         text: value,
       });

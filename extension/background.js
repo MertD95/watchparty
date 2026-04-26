@@ -439,6 +439,75 @@ function urlMatchesOrigins(url, origins) {
   }
 }
 
+function sourceFromExtensionUrl(url) {
+  try {
+    const path = new URL(url).pathname;
+    if (path.endsWith('/popup.html')) return 'popup';
+    if (path.endsWith('/sidepanel.html')) return 'sidepanel';
+    if (path.endsWith('/options.html')) return 'options';
+    if (path.endsWith('/offscreen.html')) return 'offscreen';
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function sourceFromStremioContentAction(action) {
+  if (action === WPConstants.ACTION.PROFILE_UPDATED || action === WPConstants.ACTION.AUTH_KEY_SAVE) {
+    return 'stremio-profile';
+  }
+  return 'stremio-content';
+}
+
+const SHARED_UTIL_SENDER_SOURCES = new Set(['popup', 'sidepanel', 'stremio-content']);
+
+function canUseSharedUtilitySource(message, claimedSource, senderSource) {
+  return claimedSource === 'shared-utils'
+    && SHARED_UTIL_SENDER_SOURCES.has(senderSource)
+    && WPActionContract.isAllowedSource(message?.action, claimedSource);
+}
+
+function deriveRuntimeMessageSource(message, sender) {
+  const senderUrl = sender?.url || sender?.tab?.url || '';
+  const tabUrl = sender?.tab?.url || '';
+  const claimedSource = typeof message?.sourceSurface === 'string' ? message.sourceSurface : null;
+
+  const extensionSource = sourceFromExtensionUrl(senderUrl);
+  if (extensionSource) {
+    if (canUseSharedUtilitySource(message, claimedSource, extensionSource)) return claimedSource;
+    return extensionSource;
+  }
+
+  if (tabUrl && urlMatchesOrigins(tabUrl, WATCHPARTY_ORIGINS)) return 'watchparty-bridge';
+  if (tabUrl && urlMatchesOrigins(tabUrl, STREMIO_WEB_ORIGINS)) {
+    const stremioSource = sourceFromStremioContentAction(message.action);
+    if (canUseSharedUtilitySource(message, claimedSource, stremioSource)) return claimedSource;
+    if (claimedSource && WPActionContract.isAllowedSource(message.action, claimedSource)) {
+      return claimedSource;
+    }
+    return stremioSource;
+  }
+
+  if (sender?.id === chrome.runtime.id && !sender?.tab) return 'background';
+  return null;
+}
+
+function normalizeRuntimeMessage(message, sender) {
+  const action = message?.action;
+  const source = deriveRuntimeMessageSource(message, sender);
+  if (!WPActionContract.isAllowedSource(action, source)) {
+    return { ok: false, source, message };
+  }
+  return {
+    ok: true,
+    source,
+    message: {
+      ...message,
+      sourceSurface: source,
+    },
+  };
+}
+
 async function getTabsByOrigins(origins) {
   try {
     const tabs = await chrome.tabs.query({});
@@ -982,8 +1051,14 @@ const messageHandlers = {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type !== 'watchparty-ext') return false;
-  const handler = messageHandlers[message.action];
-  if (handler) return handler(message, sender, sendResponse) || false;
+  const normalized = normalizeRuntimeMessage(message, sender);
+  if (!normalized.ok) {
+    console.warn('[WP-BG] Rejected action from unauthorized source:', message.action, normalized.source || 'unknown');
+    sendResponse?.({ ok: false, error: 'ACTION_SOURCE_NOT_ALLOWED' });
+    return false;
+  }
+  const handler = messageHandlers[normalized.message.action];
+  if (handler) return handler(normalized.message, sender, sendResponse) || false;
   return false;
 });
 

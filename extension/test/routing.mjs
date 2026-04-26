@@ -111,10 +111,11 @@ function extractSentActions(source, actionMap) {
 
 function loadGeneratedActionContract(source) {
   const context = {};
-  vm.runInNewContext(`${source}\nthis.WPAction = WPAction;\nthis.WPActionRoutes = WPActionRoutes;`, context);
+  vm.runInNewContext(`${source}\nthis.WPAction = WPAction;\nthis.WPActionRoutes = WPActionRoutes;\nthis.WPActionContract = WPActionContract;`, context);
   return {
     actions: context.WPAction || {},
     routes: context.WPActionRoutes || {},
+    contract: context.WPActionContract || {},
   };
 }
 
@@ -185,11 +186,12 @@ const sidepanelSource = readSrc('sidepanel.js');
 const actionsSource = readSrc('wp-actions.js');
 const constantsSource = readSrc('constants.js');
 const optionsSource = readSrc('options.js');
+const utilsSource = readSrc('utils.js');
 const protocolSource = readSrc('wp-protocol.js');
 const wsSource = readSrc('stremio-ws.js');
 const manifest = JSON.parse(readSrc('manifest.json'));
 
-const { actions: ACTION_MAP, routes: ACTION_ROUTES } = loadGeneratedActionContract(actionsSource);
+const { actions: ACTION_MAP, routes: ACTION_ROUTES, contract: ACTION_CONTRACT } = loadGeneratedActionContract(actionsSource);
 const COMMAND_MAP = extractObjectMap(protocolSource, 'COMMAND');
 const EVENT_MAP = extractObjectMap(protocolSource, 'EVENT');
 const ERROR_CODE_MAP = extractObjectMap(protocolSource, 'ERROR_CODE');
@@ -315,6 +317,7 @@ for (const action of bgCases) {
 console.log('\n--- Test 5: Action contract sanity ---');
 ok(Object.keys(ACTION_MAP).length >= 20, `wp-actions.js exposes ${Object.keys(ACTION_MAP).length} actions`);
 ok(actionsSource.includes('AUTO-GENERATED'), 'wp-actions.js is generated');
+ok(typeof ACTION_CONTRACT.getRoute === 'function' && typeof ACTION_CONTRACT.isAllowedSource === 'function', 'wp-actions.js exposes generated action contract helpers');
 ok(constantsSource.includes('const ACTION = WPAction;'), 'constants.js consumes the generated action contract');
 ok(constantsSource.includes('const ACTION_ROUTES = WPActionRoutes;'), 'constants.js consumes generated action routing metadata');
 ok(constantsSource.includes('BOOTSTRAP_ROOM_INTENT'), 'constants.js defines bootstrap room intent');
@@ -333,7 +336,7 @@ ok(bgSource.includes('const STREMIO_CONTENT_SCRIPT_FILES') && bgSource.includes(
 ok(bgSource.includes('files: STREMIO_CONTENT_SCRIPT_FILES'), 'background update reinjection uses the manifest-derived content script list');
 ok(bgSource.includes('urlMatchesOrigins(url.trim(), STREMIO_WEB_ORIGINS)') && bgSource.includes('url: requestedUrl'), 'background validates and navigates requested Stremio URLs when focusing an existing tab');
 ok(bgSource.includes('shouldNavigateExistingStremioTab(requestedUrl)'), 'background only redirects existing Stremio tabs for specific requested routes');
-ok(contentSource.includes('WPControllerKernel.getControllerActions(WPConstants.ACTION_ROUTES)') && controllerKernelSource.includes("route?.target === 'controller'"), 'stremio-content derives controller action routing through the controller kernel');
+ok(contentSource.includes("WPActionContract.getActionsForTarget('controller')") && actionsSource.includes('function getActionsForTarget'), 'stremio-content derives controller action routing through the generated action contract');
 ok(contentSource.includes('WPControllerKernel.reduceRoomState') && controllerKernelSource.includes('function reduceRoomState'), 'stremio-content delegates room deltas to the controller reducer');
 ok(contentSource.includes('WPStremioAdapter.buildRuntimeSnapshot') && stremioAdapterSource.includes('function classifyAvailability'), 'stremio-content delegates Stremio route availability to the adapter');
 ok(stremioAdapterSource.includes('WPStremioRuntimeModel.deriveAdapterAvailability') && runtimeModelSource.includes('function deriveAdapterAvailability'), 'adapter availability is centralized in the runtime model');
@@ -342,8 +345,11 @@ ok(privateKeysSource.includes('ROOM_ACCESS_KEY_PREFIX') && privateKeysSource.inc
 ok(!privateKeysSource.includes('get: getAccessKey') && !privateKeysSource.includes('set: setAccessKey'), 'private key storage does not expose legacy get/set aliases');
 ok(contentSource.includes('payload.accessKey = pendingCreatedPrivateKeys.accessKey') && !contentSource.includes('payload.roomKey = pendingCreatedPrivateKey'), 'private-room create sends access key without reusing the E2E key');
 ok(bridgeSource.includes('const accessKey = event.data.accessKey') && bridgeSource.includes('const e2eKey = event.data.e2eKey') && !bridgeSource.includes('event.data.roomKey') && !bridgeSource.includes('event.data.cryptoKey'), 'landing bridge accepts only separate modern invite access and E2E keys');
-ok(overlaySource.includes('isOverlayRoutedAction') && overlaySource.includes("sources?.includes('overlay')"), 'overlay dispatch only accepts generated overlay-routed actions');
-ok(sidepanelSource.includes("sources?.includes('sidepanel')") && sidepanelSource.includes('isTrustedUserEvent'), 'sidepanel dispatch only accepts generated sidepanel-routed trusted actions');
+ok(overlaySource.includes('isOverlayRoutedAction') && overlaySource.includes("WPActionContract.isAllowedSource(action, 'overlay')"), 'overlay dispatch only accepts generated overlay-routed actions');
+ok(sidepanelSource.includes("WPActionContract.isAllowedSource(detail?.action, 'sidepanel')") && sidepanelSource.includes('isTrustedUserEvent'), 'sidepanel dispatch only accepts generated sidepanel-routed trusted actions');
+ok(bgSource.includes('normalizeRuntimeMessage') && bgSource.includes('ACTION_SOURCE_NOT_ALLOWED'), 'background rejects runtime messages from unauthorized generated action sources');
+ok(contentSource.includes('isActionAllowedForSource') && contentSource.includes('sourceSurface'), 'stremio-content validates forwarded action source metadata before dispatch');
+ok(utilsSource.includes("sourceSurface: 'shared-utils'") && bgSource.includes('SHARED_UTIL_SENDER_SOURCES'), 'shared utility actions carry bounded generated source metadata across runtime messages');
 ok(!wsOnOpenBlock.includes('flushQueue()'), 'stremio-ws does not flush queued room actions on raw socket open');
 ok(wsSource.includes('markApplicationReady') && contentSource.includes('WPWS.markApplicationReady()'), 'stremio-content marks WS app-ready after room lifecycle recovery');
 ok(overlaySource.includes('setActionDispatcher') && contentSource.includes('WPOverlay.setActionDispatcher'), 'overlay actions use a private content-script dispatcher');
