@@ -1125,8 +1125,10 @@ const WPOverlay = (() => {
         });
         div.classList.add('wp-chat-local');
         container.appendChild(div);
+        pruneChildren(container);
         container.scrollTop = container.scrollHeight;
         addLocalEcho(gifContent);
+        updateChatEmptyState(cachedRoomState);
       }
       $('wp-gif-picker').classList.add('wp-hidden-el');
       $('wp-chat-input')?.focus();
@@ -1206,6 +1208,7 @@ const WPOverlay = (() => {
       pruneChildren(container);
       container.scrollTop = container.scrollHeight;
       addLocalEcho(content);
+      updateChatEmptyState(cachedRoomState);
     }
 
     dispatchAction(WPConstants.ACTION.ROOM_CHAT_SEND, { content }, event);

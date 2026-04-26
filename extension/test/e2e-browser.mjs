@@ -159,6 +159,70 @@ async function waitForCheckboxToggle(page, inputId, previousValue, timeout = TIM
   }, { id: inputId, expectedPrevious: previousValue }, { timeout });
 }
 
+async function assertSidebarLayoutStable(page, label) {
+  let failures = [];
+  const collectFailures = () => page.evaluate(() => {
+    const out = [];
+    const rectOf = (el) => {
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height };
+    };
+    const visible = (el) => !!el
+      && !el.classList.contains('wp-hidden-el')
+      && getComputedStyle(el).display !== 'none'
+      && getComputedStyle(el).visibility !== 'hidden';
+    const sidebar = document.getElementById('wp-sidebar');
+    const sidebarRect = rectOf(sidebar);
+    if (!sidebar || !sidebarRect) return ['sidebar missing'];
+    if (sidebar.classList.contains('wp-sidebar-hidden')) return out;
+    if (sidebarRect.right > window.innerWidth + 1 || sidebarRect.left < -1) {
+      out.push(`sidebar outside viewport ${JSON.stringify(sidebarRect)} @ ${window.innerWidth}`);
+    }
+
+    document.querySelectorAll('#wp-tabbar .wp-tab-btn > span:first-child').forEach((span) => {
+      if (span.scrollWidth > span.clientWidth + 1) {
+        out.push(`tab label clipped: ${(span.textContent || '').trim()}`);
+      }
+    });
+
+    const activePanel = document.querySelector('.wp-tab-btn.wp-tab-active')?.dataset.panel || null;
+    const activePanelEl = activePanel ? document.getElementById(`wp-panel-${activePanel === 'prefs' ? 'prefs' : activePanel}`) : null;
+    const activeRect = rectOf(activePanelEl);
+    if (activePanelEl && activeRect && visible(activePanelEl)) {
+      if (activeRect.left < sidebarRect.left - 1 || activeRect.right > sidebarRect.right + 1) {
+        out.push(`active panel overflows sidebar: ${activePanel}`);
+      }
+    }
+
+    const messages = document.getElementById('wp-chat-messages');
+    const empty = document.getElementById('wp-chat-empty');
+    if (messages && messages.childElementCount > 0 && empty && !empty.classList.contains('wp-hidden-el')) {
+      out.push('chat empty-state visible while messages exist');
+    }
+
+    const inputRow = document.getElementById('wp-chat-input-row');
+    const messagesRect = rectOf(messages);
+    const inputRect = rectOf(inputRow);
+    if (visible(document.getElementById('wp-panel-chat')) && messagesRect && inputRect) {
+      if (messagesRect.bottom > inputRect.top + 1) out.push('chat messages overlap input row');
+      if (inputRect.bottom > sidebarRect.bottom + 1) out.push('chat input row escapes sidebar');
+    }
+
+    return out;
+  });
+
+  try {
+    await pollUntil(async () => {
+      failures = await collectFailures();
+      return failures.length === 0;
+    }, { timeout: 2000, intervalMs: 50, label });
+  } catch {
+    // Keep the last sampled failures for the assertion message below.
+  }
+  assert(failures.length === 0, `${label}: sidebar layout stable${failures.length ? ` (${failures.join('; ')})` : ''}`);
+}
+
 async function waitForPopupRoomView(page, timeout = TIMEOUT) {
   await page.waitForFunction(() => !document.getElementById('view-room').classList.contains('hidden'), { timeout });
 }
@@ -1392,6 +1456,7 @@ async function testChatFlow() {
       };
     });
     assert(chatDebug.exists && chatDebug.visible && !chatDebug.disabled, 'Chat input is interactive');
+    await assertSidebarLayoutStable(stremio2, 'Bob chat panel before sending');
 
     // Send chat using real browser keyboard events (not JS dispatch)
     // This goes through the browser's input pipeline and reaches content script listeners
@@ -1403,16 +1468,20 @@ async function testChatFlow() {
     // Check Bob sees his own message and doesn't end up with duplicate local+server echoes
     const bobChatState = await stremio2.evaluate(() => {
       const messages = [...document.querySelectorAll('#wp-chat-messages .wp-chat-msg')].map((el) => el.innerText || '');
+      const empty = document.getElementById('wp-chat-empty');
       const sendBtn = document.getElementById('wp-chat-send');
       return {
         messageCount: messages.filter((text) => text.includes('Hello from Bob!')).length,
+        emptyHidden: empty?.classList.contains('wp-hidden-el') === true,
         inputValue: document.getElementById('wp-chat-input')?.value || '',
         sendDisabled: !!sendBtn?.disabled,
       };
     });
     assert(bobChatState.messageCount === 1, 'Bob sees a single chat entry for his own message');
+    assert(bobChatState.emptyHidden, 'Chat empty-state hides immediately after the local message echo');
     assert(bobChatState.inputValue === '', 'Chat input clears after sending');
     assert(bobChatState.sendDisabled, 'Send button enters cooldown after sending');
+    await assertSidebarLayoutStable(stremio2, 'Bob chat panel after local echo');
 
     // Client-side cooldown should block a rapid second send before the server cooldown even matters.
     await stremio2.focus('#wp-chat-input');
@@ -1434,6 +1503,7 @@ async function testChatFlow() {
 
     // === Unread badge test while Chat tab is not active ===
     await openSidebarPanel(stremio1, 'people');
+    await assertSidebarLayoutStable(stremio1, 'Alice people panel while chat is inactive');
     await stremio2.bringToFront();
     await waitForChatSendButtonState(stremio2, false, 6000);
     await stremio2.focus('#wp-chat-input');
@@ -1454,6 +1524,7 @@ async function testChatFlow() {
     assert(!!chatTabBadge, `Chat tab badge shows: "${chatTabBadge || ''}"`);
 
     await openSidebarPanel(stremio1, 'chat');
+    await assertSidebarLayoutStable(stremio1, 'Alice chat panel after unread badge');
     const chatTabBadgeCleared = await stremio1.evaluate(() => {
       const el = document.getElementById('wp-tab-chat-badge');
       return el?.classList.contains('wp-hidden-el');
@@ -1582,6 +1653,7 @@ async function testHostVsPeerSettings() {
   const env = await setupTwoUsers();
   try {
     await openSidebarPanel(env.stremio1, 'room');
+    await assertSidebarLayoutStable(env.stremio1, 'Host room settings panel');
     const aliceSettings = await env.stremio1.evaluate(() => ({
       privateVisible: !!document.getElementById('wp-session-private'),
       listedVisible: !!document.getElementById('wp-session-listed'),
@@ -1640,6 +1712,7 @@ async function testHostVsPeerSettings() {
     await waitForCheckboxToggle(env.stremio1, 'wp-session-autopause', !roomToggleBefore);
     assert(roomToggleStable, 'Room auto-pause toggle keeps the same DOM row after updates');
     await openSidebarPanel(env.stremio1, 'prefs');
+    await assertSidebarLayoutStable(env.stremio1, 'Host personal settings panel');
     const alicePrefs = await env.stremio1.evaluate(() => ({
       reactionSoundVisible: !!document.getElementById('wp-settings-sound'),
     }));
@@ -1667,6 +1740,7 @@ async function testHostVsPeerSettings() {
     assert(prefsToggleStable, 'Settings toggle rows stay mounted while preferences update');
 
     await openSidebarPanel(env.stremio2, 'room');
+    await assertSidebarLayoutStable(env.stremio2, 'Peer restricted room panel');
     const bobSettings = await env.stremio2.evaluate(() => ({
       privateVisible: !!document.getElementById('wp-session-private'),
       listedVisible: !!document.getElementById('wp-session-listed'),
@@ -1676,6 +1750,7 @@ async function testHostVsPeerSettings() {
     assert(!bobSettings.listedVisible, 'Peer cannot see WatchParty listing toggle');
     assert(!bobSettings.autopauseVisible, 'Peer cannot see Auto-pause toggle');
     await openSidebarPanel(env.stremio2, 'prefs');
+    await assertSidebarLayoutStable(env.stremio2, 'Peer personal settings panel');
     const bobPrefs = await env.stremio2.evaluate(() => ({
       reactionSoundVisible: !!document.getElementById('wp-settings-sound'),
     }));
