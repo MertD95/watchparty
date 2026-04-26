@@ -41,6 +41,7 @@ const stats = { bytesProxied: 0, requestsProxied: 0, lastLatencyMs: 0 };
 const knownStremioTabIds = new Set();
 const knownWatchPartyTabIds = new Set();
 let offscreenDocumentPromise = null;
+let lastWatchPartyProjectionKey = '';
 /** @type {any} */
 let coordinatorState = WPCoordinatorKernel.createInitialState();
 
@@ -142,10 +143,47 @@ function buildCoordinatorStorageState() {
   return WPCoordinatorKernel.buildStorageState(coordinatorState);
 }
 
+function buildWatchPartyProjectionKey(payload) {
+  const room = payload?.room || null;
+  const users = Array.isArray(room?.users)
+    ? room.users.map((user) => ({
+      id: user?.id || null,
+      sessionId: user?.sessionId || null,
+      name: user?.name || null,
+    }))
+    : [];
+  return JSON.stringify({
+    mode: payload?.mode || null,
+    wsConnected: payload?.wsConnected === true,
+    bootstrapPending: payload?.bootstrapPending === true,
+    userId: payload?.userId || null,
+    sessionId: payload?.sessionId || null,
+    room: room ? {
+      id: room.id || null,
+      name: room.name || null,
+      public: room.public !== false,
+      listed: room.listed !== false,
+      owner: room.owner || null,
+      users,
+      joinHint: room.joinHint?.mode || null,
+      hasDirectJoin: room.hasDirectJoin === true,
+      directJoinType: room.directJoinType || null,
+    } : null,
+  });
+}
+
+function maybeBroadcastWatchPartyStatus(payload) {
+  const projectionKey = buildWatchPartyProjectionKey(payload);
+  if (projectionKey === lastWatchPartyProjectionKey) return;
+  lastWatchPartyProjectionKey = projectionKey;
+  broadcastToWatchParty({ action: WPConstants.ACTION.STATUS_UPDATED, payload });
+}
+
 function publishCoordinatorState() {
   const payload = cloneCoordinatorState();
   relayToPanel(WPConstants.ACTION.STATUS_UPDATED, payload);
   broadcastToStremioTabs({ action: WPConstants.ACTION.STATUS_UPDATED, payload });
+  maybeBroadcastWatchPartyStatus(payload);
 }
 
 function persistCoordinatorState() {

@@ -329,6 +329,34 @@ async function main() {
     ));
 
     await page.evaluate(() => {
+      window.postMessage({
+        type: 'watchparty-ext-status',
+        data: {
+          hasStremioTab: true,
+          username: 'Tester',
+          userId: 'user-1',
+          room: {
+            id: 'created-room',
+            name: 'team-room',
+            public: false,
+            listed: false,
+            users: [{ id: 'user-1', name: 'Tester' }],
+          },
+        },
+      }, location.origin);
+    });
+    await expectPass(ok, 'landing updates active-room visibility from pushed extension status', () => page.waitForFunction(
+      () => {
+        const meta = document.getElementById('hero-room-meta')?.textContent || '';
+        const pill = document.getElementById('hero-room-pill')?.textContent || '';
+        return pill.includes('Invite key room active')
+          && meta.includes('Invite key required')
+          && meta.includes('Hidden from WatchParty');
+      },
+      { timeout: 3000 }
+    ));
+
+    await page.evaluate(() => {
       window.__bridgeMessages = [];
     });
     await page.click('#hero-settings-btn');

@@ -84,6 +84,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     window.postMessage({ type: 'watchparty-ext-profile', data: {} }, location.origin);
   } else if (message.action === WPConstants.ACTION.STREMIO_STATUS_UPDATED) {
     window.postMessage({ type: 'watchparty-ext-profile', data: { stremioRunning: message.stremioRunning } }, location.origin);
+  } else if (message.action === WPConstants.ACTION.STATUS_UPDATED) {
+    window.postMessage({ type: 'watchparty-ext-status', data: message.payload || {} }, location.origin);
   }
   return false;
 });

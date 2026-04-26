@@ -1507,6 +1507,11 @@
       if (event.origin !== location.origin) return;
       if (event.data?.type === 'watchparty-ext-ready' || event.data?.type === 'watchparty-ext-profile') {
         void refreshLandingPresence();
+      } else if (event.data?.type === 'watchparty-ext-status') {
+        const pushedStatus = event.data.data && typeof event.data.data === 'object' ? event.data.data : null;
+        if (pushedStatus) {
+          updateLandingPresence({ ...(latestExtensionStatus || {}), ...pushedStatus }, { preserveExisting: true });
+        }
       }
     });
 

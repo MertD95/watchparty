@@ -189,6 +189,7 @@ const optionsSource = readSrc('options.js');
 const utilsSource = readSrc('utils.js');
 const protocolSource = readSrc('wp-protocol.js');
 const wsSource = readSrc('stremio-ws.js');
+const landingSource = readFileSync(resolve(EXT, '..', 'landing', 'index.html'), 'utf8');
 const manifest = JSON.parse(readSrc('manifest.json'));
 
 const { actions: ACTION_MAP, routes: ACTION_ROUTES, contract: ACTION_CONTRACT } = loadGeneratedActionContract(actionsSource);
@@ -336,6 +337,8 @@ ok(bgSource.includes('const STREMIO_CONTENT_SCRIPT_FILES') && bgSource.includes(
 ok(bgSource.includes('files: STREMIO_CONTENT_SCRIPT_FILES'), 'background update reinjection uses the manifest-derived content script list');
 ok(bgSource.includes('urlMatchesOrigins(url.trim(), STREMIO_WEB_ORIGINS)') && bgSource.includes('url: requestedUrl'), 'background validates and navigates requested Stremio URLs when focusing an existing tab');
 ok(bgSource.includes('shouldNavigateExistingStremioTab(requestedUrl)'), 'background only redirects existing Stremio tabs for specific requested routes');
+ok(bgSource.includes('maybeBroadcastWatchPartyStatus(payload)') && bgSource.includes('broadcastToWatchParty({ action: WPConstants.ACTION.STATUS_UPDATED, payload })'), 'background pushes material coordinator status changes to WatchParty tabs');
+ok(bridgeSource.includes("message.action === WPConstants.ACTION.STATUS_UPDATED") && landingSource.includes("event.data?.type === 'watchparty-ext-status'"), 'WatchParty bridge relays pushed coordinator status into the landing page');
 ok(contentSource.includes("WPActionContract.getActionsForTarget('controller')") && actionsSource.includes('function getActionsForTarget'), 'stremio-content derives controller action routing through the generated action contract');
 ok(contentSource.includes('WPControllerKernel.reduceRoomState') && controllerKernelSource.includes('function reduceRoomState'), 'stremio-content delegates room deltas to the controller reducer');
 ok(contentSource.includes('WPStremioAdapter.buildRuntimeSnapshot') && stremioAdapterSource.includes('function classifyAvailability'), 'stremio-content delegates Stremio route availability to the adapter');

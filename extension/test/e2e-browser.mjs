@@ -1590,23 +1590,45 @@ async function testHostVsPeerSettings() {
     assert(aliceSettings.privateVisible, 'Host sees invite-key toggle');
     assert(aliceSettings.listedVisible, 'Host sees WatchParty listing toggle');
     assert(aliceSettings.autopauseVisible, 'Host sees Auto-pause toggle');
-    const roomToggleInteractive = await env.stremio1.evaluate(() => {
-      const privateRow = document.querySelector('label[for="wp-session-private"]');
-      const privateInput = document.getElementById('wp-session-private');
-      const listedRow = document.querySelector('label[for="wp-session-listed"]');
-      const listedInput = document.getElementById('wp-session-listed');
-      if (!privateRow || !privateInput || !listedRow || !listedInput) return false;
-      const before = privateInput.checked;
-      const listedBefore = listedInput.checked;
-      privateRow.click();
-      const after = privateInput.checked;
-      listedRow.click();
-      const listedAfter = listedInput.checked;
-      privateRow.click();
-      listedRow.click();
-      return before !== after && listedBefore !== listedAfter;
-    });
-    assert(roomToggleInteractive, 'Room toggle rows react to clicks');
+    const roomApis = ['http://localhost:8181/rooms'];
+    const privateRow = await env.stremio1.$('label[for="wp-session-private"]');
+    const listedRow = await env.stremio1.$('label[for="wp-session-listed"]');
+    assert(privateRow && listedRow, 'Host room toggle rows are mounted');
+
+    await privateRow.click();
+    const privateListedRoom = await waitForRoomSnapshot(
+      roomApis,
+      env.roomId,
+      (room) => room.public === false && room.listed !== false,
+      TIMEOUT,
+      250
+    );
+    assert(!!privateListedRoom, 'Invite-key toggle updates the backend room visibility');
+
+    await privateRow.click();
+    const publicListedRoom = await waitForRoomSnapshot(
+      roomApis,
+      env.roomId,
+      (room) => room.public === true && room.listed !== false,
+      TIMEOUT,
+      250
+    );
+    assert(!!publicListedRoom, 'Invite-key toggle can restore open-join backend visibility');
+
+    await listedRow.click();
+    const hiddenFromListing = await waitForRoomGone(roomApis, env.roomId, TIMEOUT);
+    assert(hiddenFromListing, 'WatchParty listing toggle removes the room from /rooms');
+
+    await listedRow.click();
+    const relistedRoom = await waitForRoomSnapshot(
+      roomApis,
+      env.roomId,
+      (room) => room.public === true && room.listed !== false,
+      TIMEOUT,
+      250
+    );
+    assert(!!relistedRoom, 'WatchParty listing toggle can restore the room to /rooms');
+
     const roomToggleRow = await env.stremio1.$('label[for="wp-session-autopause"]');
     const roomToggleBefore = await env.stremio1.evaluate(() => document.getElementById('wp-session-autopause')?.checked ?? false);
     await roomToggleRow?.click();
