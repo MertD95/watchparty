@@ -183,6 +183,7 @@ const WPConstants = (() => {
   const BOOTSTRAP_ROOM_INTENT = Object.freeze({
     TTL_MS: BOOTSTRAP_ROOM_INTENT_TTL_MS,
     buildCreate(command = {}) {
+      const backendMode = isKnownBackendKey(command.backendMode) ? command.backendMode : undefined;
       return {
         action: ACTION.ROOM_CREATE,
         username: typeof command.username === 'string' ? command.username.trim() : '',
@@ -193,12 +194,14 @@ const WPConstants = (() => {
         roomName: typeof command.roomName === 'string' && command.roomName.trim() ? command.roomName.trim() : undefined,
         accessKey: typeof command.accessKey === 'string' && command.accessKey.trim() ? command.accessKey.trim() : undefined,
         e2eKey: typeof command.e2eKey === 'string' && command.e2eKey.trim() ? command.e2eKey.trim() : undefined,
+        ...(backendMode ? { backendMode } : {}),
         requestedAt: normalizeRequestedAt(command.requestedAt),
       };
     },
     buildJoin(command = {}) {
       const roomId = typeof command.roomId === 'string' ? command.roomId.trim() : '';
       if (!roomId) return null;
+      const backendMode = isKnownBackendKey(command.backendMode) ? command.backendMode : undefined;
       return {
         action: ACTION.ROOM_JOIN,
         roomId,
@@ -206,6 +209,7 @@ const WPConstants = (() => {
         accessKey: typeof command.accessKey === 'string' && command.accessKey.trim() ? command.accessKey.trim() : undefined,
         e2eKey: typeof command.e2eKey === 'string' && command.e2eKey.trim() ? command.e2eKey.trim() : undefined,
         preferDirectJoin: command.preferDirectJoin === true,
+        ...(backendMode ? { backendMode } : {}),
         requestedAt: normalizeRequestedAt(command.requestedAt),
       };
     },

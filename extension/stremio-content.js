@@ -458,6 +458,66 @@
     return WPConstants.BOOTSTRAP_ROOM_INTENT.normalize(value);
   }
 
+  function normalizeCommandBackendMode(command = {}) {
+    return WPConstants.BACKEND.isKnownKey(command?.backendMode) ? command.backendMode : null;
+  }
+
+  function buildPendingRoomCreateCommand(command = {}) {
+    const backendMode = normalizeCommandBackendMode(command);
+    const pending = {
+      username: command.username,
+      meta: command.meta,
+      stream: command.stream,
+      public: command.public,
+      listed: command.listed,
+      roomName: command.roomName,
+      accessKey: command.accessKey,
+      e2eKey: command.e2eKey,
+    };
+    if (backendMode) pending.backendMode = backendMode;
+    return pending;
+  }
+
+  function buildPendingRoomJoinCommand(command = {}) {
+    const backendMode = normalizeCommandBackendMode(command);
+    const pending = {
+      roomId: command.roomId,
+      username: command.username,
+      accessKey: command.accessKey,
+      e2eKey: command.e2eKey,
+      preferDirectJoin: command.preferDirectJoin === true,
+    };
+    if (backendMode) pending.backendMode = backendMode;
+    return pending;
+  }
+
+  function selectBackendModeForCommand(command = {}) {
+    const backendMode = normalizeCommandBackendMode(command);
+    return backendMode ? WPWS.setBackendMode(backendMode) : false;
+  }
+
+  function switchBackendForCommand(command, restageCommand) {
+    const backendMode = normalizeCommandBackendMode(command);
+    if (!backendMode) return false;
+    const wasReady = WPWS.isReady();
+    const activeBackend = WPWS.getActiveBackend();
+    const modeChanged = WPWS.setBackendMode(backendMode);
+    const needsReconnect = wasReady && activeBackend && activeBackend !== backendMode;
+    if (!modeChanged && !needsReconnect) return false;
+    if (needsReconnect) {
+      restageCommand(command);
+      if (roomState?.id) applyLocalLeaveState(roomState.id);
+      WPWS.disconnect({ resetReplay: true });
+      sessionWsConnected = false;
+      WPSync.detach();
+      syncControllerRuntimeState('backend.switch');
+      refreshOverlay();
+      ensureControllerConnection();
+      return true;
+    }
+    return false;
+  }
+
   function syncPendingJoinOptions(value, roomId) {
     const next = normalizePendingJoinOptions(value);
     if (!next) {
@@ -483,15 +543,17 @@
   }
 
   function stagePendingRoomCreateCommand(command) {
-    pendingRoomCreateCommand = command ? { ...command } : null;
+    pendingRoomCreateCommand = command ? buildPendingRoomCreateCommand(command) : null;
     pendingRoomJoinCommand = null;
+    if (pendingRoomCreateCommand) selectBackendModeForCommand(pendingRoomCreateCommand);
     resumeRoomPending = !!pendingRoomCreateCommand;
     syncControllerRuntimeState('pending-intent.create');
   }
 
   function stagePendingRoomJoinCommand(command) {
-    pendingRoomJoinCommand = command ? { ...command } : null;
+    pendingRoomJoinCommand = command ? buildPendingRoomJoinCommand(command) : null;
     pendingRoomCreateCommand = null;
+    if (pendingRoomJoinCommand) selectBackendModeForCommand(pendingRoomJoinCommand);
     resumeRoomPending = !!pendingRoomJoinCommand;
     syncControllerRuntimeState('pending-intent.join');
   }
@@ -1257,6 +1319,7 @@
   // --- Process pending create/join actions from storage ---
   async function createRoomFromCommand(command) {
     if (!isControllerTab) return;
+    if (switchBackendForCommand(command, stagePendingRoomCreateCommand)) return;
     try {
       clearPendingJoinOptions();
       if (inRoom) {
@@ -1302,6 +1365,7 @@
 
   async function joinRoomFromCommand(command, stored = {}) {
     if (!isControllerTab) return;
+    if (switchBackendForCommand(command, stagePendingRoomJoinCommand)) return;
     const roomToJoin = command?.roomId;
     if (!roomToJoin || !extOk() || !WPWS.isReady()) return;
     const joinOptions = command?.preferDirectJoin === true
@@ -1835,16 +1899,7 @@
       return true;
     }
     if (message.action === WPConstants.ACTION.ROOM_CREATE) {
-      stagePendingRoomCreateCommand({
-        username: message.username,
-        meta: message.meta,
-        stream: message.stream,
-        public: message.public,
-        listed: message.listed,
-        roomName: message.roomName,
-        accessKey: message.accessKey,
-        e2eKey: message.e2eKey,
-      });
+      stagePendingRoomCreateCommand(message);
       refreshControllerLease({ force: !!video && inRoom && isActiveVideoTab }).then((claimed) => {
         if (!claimed) {
           schedulePendingIntentWake();
@@ -1863,13 +1918,7 @@
       return true;
     }
     if (message.action === WPConstants.ACTION.ROOM_JOIN) {
-      stagePendingRoomJoinCommand({
-        roomId: message.roomId,
-        username: message.username,
-        accessKey: message.accessKey,
-        e2eKey: message.e2eKey,
-        preferDirectJoin: message.preferDirectJoin === true,
-      });
+      stagePendingRoomJoinCommand(message);
       refreshControllerLease({ force: !!video && inRoom && isActiveVideoTab }).then((claimed) => {
         if (!claimed) {
           schedulePendingIntentWake();
@@ -1917,16 +1966,7 @@
       if (WPWS.isReady()) {
         createRoomFromCommand(m).catch(() => { });
       } else if (extOk()) {
-        stagePendingRoomCreateCommand({
-          username: m.username,
-          meta: m.meta,
-          stream: m.stream,
-          public: m.public,
-          listed: m.listed,
-          roomName: m.roomName,
-          accessKey: m.accessKey,
-          e2eKey: m.e2eKey,
-        });
+        stagePendingRoomCreateCommand(m);
         ensureControllerConnection();
       } else {
         ensureControllerConnection();
@@ -1936,13 +1976,7 @@
       if (WPWS.isReady()) {
         joinRoomFromCommand(m).catch(() => { });
       } else if (extOk()) {
-        stagePendingRoomJoinCommand({
-          roomId: m.roomId,
-          username: m.username,
-          accessKey: m.accessKey,
-          e2eKey: m.e2eKey,
-          preferDirectJoin: m.preferDirectJoin === true,
-        });
+        stagePendingRoomJoinCommand(m);
         ensureControllerConnection();
       } else {
         ensureControllerConnection();
@@ -2034,25 +2068,10 @@
     }
     if (CONTROLLER_ACTIONS.has(action) && !isControllerTab) {
       if (options.source === 'runtime' && action === WPConstants.ACTION.ROOM_CREATE) {
-        stagePendingRoomCreateCommand({
-          username: message.username,
-          meta: message.meta,
-          stream: message.stream,
-          public: message.public,
-          listed: message.listed,
-          roomName: message.roomName,
-          accessKey: message.accessKey,
-          e2eKey: message.e2eKey,
-        });
+        stagePendingRoomCreateCommand(message);
       }
       if (options.source === 'runtime' && action === WPConstants.ACTION.ROOM_JOIN) {
-        stagePendingRoomJoinCommand({
-          roomId: message.roomId,
-          username: message.username,
-          accessKey: message.accessKey,
-          e2eKey: message.e2eKey,
-          preferDirectJoin: message.preferDirectJoin === true,
-        });
+        stagePendingRoomJoinCommand(message);
       }
       const claimed = await refreshControllerLease({ force: !!video && inRoom && isActiveVideoTab });
       if (!claimed) {

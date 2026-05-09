@@ -13,6 +13,18 @@ const ALLOWED_ORIGINS = new Set([
   'http://127.0.0.1:8090',
 ]);
 
+const BACKEND_MODE_BY_ORIGIN = new Map([
+  ['https://watchparty.mertd.me', WPConstants.BACKEND.MODES.LIVE],
+  ['http://localhost:8080', WPConstants.BACKEND.MODES.LOCAL],
+  ['http://localhost:8090', WPConstants.BACKEND.MODES.LOCAL],
+  ['http://127.0.0.1:8080', WPConstants.BACKEND.MODES.LOCAL],
+  ['http://127.0.0.1:8090', WPConstants.BACKEND.MODES.LOCAL],
+]);
+
+function resolveBackendModeForOrigin(origin) {
+  return BACKEND_MODE_BY_ORIGIN.get(origin) || null;
+}
+
 function sendRuntimeMessage(message) {
   return chrome.runtime.sendMessage({
     type: 'watchparty-ext',
@@ -108,6 +120,7 @@ window.addEventListener('message', (event) => {
       accessKey,
       e2eKey,
       preferDirectJoin: event.data.preferDirectJoin === true,
+      backendMode: resolveBackendModeForOrigin(event.origin),
     });
   }
 
@@ -123,6 +136,7 @@ window.addEventListener('message', (event) => {
       roomName: event.data.roomName,
       accessKey: event.data.accessKey,
       e2eKey: event.data.e2eKey,
+      backendMode: resolveBackendModeForOrigin(event.origin),
     });
   }
 
