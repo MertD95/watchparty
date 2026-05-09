@@ -104,7 +104,8 @@ const WPOverlay = (() => {
     return div;
   }
 
-  // Toggle reaction: one per user per emoji, no stacking
+  // Per-message reactions are append-only server events. Keep the local UI in
+  // that shape too; pretending to unreact locally would diverge from peers.
   function updateReactionPill(pillsContainer, emoji, isMine) {
     if (!pillsContainer || !emoji) return;
     const existing = pillsContainer.querySelector(`[data-emoji="${CSS.escape(emoji)}"]`);
@@ -128,13 +129,6 @@ const WPOverlay = (() => {
     if (!isTrustedUserEvent(event)) return;
     const existing = pillsContainer.querySelector(`[data-emoji="${CSS.escape(emoji)}"]`);
     if (existing && existing.classList.contains('wp-pill-mine')) {
-      // Already reacted with this emoji → remove own reaction
-      const countEl = existing.querySelector('.wp-pill-count');
-      const newCount = parseInt(countEl.textContent) - 1;
-      if (newCount <= 0) { existing.remove(); } else {
-        countEl.textContent = newCount;
-        existing.classList.remove('wp-pill-mine');
-      }
       return;
     }
     if (existing) {
@@ -846,7 +840,9 @@ const WPOverlay = (() => {
       const emoji = e.detail;
       if (!emoji) return;
       if (reactionTarget) {
-        if (reactionTarget.pills?.isConnected) toggleReaction(reactionTarget.pills, emoji, null, reactionTarget.messageId || null);
+        if (reactionTarget.trusted && reactionTarget.pills?.isConnected) {
+          toggleReaction(reactionTarget.pills, emoji, { isTrusted: true }, reactionTarget.messageId || null);
+        }
         closeReactionPopup();
       } else {
         const input = document.getElementById('wp-chat-input');
@@ -1001,7 +997,7 @@ const WPOverlay = (() => {
         }
         closeReactionPopup();
 
-        reactionTarget = { pills, messageId: msg.dataset.messageId || null };
+        reactionTarget = { pills, messageId: msg.dataset.messageId || null, trusted: true };
         activePopupMsg = msg;
 
         // Position picker near the message (inside sidebar via CSS absolute)
@@ -1236,6 +1232,7 @@ const WPOverlay = (() => {
 
   function updateState({ inRoom, isHost, userId, sessionId, roomState, hasVideo, wsConnected }) {
     if (sessionId) cachedSessionId = sessionId;
+    const wasLauncherInRoom = launcherInRoom;
     const previousRoomId = cachedRoomState?.id;
     cachedRoomState = roomState || null;
     if (previousRoomId && previousRoomId !== roomState?.id) {
@@ -1302,7 +1299,7 @@ const WPOverlay = (() => {
     if (usersDiv && roomState.users) renderUsersList(usersDiv, roomState, userId, isHost);
     if (isHost || !hasVideo) removeCatchUpButton();
     updateChatEmptyState(roomState);
-    if (!launcherInRoom || activePanel === 'room') setActivePanel(getDefaultPanel(), { inRoom: true, clearUnread: activePanel === 'chat' });
+    if (!wasLauncherInRoom && launcherInRoom) setActivePanel(getDefaultPanel(), { inRoom: true, clearUnread: activePanel === 'chat' });
     updateLauncherState({ inRoom: true });
   }
 
@@ -1336,8 +1333,9 @@ const WPOverlay = (() => {
       const video = document.querySelector('video');
       if (!video) return;
       const time = video.currentTime;
-      dispatchAction(WPConstants.ACTION.ROOM_BOOKMARK_ADD, { time }, event);
-      appendBookmark({ user: cachedUserId, userName: cachedUsername, sessionId: cachedSessionId, time, label: '' });
+      const label = `Bookmark at ${formatPlaybackClock(time)}`;
+      dispatchAction(WPConstants.ACTION.ROOM_BOOKMARK_ADD, { time, label }, event);
+      appendBookmark({ user: cachedUserId, userName: cachedUsername, sessionId: cachedSessionId, time, label });
       showToast('Bookmark saved!', 1500);
     });
   }
@@ -1377,16 +1375,32 @@ const WPOverlay = (() => {
     const accessKeySection = container.querySelector('#wp-room-key-section');
     accessKeySection?.classList.toggle('wp-hidden-el', !isPrivateRoom);
 
-    container.querySelector('#wp-copy-invite-btn').onclick = async (event) => {
-      if (!isTrustedUserEvent(event)) return;
-      const copied = await copyInviteUrl(roomState);
-      showToast(copied ? 'Invite copied' : 'Copy failed', 1600);
-    };
+    const copyInviteBtn = container.querySelector('#wp-copy-invite-btn');
+    if (privateToggle) privateToggle.disabled = false;
+    if (listedToggle) listedToggle.disabled = false;
+    if (autoPauseToggle) autoPauseToggle.disabled = false;
+    if (copyInviteBtn) copyInviteBtn.disabled = false;
+
+    function markRoomControlsPending() {
+      if (privateToggle) privateToggle.disabled = true;
+      if (listedToggle) listedToggle.disabled = true;
+      if (autoPauseToggle) autoPauseToggle.disabled = true;
+      if (copyInviteBtn) copyInviteBtn.disabled = true;
+    }
+
+    if (copyInviteBtn) {
+      copyInviteBtn.onclick = async (event) => {
+        if (!isTrustedUserEvent(event)) return;
+        const copied = await copyInviteUrl(roomState);
+        showToast(copied ? 'Invite copied' : 'Copy failed', 1600);
+      };
+    }
     container.querySelector('#wp-leave-room-btn').onclick = (event) => {
       dispatchAction(WPConstants.ACTION.ROOM_LEAVE, {}, event);
     };
     if (privateToggle) {
       privateToggle.onchange = (event) => {
+        markRoomControlsPending();
         dispatchAction(WPConstants.ACTION.ROOM_VISIBILITY_UPDATE, {
           public: !event.target.checked,
           listed: listedToggle ? listedToggle.checked : (roomState.listed !== false),
@@ -1395,14 +1409,16 @@ const WPOverlay = (() => {
     }
     if (listedToggle) {
       listedToggle.onchange = (event) => {
+        markRoomControlsPending();
         dispatchAction(WPConstants.ACTION.ROOM_VISIBILITY_UPDATE, {
-          public: roomState.public !== false,
+          public: privateToggle ? !privateToggle.checked : (roomState.public !== false),
           listed: !!event.target.checked,
         }, event);
       };
     }
     if (autoPauseToggle) {
       autoPauseToggle.onchange = (event) => {
+        markRoomControlsPending();
         dispatchAction(WPConstants.ACTION.ROOM_SETTINGS_UPDATE, { settings: { autoPauseOnDisconnect: !!event.target.checked } }, event);
       };
     }
@@ -1551,7 +1567,7 @@ const WPOverlay = (() => {
   }
 
   function renderUsersList(usersDiv, roomState, userId, isHost) {
-    const usersKey = roomState.users.map(u => `${u.id}:${u.status}:${u.playbackStatus}:${u.playbackTime ?? ''}:${u.sessionId ?? ''}`).join(',') + `:${roomState.owner}:${roomState.ownerSessionId ?? ''}:${isHost}`;
+    const usersKey = roomState.users.map(u => `${u.id}:${u.name || ''}:${u.status}:${u.playbackStatus}:${u.playbackTime ?? ''}:${u.sessionId ?? ''}`).join(',') + `:${roomState.owner}:${roomState.ownerSessionId ?? ''}:${isHost}`;
     if (renderCache.lastUsersKey === usersKey) return;
     renderCache.lastUsersKey = usersKey;
     const canonicalOwner = WPUtils.getCanonicalOwnerUser(roomState);

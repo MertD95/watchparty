@@ -18,12 +18,21 @@ const STREMIO_API = 'https://api.strem.io';
 const POLL_INTERVAL_MS = 5000;
 const IS_DEV_INSTALL = !('update_url' in MANIFEST);
 const STREMIO_WEB_URLS = ['https://web.stremio.com/*', 'https://web.strem.io/*', 'https://app.strem.io/*'];
+const MANIFEST_HOST_PERMISSIONS = Array.isArray(MANIFEST.host_permissions) ? MANIFEST.host_permissions : [];
+const MANIFEST_OPTIONAL_HOST_PERMISSIONS = Array.isArray(MANIFEST.optional_host_permissions) ? MANIFEST.optional_host_permissions : [];
 const STREMIO_CONTENT_SCRIPT_FILES = (MANIFEST.content_scripts || [])
   .find((script) => Array.isArray(script.matches) && script.matches.some((pattern) => STREMIO_WEB_URLS.includes(pattern)))
   ?.js || [];
 const WATCHPARTY_PROD_URLS = ['https://watchparty.mertd.me/*'];
-const WATCHPARTY_DEV_URLS = (Array.isArray(MANIFEST.optional_host_permissions) ? MANIFEST.optional_host_permissions : [])
-  .filter((pattern) => /^http:\/\/(?:localhost|127\.0\.0\.1):80(?:80|90)\/\*$/.test(pattern));
+const WATCHPARTY_DEV_URLS = [
+  ...MANIFEST_OPTIONAL_HOST_PERMISSIONS,
+  ...MANIFEST_HOST_PERMISSIONS,
+]
+  .filter((pattern, index, patterns) =>
+    /^http:\/\/(?:localhost|127\.0\.0\.1):80(?:80|90)\/\*$/.test(pattern)
+    && patterns.indexOf(pattern) === index);
+const LOCAL_WATCHPARTY_STATIC_BRIDGE = WATCHPARTY_DEV_URLS.length > 0
+  && WATCHPARTY_DEV_URLS.every((pattern) => MANIFEST_HOST_PERMISSIONS.includes(pattern));
 const WATCHPARTY_URLS = [...WATCHPARTY_PROD_URLS, ...WATCHPARTY_DEV_URLS];
 const STREMIO_WEB_ORIGINS = new Set(['https://web.stremio.com', 'https://web.strem.io', 'https://app.strem.io']);
 const WATCHPARTY_ORIGINS = new Set([
@@ -65,13 +74,13 @@ async function getLocalLandingAccessState() {
   }
 
   const granted = await chrome.permissions.contains({ origins }).catch(() => false);
-  let enabled = false;
+  let enabled = granted && LOCAL_WATCHPARTY_STATIC_BRIDGE;
   if (granted && chrome.scripting?.getRegisteredContentScripts) {
     try {
       const scripts = await chrome.scripting.getRegisteredContentScripts({ ids: [LOCAL_WATCHPARTY_CONTENT_SCRIPT_ID] });
-      enabled = scripts.some((script) => script.id === LOCAL_WATCHPARTY_CONTENT_SCRIPT_ID);
+      enabled = enabled || scripts.some((script) => script.id === LOCAL_WATCHPARTY_CONTENT_SCRIPT_ID);
     } catch {
-      enabled = false;
+      enabled = granted && LOCAL_WATCHPARTY_STATIC_BRIDGE;
     }
   }
 
@@ -85,7 +94,15 @@ async function getLocalLandingAccessState() {
 
 async function syncLocalWatchPartyBridge() {
   const access = await getLocalLandingAccessState();
-  if (!access.available || !access.granted || !chrome.scripting?.registerContentScripts) {
+  if (!access.available || !access.granted) {
+    await unregisterLocalWatchPartyBridge();
+    return { ...access, enabled: false };
+  }
+  if (LOCAL_WATCHPARTY_STATIC_BRIDGE) {
+    await unregisterLocalWatchPartyBridge();
+    return { ...access, enabled: true };
+  }
+  if (!chrome.scripting?.registerContentScripts) {
     await unregisterLocalWatchPartyBridge();
     return { ...access, enabled: false };
   }
@@ -508,6 +525,7 @@ function canUseSharedUtilitySource(message, claimedSource, senderSource) {
 function deriveRuntimeMessageSource(message, sender) {
   const senderUrl = sender?.url || sender?.tab?.url || '';
   const tabUrl = sender?.tab?.url || '';
+  const pageUrl = tabUrl || senderUrl;
   const claimedSource = typeof message?.sourceSurface === 'string' ? message.sourceSurface : null;
 
   const extensionSource = sourceFromExtensionUrl(senderUrl);
@@ -516,8 +534,8 @@ function deriveRuntimeMessageSource(message, sender) {
     return extensionSource;
   }
 
-  if (tabUrl && urlMatchesOrigins(tabUrl, WATCHPARTY_ORIGINS)) return 'watchparty-bridge';
-  if (tabUrl && urlMatchesOrigins(tabUrl, STREMIO_WEB_ORIGINS)) {
+  if (pageUrl && urlMatchesOrigins(pageUrl, WATCHPARTY_ORIGINS)) return 'watchparty-bridge';
+  if (pageUrl && urlMatchesOrigins(pageUrl, STREMIO_WEB_ORIGINS)) {
     const stremioSource = sourceFromStremioContentAction(message.action);
     if (canUseSharedUtilitySource(message, claimedSource, stremioSource)) return claimedSource;
     if (claimedSource && WPActionContract.isAllowedSource(message.action, claimedSource)) {

@@ -11,6 +11,8 @@ npm run manual:mcp:reset
 npm run manual:mcp:users -- room --peers 3 --room-name mcp-bot-room
 ```
 
+The reset helper prepares `.playwright-mcp/extension-local-hosts`, an automation-only unpacked extension copy with localhost WatchParty origins promoted to normal host permissions. MCP profiles load that copy so local `http://127.0.0.1:8090` bridge flows can be tested without changing the production extension manifest.
+
 Use three browser profiles:
 
 - `playwright` - host profile with the extension loaded.
@@ -22,7 +24,8 @@ Use `npm run manual:mcp:state` between scenarios to inspect room, session, webso
 ## Website And Bridge
 
 - Local landing at `http://127.0.0.1:8090` with no extension state: install/extension-needed copy, empty listed-room state, invalid invite input.
-- Production landing at `https://watchparty.mertd.me` with the host extension loaded: extension-ready state, Create Room, Join Room, Direct Join.
+- Local landing at `http://127.0.0.1:8090` with the host extension loaded: extension-ready state, Create Room, Join Room, Direct Join, and `/r/<roomId>` redirect handoff.
+- Production landing at `https://watchparty.mertd.me` with the host extension loaded: smoke extension-ready state and redirect handoff when release behavior needs confirmation.
 - Listed public rooms: cards appear, summary counts update, SSE refreshes without full reload, stale snapshots do not overwrite newer SSE state.
 - Listed private rooms: invite-key copy appears, direct join requires key entry, full invite link forwards room ID, access key, and E2E key through the landing bridge. `seed private` is a listing fixture; use the real host UI when validating a joinable private invite.
 - Hidden rooms: host listing toggle removes the room from `/rooms` and the website, then re-listing restores it.

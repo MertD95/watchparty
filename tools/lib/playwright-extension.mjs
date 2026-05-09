@@ -1,7 +1,22 @@
 import { chromium } from 'playwright';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { prepareAutomationExtension } from './automation-extension.mjs';
 
 const EXTENSION_LOAD_ERROR =
   'Extension service worker did not start in Playwright. Treat browser UI failures as a harness/environment problem until Playwright can side-load the MV3 extension here.';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const watchpartyRoot = path.resolve(__dirname, '..', '..');
+const workspaceRoot = path.resolve(watchpartyRoot, '..');
+
+async function resolveExtensionPath(extPath, options) {
+  if (options.localLandingAccess !== true) return extPath;
+  const outputDir = options.automationExtensionDir
+    || path.join(workspaceRoot, '.playwright-mcp', 'extension-local-hosts');
+  const result = await prepareAutomationExtension({ sourceDir: extPath, outputDir });
+  return result.outputDir;
+}
 
 export async function launchExtensionContext(extPath, options = {}) {
   const {
@@ -13,12 +28,14 @@ export async function launchExtensionContext(extPath, options = {}) {
     backendMode = 'auto',
   } = options;
 
+  const loadExtensionPath = await resolveExtensionPath(extPath, options);
+
   const context = await chromium.launchPersistentContext(userDataDir, {
     channel: 'chromium',
     headless,
     args: [
-      `--disable-extensions-except=${extPath}`,
-      `--load-extension=${extPath}`,
+      `--disable-extensions-except=${loadExtensionPath}`,
+      `--load-extension=${loadExtensionPath}`,
       '--no-first-run',
       '--disable-blink-features=AutomationControlled',
       ...args,

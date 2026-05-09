@@ -722,6 +722,13 @@
     WPOverlay.showCatchUpButton(drift);
   }
 
+  function pauseHostPlaybackForAutoPause() {
+    if (!isHost) return;
+    const activeVideo = getActiveVideoElement();
+    if (!activeVideo || activeVideo.paused) return;
+    activeVideo.pause();
+  }
+
   function schedulePeerVideoResync(videoEl) {
     if (isHost || !videoEl) return;
     const events = ['loadedmetadata', 'loadeddata', 'canplay', 'playing'];
@@ -1148,6 +1155,10 @@
           } else if (p.code === WPProtocol.ERROR_CODE.INVALID_ROOM_KEY) {
             WPOverlay.showToast('Access key is invalid. Check the invite link or try again.', 3000);
           } else if (p.code === WPProtocol.ERROR_CODE.USERNAME_IN_USE) {
+            const currentUsername = resolveKnownUsername();
+            if (currentUsername) {
+              setExtensionState({ [WPConstants.STORAGE.USERNAME]: currentUsername }).catch(() => {});
+            }
             WPOverlay.showToast('That display name is already in use in this room.', 3000);
           } else if (p.code !== WPProtocol.ERROR_CODE.COOLDOWN && p.code !== WPProtocol.ERROR_CODE.VALIDATION_FAILED) {
             WPOverlay.showToast(p.message, 2000);
@@ -1168,6 +1179,7 @@
 
       case WPProtocol.EVENT.ROOM_PLAYBACK_AUTOPAUSED:
         if (!p?.name) return;
+        pauseHostPlaybackForAutoPause();
         WPOverlay.showToast(`Paused \u2014 ${p.name} disconnected`);
         break;
 
