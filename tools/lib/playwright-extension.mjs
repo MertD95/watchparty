@@ -1,7 +1,7 @@
 import { chromium } from 'playwright';
 
 const EXTENSION_LOAD_ERROR =
-  'Extension service worker did not start in Playwright. Treat browser UI test failures as a harness/environment problem until Playwright can actually side-load the MV3 extension here.';
+  'Extension service worker did not start in Playwright. Treat browser UI failures as a harness/environment problem until Playwright can side-load the MV3 extension here.';
 
 export async function launchExtensionContext(extPath, options = {}) {
   const {

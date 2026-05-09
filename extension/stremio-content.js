@@ -17,6 +17,9 @@
   let sessionWsConnected = false;
   let prevPlayerTime = 0;
   let chatMessages = [];
+  let chatHistoryForStorage = [];
+  let activeChatHistoryRoomId = null;
+  let hydratedChatHistoryRoomId = null;
   let observer = null;
   let typingUsers = new Map();
   let lastUserAction = null;
@@ -53,6 +56,7 @@
   let controllerRuntimeState = WPControllerKernel.createInitialRuntimeState();
   let adapterRuntimeState = WPStremioRuntimeModel.createInitialAdapterRuntimeState(INITIAL_JOIN_HINT);
 
+  const CHAT_HISTORY_LIMIT = 200;
   const PLACEHOLDER_ROOM_NAME = 'WatchParty Session';
   const PLACEHOLDER_STREAM_URL = 'https://watchparty.mertd.me/sync';
 
@@ -363,6 +367,79 @@
     return WPRuntimeState.remove(keys);
   }
 
+  function chatMessageKey(message) {
+    if (!message || typeof message !== 'object') return '';
+    if (typeof message.id === 'string' && message.id) return `id:${message.id}`;
+    return [
+      'fallback',
+      message.date || '',
+      message.sessionId || '',
+      message.user || '',
+      message.content || '',
+    ].join(':');
+  }
+
+  function rememberChatMessage(message) {
+    const key = chatMessageKey(message);
+    if (key && chatMessages.some((entry) => chatMessageKey(entry) === key)) return false;
+    chatMessages.push(message);
+    if (chatMessages.length > CHAT_HISTORY_LIMIT) chatMessages.shift();
+    return true;
+  }
+
+  function rememberStoredChatMessage(message) {
+    const key = chatMessageKey(message);
+    if (key && chatHistoryForStorage.some((entry) => chatMessageKey(entry) === key)) return;
+    chatHistoryForStorage.push(message);
+    if (chatHistoryForStorage.length > CHAT_HISTORY_LIMIT) chatHistoryForStorage.shift();
+  }
+
+  function persistStoredChatHistory(roomId = roomState?.id) {
+    if (!extOk() || !roomId) return Promise.resolve();
+    const storageKey = WPConstants.STORAGE.roomChatHistory(roomId);
+    return setExtensionState({
+      [storageKey]: chatHistoryForStorage.slice(-CHAT_HISTORY_LIMIT),
+    });
+  }
+
+  async function loadStoredChatHistory(roomId) {
+    if (!extOk() || !roomId) return [];
+    const storageKey = WPConstants.STORAGE.roomChatHistory(roomId);
+    const stored = await getExtensionState(storageKey).catch(() => ({}));
+    return normalizeStoredChatHistory(stored[storageKey]);
+  }
+
+  function normalizeStoredChatHistory(value) {
+    return Array.isArray(value)
+      ? value.filter((message) => message && typeof message.content === 'string').slice(-CHAT_HISTORY_LIMIT)
+      : [];
+  }
+
+  async function applyStoredChatHistory(messages) {
+    if (!Array.isArray(messages) || messages.length === 0) return;
+    chatHistoryForStorage = messages.slice(-CHAT_HISTORY_LIMIT);
+    for (const message of messages) {
+      await onChatMessage(message, { incrementUnread: false, persist: false, relay: false });
+    }
+  }
+
+  async function hydrateStoredChatHistory(roomId) {
+    if (!roomId || hydratedChatHistoryRoomId === roomId) return;
+    hydratedChatHistoryRoomId = roomId;
+    const messages = await loadStoredChatHistory(roomId);
+    await applyStoredChatHistory(messages);
+  }
+
+  function ensureChatHistoryRoom(roomId) {
+    const nextRoomId = roomId || null;
+    if (activeChatHistoryRoomId === nextRoomId) return;
+    activeChatHistoryRoomId = nextRoomId;
+    hydratedChatHistoryRoomId = null;
+    chatMessages = [];
+    chatHistoryForStorage = [];
+    WPOverlay.clearChatMessages?.();
+  }
+
   function isPlaceholderMeta(meta) {
     return !meta || meta.id === 'pending' || meta.id === 'unknown' || meta.name === PLACEHOLDER_ROOM_NAME;
   }
@@ -432,6 +509,20 @@
   function loadStoredAccessKey(roomId) {
     if (!extOk()) return Promise.resolve(null);
     return WPRoomKeys.getAccessKey(roomId);
+  }
+
+  function loadStoredInviteAccessToken(roomId) {
+    if (!extOk()) return Promise.resolve(null);
+    return WPRoomKeys.getInviteAccessToken(roomId);
+  }
+
+  async function buildRoomAccessPayload(roomId, accessKey) {
+    const inviteAccessToken = await loadStoredInviteAccessToken(roomId);
+    return {
+      id: roomId,
+      accessKey: accessKey || undefined,
+      inviteAccessToken: inviteAccessToken || undefined,
+    };
   }
 
   async function resolvePrivateInviteKeys(command = {}) {
@@ -552,10 +643,11 @@
     const username = stored?.[WPConstants.STORAGE.USERNAME];
     sendSessionHello(username);
     const accessKey = await loadStoredAccessKey(roomId);
+    const payload = await buildRoomAccessPayload(roomId, accessKey);
     lastJoinAttemptRoomId = roomId;
     WPWS.send({
       type: WPProtocol.COMMAND.ROOM_JOIN,
-      payload: { id: roomId, accessKey: accessKey || undefined },
+      payload,
     });
     return true;
   }
@@ -934,17 +1026,17 @@
       // If we were in a room, rejoin (with replay if we have a sequence number)
       if (!roomState?.id) return;
       // Load E2E crypto key before rejoining (prevents garbled messages on new tabs)
-      loadCryptoKeyForRoom(roomState.id).then(() => {
+      loadCryptoKeyForRoom(roomState.id).then(async () => {
         sendSessionHello(stored[WPConstants.STORAGE.USERNAME]);
-        loadStoredAccessKey(roomState.id).then((accessKey) => {
-          const seq = WPWS.getLastSeq();
-          lastJoinAttemptRoomId = roomState.id;
-          if (seq > 0) {
-            WPWS.send({ type: WPProtocol.COMMAND.ROOM_REJOIN, payload: { id: roomState.id, lastSeq: seq, accessKey: accessKey || undefined } });
-          } else {
-            WPWS.send({ type: WPProtocol.COMMAND.ROOM_JOIN, payload: { id: roomState.id, accessKey: accessKey || undefined } });
-          }
-        });
+        const accessKey = await loadStoredAccessKey(roomState.id);
+        const payload = await buildRoomAccessPayload(roomState.id, accessKey);
+        const seq = WPWS.getLastSeq();
+        lastJoinAttemptRoomId = roomState.id;
+        if (seq > 0) {
+          WPWS.send({ type: WPProtocol.COMMAND.ROOM_REJOIN, payload: { ...payload, lastSeq: seq } });
+        } else {
+          WPWS.send({ type: WPProtocol.COMMAND.ROOM_JOIN, payload });
+        }
       });
     });
   });
@@ -976,6 +1068,10 @@
 
       case WPProtocol.EVENT.ROOM_SNAPSHOT:
         if (!p?.id) return;
+        if (p.inviteAccessToken && extOk()) {
+          WPRoomKeys.setInviteAccessToken(p.id, p.inviteAccessToken).catch(() => {});
+        }
+        delete p.inviteAccessToken;
         if (shouldDrainDeferredLeave(p)) {
           lastJoinAttemptRoomId = null;
           clearDeferredLeaveIntent(p.id);
@@ -1066,7 +1162,7 @@
 
       case WPProtocol.EVENT.ROOM_REACTION_APPENDED:
         if (!p?.user || !p?.emoji) return;
-        WPOverlay.showReaction(p.user, p.emoji, roomState);
+        WPOverlay.showReaction(p.user, p.emoji, roomState, p.messageId || null);
         notifyBackground({ action: WPConstants.ACTION.ROOM_REACTION_EVENT, payload: p });
         break;
 
@@ -1212,8 +1308,9 @@
     }
     const username = command?.username || stored[WPConstants.STORAGE.USERNAME];
     sendSessionHello(username);
+    const payload = await buildRoomAccessPayload(roomToJoin, accessKey);
     lastJoinAttemptRoomId = roomToJoin;
-    WPWS.send({ type: WPProtocol.COMMAND.ROOM_JOIN, payload: { id: roomToJoin, accessKey: accessKey || undefined } });
+    WPWS.send({ type: WPProtocol.COMMAND.ROOM_JOIN, payload });
   }
 
   function processPendingActions() {
@@ -1366,7 +1463,12 @@
   // Buffer for encrypted messages that arrive before key is loaded
   const pendingEncryptedMessages = [];
 
-  async function onChatMessage(message) {
+  async function onChatMessage(message, options = {}) {
+    const rawMessage = message;
+    if (options.persist !== false) {
+      rememberStoredChatMessage(rawMessage);
+      persistStoredChatHistory(roomState?.id).catch(() => {});
+    }
     // Decrypt E2E-encrypted messages
     if (WPCrypto.isEncrypted(message.content)) {
       const decrypted = await WPCrypto.decrypt(message.content);
@@ -1377,12 +1479,13 @@
       }
       message = { ...message, content: decrypted };
     }
-    chatMessages.push(message);
-    if (chatMessages.length > 200) chatMessages.shift();
+    if (!rememberChatMessage(message)) return;
     WPOverlay.appendChatMessage(message, roomState, userId);
-    if (!isMe(message.user)) WPOverlay.incrementUnread();
+    if (options.incrementUnread !== false && !isMe(message.user)) WPOverlay.incrementUnread();
     // Relay to side panel (it can't access content script globals)
-    notifyBackground({ action: WPConstants.ACTION.ROOM_CHAT_EVENT, payload: message });
+    if (options.relay !== false) {
+      notifyBackground({ action: WPConstants.ACTION.ROOM_CHAT_EVENT, payload: message });
+    }
   }
 
   // When crypto key becomes available, re-process buffered encrypted messages
@@ -1412,8 +1515,7 @@
 
   function applyPassiveChatMessage(message) {
     if (!message || isControllerTab) return;
-    chatMessages.push(message);
-    if (chatMessages.length > 200) chatMessages.shift();
+    if (!rememberChatMessage(message)) return;
     WPOverlay.appendChatMessage(message, roomState, userId);
   }
 
@@ -1424,7 +1526,7 @@
 
   function applyPassiveReaction(message) {
     if (!message || isControllerTab) return;
-    WPOverlay.showReaction(message.user, message.emoji, roomState);
+    WPOverlay.showReaction(message.user, message.emoji, roomState, message.messageId || null);
   }
 
   function applyPassiveTyping(message) {
@@ -1630,8 +1732,15 @@
 
   // --- Overlay state refresh ---
   function refreshOverlay() {
+    ensureChatHistoryRoom(inRoom ? roomState?.id : null);
     const wsConnected = isControllerTab ? WPWS.isConnected() : sessionWsConnected;
     WPOverlay.updateState({ inRoom, isHost, userId, sessionId, roomState, hasVideo: !!video, wsConnected });
+    if (inRoom && roomState?.id) {
+      loadCryptoKeyForRoom(roomState.id)
+        .catch(() => {})
+        .then(() => hydrateStoredChatHistory(roomState.id))
+        .catch(() => {});
+    }
     if (inRoom && !isHost) {
       WPOverlay.updateSyncIndicator(isHost, WPSync.getLastDrift());
     }
@@ -1843,11 +1952,6 @@
         const usersInRoom = Array.isArray(roomState?.users) ? roomState.users.length : 0;
         const alreadyPrivate = roomState?.public === false;
         const isChangingAccessKey = !!requestedAccessKey && requestedAccessKey !== existingAccessKey;
-        if (!alreadyPrivate && usersInRoom > 1) {
-          WPOverlay.showToast('Require invite key when you are alone in the room to avoid breaking peers on reconnect.', 3500);
-          refreshOverlay();
-          return;
-        }
         if (alreadyPrivate && isChangingAccessKey && usersInRoom > 1) {
           WPOverlay.showToast('Change the access key when you are alone in the room to avoid breaking private-room peers.', 3500);
           refreshOverlay();
@@ -1903,7 +2007,7 @@
       WPWS.send({ type: WPProtocol.COMMAND.ROOM_CHAT_SEND, payload: { content } });
     },
     [WPConstants.ACTION.ROOM_TYPING_SEND]: (m) => { lastUserAction = WPConstants.ACTION.ROOM_TYPING_SEND; WPWS.send({ type: WPProtocol.COMMAND.ROOM_TYPING_SEND, payload: { typing: m.typing } }); },
-    [WPConstants.ACTION.ROOM_REACTION_SEND]: (m) => WPWS.send({ type: WPProtocol.COMMAND.ROOM_REACTION_SEND, payload: { emoji: m.emoji } }),
+    [WPConstants.ACTION.ROOM_REACTION_SEND]: (m) => WPWS.send({ type: WPProtocol.COMMAND.ROOM_REACTION_SEND, payload: { emoji: m.emoji, messageId: m.messageId || undefined } }),
     [WPConstants.ACTION.ROOM_MEMBER_PRESENCE_PUBLISH]: (m) => WPWS.send({ type: WPProtocol.COMMAND.ROOM_MEMBER_PRESENCE_PUBLISH, payload: { status: m.status } }),
     [WPConstants.ACTION.ROOM_MEMBER_PLAYBACK_STATUS_PUBLISH]: (m) => WPWS.send({ type: WPProtocol.COMMAND.ROOM_MEMBER_PLAYBACK_STATUS_PUBLISH, payload: { status: m.status } }),
     [WPConstants.ACTION.ROOM_PLAYBACK_REQUEST_SYNC]: () => { requestLatestHostSync(); },
@@ -2038,6 +2142,12 @@
           if (WPWS.isReady()) processPendingActions();
           else ensureControllerConnection();
         }).catch(() => {});
+      }
+      if (areaName === 'session' && roomState?.id) {
+        const historyChange = changes[WPConstants.STORAGE.roomChatHistory(roomState.id)];
+        if (historyChange?.newValue) {
+          applyStoredChatHistory(normalizeStoredChatHistory(historyChange.newValue)).catch(() => {});
+        }
       }
       if (areaName === 'session' && changes[WPConstants.STORAGE.CONTROLLER_TAB]) {
         const nextLease = changes[WPConstants.STORAGE.CONTROLLER_TAB].newValue;

@@ -3,7 +3,7 @@ window.WPDirectPlayFixtureCases = Object.freeze({
     label: 'Portable direct URL',
     stream: {
       url: 'https://web.stremio.com/#/player/fixture-direct',
-      resolvedUrl: 'https://cdn.watchparty.test/media/movie.mp4',
+      resolvedUrl: 'https://cdn.watchparty.example/media/movie.mp4',
     },
   },
   torrentPortable: {
@@ -25,7 +25,7 @@ window.WPDirectPlayFixtureCases = Object.freeze({
     label: 'Not web ready',
     stream: {
       url: 'https://web.stremio.com/#/player/fixture-not-ready',
-      resolvedUrl: 'https://cdn.watchparty.test/media/not-ready.mp4',
+      resolvedUrl: 'https://cdn.watchparty.example/media/not-ready.mp4',
       behaviorHints: {
         notWebReady: true,
       },
@@ -35,7 +35,7 @@ window.WPDirectPlayFixtureCases = Object.freeze({
     label: 'Proxy headers required',
     stream: {
       url: 'https://web.stremio.com/#/player/fixture-proxy',
-      resolvedUrl: 'https://cdn.watchparty.test/media/proxy.mp4',
+      resolvedUrl: 'https://cdn.watchparty.example/media/proxy.mp4',
       behaviorHints: {
         proxyHeaders: {
           Authorization: 'Bearer fixture-token',

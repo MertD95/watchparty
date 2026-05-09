@@ -4,10 +4,10 @@ import net from 'node:net';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
-import { delay, pollUntil } from './assertions.mjs';
+import { delay, pollUntil } from './lib/timing.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const WATCHPARTY_ROOT = path.resolve(__dirname, '..', '..');
+const WATCHPARTY_ROOT = path.resolve(__dirname, '..');
 const SERVER_ROOT = [
   process.env.WATCHPARTY_SERVER_ROOT,
   path.resolve(WATCHPARTY_ROOT, '..', 'watchparty-server'),
@@ -17,17 +17,21 @@ const SERVER_ROOT = [
   .map(candidate => path.resolve(candidate))
   .find(candidate => fs.existsSync(path.join(candidate, 'src', 'index.ts')))
   || path.resolve(WATCHPARTY_ROOT, '..', 'watchparty-server');
-const LOCAL_SERVER_PORT = Number(process.env.WATCHPARTY_TEST_SERVER_PORT || 8181);
-const LOCAL_READY_URL = `http://localhost:${LOCAL_SERVER_PORT}/ready`;
-const LOCAL_HEALTH_URL = `http://localhost:${LOCAL_SERVER_PORT}/health`;
+const LOCAL_SERVER_PORT = Number(
+  process.env.WATCHPARTY_LOCAL_SERVER_PORT
+  || 8181
+);
+const LOCAL_READY_URL = `http://127.0.0.1:${LOCAL_SERVER_PORT}/ready`;
+const LOCAL_HEALTH_URL = `http://127.0.0.1:${LOCAL_SERVER_PORT}/health`;
 const TARGET_SCRIPT = process.argv[2];
 const TARGET_ARGS = process.argv.slice(3);
-const REUSE_EXISTING = process.env.WATCHPARTY_REUSE_LOCAL_SERVER === '1';
+const REUSE_EXISTING = process.env.WATCHPARTY_REUSE_LOCAL_SERVER === '1'
+  || process.env.WATCHPARTY_REUSE_LOCAL_STACK === '1';
 const VERBOSE_SERVER = process.env.WATCHPARTY_VERBOSE_LOCAL_SERVER === '1';
 const SERVER_LOG_LIMIT = 200;
 
 if (!TARGET_SCRIPT) {
-  console.error('Usage: node extension/test/run-with-local-server.mjs <script> [...args]');
+  console.error('Usage: node tools/with-local-server.mjs <script> [...args]');
   process.exit(1);
 }
 
@@ -64,13 +68,13 @@ async function ensureManagedServerCanStart() {
   if (ready && !REUSE_EXISTING) {
     throw new Error(
       `A WatchParty server is already running on localhost:${LOCAL_SERVER_PORT}. `
-      + 'Stop it before running the managed test suite, or set WATCHPARTY_REUSE_LOCAL_SERVER=1 to reuse it explicitly.'
+      + 'Stop it before running this local helper, or set WATCHPARTY_REUSE_LOCAL_SERVER=1 to reuse it explicitly.'
     );
   }
 
   const portBusy = await isPortBusy(LOCAL_SERVER_PORT);
   if (portBusy) {
-    throw new Error(`Port ${LOCAL_SERVER_PORT} is already in use by another process. Stop it before running the managed test suite.`);
+    throw new Error(`Port ${LOCAL_SERVER_PORT} is already in use by another process. Stop it before running this local helper.`);
   }
 
   return { reuse: false };
@@ -95,7 +99,7 @@ function createLineReader(stream, onLine) {
 async function startManagedServer() {
   if (!fs.existsSync(path.join(SERVER_ROOT, 'src', 'index.ts'))) {
     throw new Error(
-      `Could not locate watchparty-server for managed tests. Checked: ${SERVER_ROOT}. `
+      `Could not locate watchparty-server for the managed local helper. Checked: ${SERVER_ROOT}. `
       + 'Set WATCHPARTY_SERVER_ROOT to the backend repo path if needed.'
     );
   }
@@ -106,7 +110,8 @@ async function startManagedServer() {
     env: {
       ...process.env,
       PORT: String(LOCAL_SERVER_PORT),
-      NODE_ENV: 'test',
+      NODE_ENV: process.env.NODE_ENV || 'development',
+      WATCHPARTY_ENABLE_MANUAL_API: '1',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -166,7 +171,7 @@ async function runTargetScript() {
     env: {
       ...process.env,
       WATCHPARTY_MANAGED_LOCAL_SERVER: '1',
-      WATCHPARTY_TEST_SERVER_PORT: String(LOCAL_SERVER_PORT),
+      WATCHPARTY_LOCAL_SERVER_PORT: String(LOCAL_SERVER_PORT),
     },
     stdio: 'inherit',
   });

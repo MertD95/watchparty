@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const landingRoot = path.resolve(__dirname, '..', 'landing');
-const fixturesRoot = path.resolve(__dirname, '..', 'test-fixtures');
+const fixturesRoot = path.resolve(__dirname, '..', 'manual-fixtures');
 const extensionRoot = path.resolve(__dirname, '..', 'extension');
 const port = Number(process.env.WATCHPARTY_LANDING_PORT || 8090);
 const host = process.env.WATCHPARTY_LANDING_HOST || '127.0.0.1';
@@ -46,8 +46,8 @@ const server = http.createServer((req, res) => {
   let requestedPath = null;
   let fallbackPath = path.resolve(landingRoot, 'index.html');
 
-  if (pathname.startsWith('/__fixtures/')) {
-    requestedPath = safeResolve(fixturesRoot, pathname.replace(/^\/__fixtures\//, ''));
+  if (pathname.startsWith('/__manual-fixtures/')) {
+    requestedPath = safeResolve(fixturesRoot, pathname.replace(/^\/__manual-fixtures\//, ''));
     fallbackPath = null;
   } else if (pathname.startsWith('/__extension/')) {
     requestedPath = safeResolve(extensionRoot, pathname.replace(/^\/__extension\//, ''));

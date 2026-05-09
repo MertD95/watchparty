@@ -1,7 +1,7 @@
 // Creates a short real video element inside the page so Playwright, the page,
 // and the content-script world all observe the same media state.
 
-export async function injectSeekableTestVideo(page, targetTimeSeconds = 2) {
+export async function injectSeekableManualVideo(page, targetTimeSeconds = 2) {
   await page.evaluate(async (desiredTime) => {
     for (const existing of [...document.querySelectorAll('video')]) {
       existing.remove();
@@ -41,7 +41,7 @@ export async function injectSeekableTestVideo(page, targetTimeSeconds = 2) {
     await stopped;
 
     const video = document.createElement('video');
-    video.id = 'wp-test-video';
+    video.id = 'wp-manual-video';
     video.muted = true;
     video.playsInline = true;
     video.style.display = 'none';
@@ -50,7 +50,7 @@ export async function injectSeekableTestVideo(page, targetTimeSeconds = 2) {
 
     await new Promise((resolve, reject) => {
       video.onloadedmetadata = resolve;
-      video.onerror = () => reject(new Error('failed to load test media'));
+      video.onerror = () => reject(new Error('failed to load manual media'));
     });
 
     const safeTime = Math.min(desiredTime, Math.max(0, (video.duration || desiredTime) - 0.1));
@@ -77,7 +77,7 @@ export async function injectSeekableTestVideo(page, targetTimeSeconds = 2) {
         }
         if ((performance.now() - started) > 2000) {
           cleanup();
-          reject(new Error('timed out waiting for seekable test video'));
+          reject(new Error('timed out waiting for seekable manual video'));
           return;
         }
         requestAnimationFrame(verify);

@@ -7,6 +7,14 @@ const WPRuntimeState = (() => {
     ...WPConstants.STORAGE_CONTRACT.BOOTSTRAP_SESSION,
     ...WPConstants.STORAGE_CONTRACT.SENSITIVE_SESSION,
   ]);
+  const SESSION_KEY_PREFIXES = [
+    'wpRoomChatHistory:',
+  ];
+
+  function isSessionKey(key) {
+    return SESSION_KEYS.has(key)
+      || SESSION_KEY_PREFIXES.some((prefix) => typeof key === 'string' && key.startsWith(prefix));
+  }
 
   function normalizeKeyList(keys) {
     return Array.isArray(keys) ? keys.filter(Boolean) : [keys].filter(Boolean);
@@ -16,8 +24,8 @@ const WPRuntimeState = (() => {
     const keyList = normalizeKeyList(keys);
     if (keyList.length === 0) return {};
 
-    const sessionKeys = keyList.filter((key) => SESSION_KEYS.has(key));
-    const localKeys = keyList.filter((key) => !SESSION_KEYS.has(key));
+    const sessionKeys = keyList.filter(isSessionKey);
+    const localKeys = keyList.filter((key) => !isSessionKey(key));
 
     const [sessionValues, localValues] = await Promise.all([
       sessionKeys.length > 0 ? chrome.storage.session.get(sessionKeys).catch(() => ({})) : Promise.resolve({}),
@@ -35,7 +43,7 @@ const WPRuntimeState = (() => {
     /** @type {Record<string, any>} */
     const localValues = {};
     for (const [key, value] of Object.entries(values)) {
-      if (SESSION_KEYS.has(key)) sessionValues[key] = value;
+      if (isSessionKey(key)) sessionValues[key] = value;
       else localValues[key] = value;
     }
 
@@ -52,7 +60,7 @@ const WPRuntimeState = (() => {
   async function remove(keys) {
     const keyList = normalizeKeyList(keys);
     if (keyList.length === 0) return;
-    const sessionKeys = keyList.filter((key) => SESSION_KEYS.has(key));
+    const sessionKeys = keyList.filter(isSessionKey);
     await Promise.all([
       chrome.storage.local.remove(keyList).catch(() => {}),
       sessionKeys.length > 0 ? chrome.storage.session.remove(sessionKeys).catch(() => {}) : Promise.resolve(),
@@ -61,6 +69,7 @@ const WPRuntimeState = (() => {
 
   return {
     SESSION_KEYS,
+    isSessionKey,
     get,
     set,
     remove,

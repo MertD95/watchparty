@@ -4,8 +4,8 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
-import { launchExtensionContext, getExtensionId } from '../extension/test/extension-context.mjs';
-import { injectSeekableTestVideo } from '../extension/test/seekable-video.mjs';
+import { launchExtensionContext, getExtensionId } from './lib/playwright-extension.mjs';
+import { injectSeekableManualVideo } from './lib/seekable-video.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -1779,7 +1779,7 @@ async function main() {
     const extensionId = await getExtensionId(context);
 
     const stremio = await openStremio(context);
-    await injectSeekableTestVideo(stremio, 42);
+    await injectSeekableManualVideo(stremio, 42);
     await prepareStremioCapture(stremio);
 
     const popup = await openPopup(context, extensionId);

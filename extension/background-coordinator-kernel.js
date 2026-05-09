@@ -163,10 +163,9 @@ const WPCoordinatorKernel = (() => {
 
   function buildStorageState(state) {
     const normalized = normalizeState(state || createInitialState());
-    return {
+    const storageState = {
       [WPConstants.STORAGE.ROOM_STATE]: cloneRoomProjection(normalized.room),
       [WPConstants.STORAGE.USER_ID]: normalized.userId,
-      [WPConstants.STORAGE.SESSION_ID]: normalized.sessionId,
       [WPConstants.STORAGE.WS_CONNECTED]: normalized.wsConnected,
       [WPConstants.STORAGE.ACTIVE_BACKEND]: normalized.activeBackend,
       [WPConstants.STORAGE.ACTIVE_BACKEND_URL]: normalized.activeBackendUrl,
@@ -174,6 +173,10 @@ const WPCoordinatorKernel = (() => {
       [WPConstants.STORAGE.ADAPTER_STATE]: cloneValue(normalized.adapterState),
       [WPConstants.STORAGE.CURRENT_ROOM]: normalized.room?.id || null,
     };
+    if (normalized.sessionId) {
+      storageState[WPConstants.STORAGE.SESSION_ID] = normalized.sessionId;
+    }
+    return storageState;
   }
 
   return {

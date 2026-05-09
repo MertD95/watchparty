@@ -48,11 +48,12 @@ const WPOverlay = (() => {
   // --- Per-message reactions (Discord-style) ---
   // Rules: one user = one reaction per emoji, toggle on/off, count = unique users
   let activePopupMsg = null;
-  let reactionTarget = null; // { pills } — when set, emoji picker adds a reaction instead of inserting into chat
+  let reactionTarget = null; // { pills, messageId } — when set, emoji picker adds a reaction instead of inserting into chat
 
-  function buildMsgEl({ userName, color, text, gifUrl }) {
+  function buildMsgEl({ userName, color, text, gifUrl, messageId }) {
     const div = document.createElement('div');
     div.className = 'wp-chat-msg';
+    if (messageId) div.dataset.messageId = messageId;
 
     // Row: content on the left, toolbar on the right (inline, not floating)
     const row = document.createElement('div');
@@ -104,7 +105,26 @@ const WPOverlay = (() => {
   }
 
   // Toggle reaction: one per user per emoji, no stacking
-  function toggleReaction(pillsContainer, emoji, event = null) {
+  function updateReactionPill(pillsContainer, emoji, isMine) {
+    if (!pillsContainer || !emoji) return;
+    const existing = pillsContainer.querySelector(`[data-emoji="${CSS.escape(emoji)}"]`);
+    if (existing) {
+      const countEl = existing.querySelector('.wp-pill-count');
+      const currentCount = Number.parseInt(countEl?.textContent || '0', 10);
+      if (isMine && existing.classList.contains('wp-pill-mine')) return;
+      if (countEl) countEl.textContent = String(Math.max(1, currentCount + 1));
+      if (isMine) existing.classList.add('wp-pill-mine');
+      return;
+    }
+    const pill = document.createElement('button');
+    pill.className = isMine ? 'wp-react-pill wp-pill-mine' : 'wp-react-pill';
+    pill.dataset.emoji = emoji;
+    pill.appendChild(WPDOM.el('span', { className: 'wp-pill-emoji', text: emoji }));
+    pill.appendChild(WPDOM.el('span', { className: 'wp-pill-count', text: '1' }));
+    pillsContainer.appendChild(pill);
+  }
+
+  function toggleReaction(pillsContainer, emoji, event = null, messageId = null) {
     if (!isTrustedUserEvent(event)) return;
     const existing = pillsContainer.querySelector(`[data-emoji="${CSS.escape(emoji)}"]`);
     if (existing && existing.classList.contains('wp-pill-mine')) {
@@ -123,16 +143,9 @@ const WPOverlay = (() => {
       countEl.textContent = parseInt(countEl.textContent) + 1;
       existing.classList.add('wp-pill-mine');
     } else {
-      // New pill
-      const pill = document.createElement('button');
-      pill.className = 'wp-react-pill wp-pill-mine';
-      pill.dataset.emoji = emoji;
-      pill.appendChild(WPDOM.el('span', { className: 'wp-pill-emoji', text: emoji }));
-      pill.appendChild(WPDOM.el('span', { className: 'wp-pill-count', text: '1' }));
-      // No per-pill listener — handled by delegated click on #wp-chat-messages
-      pillsContainer.appendChild(pill);
+      updateReactionPill(pillsContainer, emoji, true);
     }
-    dispatchAction(WPConstants.ACTION.ROOM_REACTION_SEND, { emoji }, event);
+    dispatchAction(WPConstants.ACTION.ROOM_REACTION_SEND, { emoji, messageId }, event);
   }
 
 
@@ -833,7 +846,7 @@ const WPOverlay = (() => {
       const emoji = e.detail;
       if (!emoji) return;
       if (reactionTarget) {
-        if (reactionTarget.pills?.isConnected) toggleReaction(reactionTarget.pills, emoji);
+        if (reactionTarget.pills?.isConnected) toggleReaction(reactionTarget.pills, emoji, null, reactionTarget.messageId || null);
         closeReactionPopup();
       } else {
         const input = document.getElementById('wp-chat-input');
@@ -988,7 +1001,7 @@ const WPOverlay = (() => {
         }
         closeReactionPopup();
 
-        reactionTarget = { pills };
+        reactionTarget = { pills, messageId: msg.dataset.messageId || null };
         activePopupMsg = msg;
 
         // Position picker near the message (inside sidebar via CSS absolute)
@@ -1002,7 +1015,8 @@ const WPOverlay = (() => {
       if (pill) {
         const pillsContainer = pill.closest('.wp-msg-pills');
         if (pillsContainer && pill.dataset.emoji) {
-          toggleReaction(pillsContainer, pill.dataset.emoji, e);
+          const msg = pill.closest('.wp-chat-msg');
+          toggleReaction(pillsContainer, pill.dataset.emoji, e, msg?.dataset.messageId || null);
         }
         return;
       }
@@ -1637,6 +1651,13 @@ const WPOverlay = (() => {
   // Track displayed message IDs to prevent duplicates (covers TTL expiry edge case)
   const displayedMessageIds = new Set();
 
+  function clearChatMessages() {
+    const container = document.getElementById('wp-chat-messages');
+    if (container) container.replaceChildren();
+    displayedMessageIds.clear();
+    updateChatEmptyState(cachedRoomState);
+  }
+
   function appendChatMessage(msg, roomState, myUserId) {
     const container = document.getElementById('wp-chat-messages');
     if (!container) return;
@@ -1674,6 +1695,7 @@ const WPOverlay = (() => {
       color,
       text: gifMatch ? '' : messageContent,
       gifUrl: gifMatch?.[1],
+      messageId: msg.id,
     });
     container.appendChild(div);
     // Prune old DOM nodes to prevent memory buildup
@@ -1737,9 +1759,14 @@ const WPOverlay = (() => {
     playTone(1200, 0.05, 0.12);
   }
 
-  function showReaction(uid, emoji, roomState) {
+  function showReaction(uid, emoji, roomState, messageId = null) {
     const reactionUser = roomState?.users?.find(u => u.id === uid);
     const isOwnReaction = uid === cachedUserId || (cachedSessionId && reactionUser?.sessionId === cachedSessionId);
+    if (messageId) {
+      const msg = document.querySelector(`.wp-chat-msg[data-message-id="${CSS.escape(messageId)}"]`);
+      const pills = msg?.querySelector('.wp-msg-pills');
+      updateReactionPill(pills, emoji, isOwnReaction);
+    }
     // Play sound for all reactions (own + others) — user expects audio feedback
     playReactionSound();
     // Floating emoji animation (can be disabled)
@@ -1986,7 +2013,7 @@ const WPOverlay = (() => {
   return {
     create, updateState, updateSyncIndicator,
     setActionDispatcher,
-    appendChatMessage, showReaction, updateTypingIndicator,
+    appendChatMessage, clearChatMessages, showReaction, updateTypingIndicator,
     openSidebar, bindRoomCodeCopy, bindTypingIndicator,
     playNotifSound, showToast,
     showReadyCheck, showCountdown, appendBookmark,

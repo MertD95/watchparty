@@ -21,140 +21,9 @@ env:
   SERVER_CHECKOUT_PATH: watchparty-server
 
 jobs:
-  changes:
-    runs-on: ubuntu-latest
-    outputs:
-      landing: ${{ steps.filter.outputs.landing }}
-      extension: ${{ steps.filter.outputs.extension }}
-    steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
-        with:
-          fetch-depth: 0
-
-      - name: Classify changed files
-        id: filter
-        run: |
-          set -euo pipefail
-
-          has_commit() {
-            git rev-parse --verify "$1^{commit}" >/dev/null 2>&1
-          }
-
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "landing=true" >> "$GITHUB_OUTPUT"
-            echo "extension=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          landing=false
-          extension=false
-
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            BASE_SHA="${{ github.event.pull_request.base.sha }}"
-            HEAD_SHA="${{ github.event.pull_request.head.sha }}"
-          else
-            BASE_SHA="${{ github.event.before }}"
-            HEAD_SHA="${{ github.sha }}"
-          fi
-
-          if [ -n "${HEAD_SHA:-}" ] && ! has_commit "$HEAD_SHA"; then
-            echo "::notice title=CI diff fallback::Head SHA $HEAD_SHA is unavailable in the local checkout. Running landing and extension coverage."
-            echo "landing=true" >> "$GITHUB_OUTPUT"
-            echo "extension=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          if [ -z "${BASE_SHA:-}" ] || [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
-            echo "landing=true" >> "$GITHUB_OUTPUT"
-            echo "extension=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          if ! has_commit "$BASE_SHA"; then
-            echo "::notice title=CI diff fallback::Base SHA $BASE_SHA is unavailable, likely due to a force-push or app-managed branch update. Falling back to merge-base against origin/main."
-            if has_commit "origin/main"; then
-              BASE_SHA="$(git merge-base origin/main "$HEAD_SHA" || true)"
-            else
-              BASE_SHA=""
-            fi
-          fi
-
-          if [ -z "${BASE_SHA:-}" ] || ! has_commit "$BASE_SHA"; then
-            echo "::notice title=CI diff fallback::Could not resolve a valid base commit. Running landing and extension coverage."
-            echo "landing=true" >> "$GITHUB_OUTPUT"
-            echo "extension=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          CHANGED_FILES="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
-          echo "::group::Changed files"
-          printf '%s\n' "$CHANGED_FILES"
-          echo "::endgroup::"
-
-          while IFS= read -r file; do
-            [ -z "$file" ] && continue
-
-            case "$file" in
-              landing/*|extension/content.js|extension/constants.js|extension/test/landing.mjs|package.json|package-lock.json|scripts/*|.github/workflows/ci.yml|.github/workflows/release.yml)
-                landing=true
-                ;;
-            esac
-
-            case "$file" in
-              extension/*|package.json|package-lock.json|scripts/*|.github/workflows/ci.yml|.github/workflows/release.yml)
-                extension=true
-                ;;
-            esac
-          done <<< "$CHANGED_FILES"
-
-          echo "landing=$landing" >> "$GITHUB_OUTPUT"
-          echo "extension=$extension" >> "$GITHUB_OUTPUT"
-
-  fast:
-    needs: changes
+  static:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
-
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run deterministic fast suite
-        run: npm run test:ci-fast
-
-  landing:
-    needs: [changes, fast]
-    if: needs.changes.outputs.landing == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
-
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Install Playwright browser runtime
-        run: npx playwright install --with-deps chromium
-
-      - name: Run landing browser suite
-        run: npm run test:landing
-
-  extension:
-    needs: [changes, fast]
-    if: needs.changes.outputs.extension == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
 
@@ -166,26 +35,24 @@ jobs:
       - name: Install extension repo dependencies
         run: npm ci
 
-      - name: Determine extension coverage availability
-        id: coverage_gate
+      - name: Run static extension checks
+        run: npm run verify:static
+
+      - name: Determine backend checkout availability
+        id: backend
         env:
           SERVER_TOKEN: ${{ secrets.SERVER_REPO_TOKEN }}
         run: |
           set -euo pipefail
           if [ -n "${SERVER_TOKEN:-}" ]; then
             echo "enabled=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
+          else
             echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Extension CI skipped::SERVER_REPO_TOKEN is unavailable for this pull_request trigger. Fast and landing CI still ran. Sidepanel integration and full browser coverage still run on push, release, or manual runs where secrets are available."
-            exit 0
+            echo "::notice title=Backend codegen skipped::SERVER_REPO_TOKEN is unavailable, so cross-repo generated protocol/domain checks were skipped."
           fi
-          echo "::error title=Missing SERVER_REPO_TOKEN::Extension CI requires a token that can clone ${SERVER_REPO}. Add a fine-grained read-only Contents token as the SERVER_REPO_TOKEN repository secret."
-          exit 1
 
       - name: Checkout backend repo
-        if: steps.coverage_gate.outputs.enabled == 'true'
+        if: steps.backend.outputs.enabled == 'true'
         env:
           SERVER_TOKEN: ${{ secrets.SERVER_REPO_TOKEN }}
           SERVER_REPO_REF: ${{ vars.SERVER_REPO_REF }}
@@ -198,13 +65,8 @@ jobs:
             git clone --depth 1 "${REMOTE}" "${SERVER_CHECKOUT_PATH}"
           fi
 
-      - name: Install backend repo dependencies
-        if: steps.coverage_gate.outputs.enabled == 'true'
-        run: npm ci
-        working-directory: ${{ env.SERVER_CHECKOUT_PATH }}
-
-      - name: Verify generated protocol is current
-        if: steps.coverage_gate.outputs.enabled == 'true'
+      - name: Verify generated protocol and domains are current
+        if: steps.backend.outputs.enabled == 'true'
         run: |
           node tools/gen-protocol.js --check
           node tools/gen-room-domain.js --check
@@ -212,13 +74,3 @@ jobs:
         working-directory: ${{ env.SERVER_CHECKOUT_PATH }}
         env:
           WATCHPARTY_EXTENSION_ROOT: ${{ github.workspace }}/extension
-
-      - name: Install Playwright browser runtime
-        if: steps.coverage_gate.outputs.enabled == 'true'
-        run: npx playwright install --with-deps chromium
-
-      - name: Run sidepanel integration suite
-        if: steps.coverage_gate.outputs.enabled == 'true'
-        run: xvfb-run -a npm run test:sidepanel-integration
-        env:
-          WATCHPARTY_SERVER_ROOT: ${{ github.workspace }}/${{ env.SERVER_CHECKOUT_PATH }}

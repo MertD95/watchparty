@@ -1,7 +1,6 @@
-const IS_CI = process.env.CI === 'true' || process.env.CI === '1';
-const DEFAULT_TIMEOUT = IS_CI ? 30000 : 15000;
-const DEFAULT_RETRY_ATTEMPTS = IS_CI ? 5 : 3;
-const DEFAULT_RETRY_DELAY_MS = IS_CI ? 1000 : 500;
+const DEFAULT_TIMEOUT = 15000;
+const DEFAULT_RETRY_ATTEMPTS = 3;
+const DEFAULT_RETRY_DELAY_MS = 500;
 
 export function formatError(error) {
   if (!error) return 'Unknown error';
@@ -11,17 +10,6 @@ export function formatError(error) {
     return JSON.stringify(error);
   } catch {
     return String(error);
-  }
-}
-
-export async function expectPass(report, label, task) {
-  try {
-    const value = await task();
-    report(true, label);
-    return { ok: true, value, error: null };
-  } catch (error) {
-    report(false, `${label} (${formatError(error)})`);
-    return { ok: false, value: null, error };
   }
 }
 

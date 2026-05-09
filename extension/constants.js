@@ -133,6 +133,8 @@ const WPConstants = (() => {
     // Dynamic key helpers for per-room access and chat encryption keys.
     roomAccessKey(roomId) { return `wpRoomAccessKey:${roomId}`; },
     roomE2eKey(roomId) { return `wpRoomE2eKey:${roomId}`; },
+    roomInviteAccessToken(roomId) { return `wpRoomInviteAccessToken:${roomId}`; },
+    roomChatHistory(roomId) { return `wpRoomChatHistory:${roomId}`; },
   });
 
   // Storage contract — keep long-lived preferences in local storage, runtime room

@@ -3,9 +3,11 @@ const WPRoomKeys = (() => {
 
   const ROOM_ACCESS_KEY_PREFIX = 'wpRoomAccessKey:';
   const ROOM_E2E_KEY_PREFIX = 'wpRoomE2eKey:';
+  const ROOM_INVITE_ACCESS_TOKEN_PREFIX = 'wpRoomInviteAccessToken:';
   const ROOM_KEY_PREFIXES = Object.freeze([
     ROOM_ACCESS_KEY_PREFIX,
     ROOM_E2E_KEY_PREFIX,
+    ROOM_INVITE_ACCESS_TOKEN_PREFIX,
   ]);
 
   function getAccessStorageKey(roomId) {
@@ -16,6 +18,11 @@ const WPRoomKeys = (() => {
   function getE2eStorageKey(roomId) {
     const normalizedRoomId = typeof roomId === 'string' ? roomId.trim() : '';
     return normalizedRoomId ? WPConstants.STORAGE.roomE2eKey(normalizedRoomId) : null;
+  }
+
+  function getInviteAccessTokenStorageKey(roomId) {
+    const normalizedRoomId = typeof roomId === 'string' ? roomId.trim() : '';
+    return normalizedRoomId ? WPConstants.STORAGE.roomInviteAccessToken(normalizedRoomId) : null;
   }
 
   function normalizePrivateKey(value) {
@@ -77,12 +84,22 @@ const WPRoomKeys = (() => {
     await writeKey(getE2eStorageKey(roomId), e2eKey, { persistLocal: false });
   }
 
+  async function getInviteAccessToken(roomId) {
+    return readKey(getInviteAccessTokenStorageKey(roomId));
+  }
+
+  async function setInviteAccessToken(roomId, inviteAccessToken) {
+    await writeKey(getInviteAccessTokenStorageKey(roomId), inviteAccessToken);
+  }
+
   async function setKeys(roomId, keys = {}) {
     const accessKey = keys.accessKey;
     const e2eKey = keys.e2eKey;
+    const inviteAccessToken = keys.inviteAccessToken;
     await Promise.all([
       accessKey ? setAccessKey(roomId, accessKey) : Promise.resolve(),
       e2eKey ? setE2eKey(roomId, e2eKey) : Promise.resolve(),
+      inviteAccessToken ? setInviteAccessToken(roomId, inviteAccessToken) : Promise.resolve(),
     ]);
   }
 
@@ -90,6 +107,7 @@ const WPRoomKeys = (() => {
     await Promise.all([
       removeKey(getAccessStorageKey(roomId)),
       removeKey(getE2eStorageKey(roomId)),
+      removeKey(getInviteAccessTokenStorageKey(roomId)),
     ]);
   }
 
@@ -143,12 +161,16 @@ const WPRoomKeys = (() => {
   return {
     ROOM_ACCESS_KEY_PREFIX,
     ROOM_E2E_KEY_PREFIX,
+    ROOM_INVITE_ACCESS_TOKEN_PREFIX,
     getAccessStorageKey,
     getE2eStorageKey,
+    getInviteAccessTokenStorageKey,
     getAccessKey,
     setAccessKey,
     getE2eKey,
     setE2eKey,
+    getInviteAccessToken,
+    setInviteAccessToken,
     setKeys,
     remove,
     appendToInviteUrl,

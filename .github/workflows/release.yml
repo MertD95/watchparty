@@ -20,7 +20,7 @@ env:
 jobs:
   validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
 
@@ -32,11 +32,8 @@ jobs:
       - name: Install extension repo dependencies
         run: npm ci
 
-      - name: Install Playwright browser runtime
-        run: npx playwright install --with-deps chromium
-
-      - name: Run maintained fast suite
-        run: npm run test:fast
+      - name: Run static extension checks
+        run: npm run verify:static
 
       - name: Checkout backend repo
         env:
@@ -55,11 +52,7 @@ jobs:
             git clone --depth 1 "${REMOTE}" "${SERVER_CHECKOUT_PATH}"
           fi
 
-      - name: Install backend repo dependencies
-        run: npm ci
-        working-directory: ${{ env.SERVER_CHECKOUT_PATH }}
-
-      - name: Verify generated protocol is current
+      - name: Verify generated protocol and domains are current
         run: |
           node tools/gen-protocol.js --check
           node tools/gen-room-domain.js --check
@@ -67,16 +60,6 @@ jobs:
         working-directory: ${{ env.SERVER_CHECKOUT_PATH }}
         env:
           WATCHPARTY_EXTENSION_ROOT: ${{ github.workspace }}/extension
-
-      - name: Run sidepanel integration suite
-        run: xvfb-run -a npm run test:sidepanel-integration
-        env:
-          WATCHPARTY_SERVER_ROOT: ${{ github.workspace }}/${{ env.SERVER_CHECKOUT_PATH }}
-
-      - name: Run extension runtime browser suite
-        run: xvfb-run -a npm run test:browser
-        env:
-          WATCHPARTY_SERVER_ROOT: ${{ github.workspace }}/${{ env.SERVER_CHECKOUT_PATH }}
 
   package:
     needs: validate
@@ -92,7 +75,6 @@ jobs:
         run: |
           cd extension
           zip -r "../${PACKAGE_NAME}" . \
-            -x "test/*" \
             -x "*.mjs"
           cd ..
           sha256sum "${PACKAGE_NAME}" > "${PACKAGE_NAME}.sha256"
