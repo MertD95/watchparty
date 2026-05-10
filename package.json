@@ -1,7 +1,7 @@
 {
   "name": "watchparty",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.0.1",
   "scripts": {
     "dev": "node dev-reload.mjs",
     "build:store-package": "node tools/build-store-package.mjs",

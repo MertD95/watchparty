@@ -13,7 +13,7 @@ const DIST_DIR = path.join(ROOT, 'dist', 'chrome-web-store');
 const STAGE_DIR = path.join(DIST_DIR, 'extension');
 const ZIP_PATH = path.join(DIST_DIR, 'watchparty-for-stremio.zip');
 
-const EXCLUDED_NAMES = new Set(['_metadata']);
+const EXCLUDED_NAMES = new Set(['_metadata', 'types']);
 const DEV_LOCAL_LANDING_ORIGINS = new Set([
   'http://localhost:8080/*',
   'http://localhost:8090/*',
