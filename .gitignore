@@ -6,8 +6,3 @@ node_modules/
 Thumbs.db
 extension/_metadata/
 dist/
-
-# Claude Code
-CLAUDE.md
-CLAUDE.local.md
-.claude/

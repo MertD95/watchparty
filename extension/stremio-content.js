@@ -558,6 +558,13 @@
     syncControllerRuntimeState('pending-intent.join');
   }
 
+  function clearPendingRoomIntent(action) {
+    if (action === WPConstants.ACTION.ROOM_CREATE) pendingRoomCreateCommand = null;
+    if (action === WPConstants.ACTION.ROOM_JOIN) pendingRoomJoinCommand = null;
+    resumeRoomPending = !!(pendingRoomCreateCommand || pendingRoomJoinCommand || deferredLeaveIntent?.roomId || roomState?.id || inRoom);
+    syncControllerRuntimeState('pending-intent.clear');
+  }
+
   function cachePrivateKeysForRoom(roomId, keys = {}) {
     if (!extOk()) return Promise.resolve();
     return WPRoomKeys.setKeys(roomId, keys);
@@ -1015,7 +1022,12 @@
     lastJoinAttemptRoomId = null;
     syncControllerRuntimeState(`room.${options.lifecycle || 'sync'}`);
     if (pendingCreatedPrivateKeys && roomState.id) {
-      cachePrivateKeysForRoom(roomState.id, pendingCreatedPrivateKeys);
+      const createdPrivateKeys = pendingCreatedPrivateKeys;
+      cachePrivateKeysForRoom(roomState.id, createdPrivateKeys).catch(() => {});
+      if (createdPrivateKeys.e2eKey && typeof WPCrypto !== 'undefined') {
+        WPCrypto.clear();
+        WPCrypto.importKey(createdPrivateKeys.e2eKey).catch(() => {});
+      }
       pendingCreatedPrivateKeys = null;
     }
     persistState();
@@ -1376,6 +1388,11 @@
     const accessKey = normalizePrivateKeyInput(command?.accessKey) || await loadStoredAccessKey(roomToJoin);
     const requestedE2eKey = normalizePrivateKeyInput(command?.e2eKey);
     const e2eKey = requestedE2eKey || (extOk() ? await WPRoomKeys.getE2eKey(roomToJoin) : null);
+    if (accessKey && !e2eKey) {
+      WPOverlay.showToast('Paste the full invite link so private-room chat stays encrypted.', 3500);
+      WPOverlay.openSidebar('rooms');
+      return;
+    }
     if (accessKey || e2eKey) {
       await cachePrivateKeysForRoom(roomToJoin, { accessKey, e2eKey });
     }
@@ -2066,20 +2083,26 @@
     if (!WPActionContract.isAllowedSource(action, sourceSurface)) {
       return { handled: false, error: 'ACTION_SOURCE_NOT_ALLOWED' };
     }
+    const isCreateOrJoin = action === WPConstants.ACTION.ROOM_CREATE || action === WPConstants.ACTION.ROOM_JOIN;
+    let stagedControllerIntent = false;
     if (CONTROLLER_ACTIONS.has(action) && !isControllerTab) {
-      if (options.source === 'runtime' && action === WPConstants.ACTION.ROOM_CREATE) {
+      if ((options.source === 'runtime' || options.source === 'local') && action === WPConstants.ACTION.ROOM_CREATE) {
         stagePendingRoomCreateCommand(message);
+        stagedControllerIntent = true;
       }
-      if (options.source === 'runtime' && action === WPConstants.ACTION.ROOM_JOIN) {
+      if ((options.source === 'runtime' || options.source === 'local') && action === WPConstants.ACTION.ROOM_JOIN) {
         stagePendingRoomJoinCommand(message);
+        stagedControllerIntent = true;
       }
       const claimed = await refreshControllerLease({ force: !!video && inRoom && isActiveVideoTab });
       if (!claimed) {
-        if (options.source === 'runtime' && (action === WPConstants.ACTION.ROOM_CREATE || action === WPConstants.ACTION.ROOM_JOIN)) {
+        if (stagedControllerIntent && !sessionId) {
           schedulePendingIntentWake();
           return { handled: true, staged: true };
         }
+        if (options.source === 'runtime' && isCreateOrJoin) return { handled: false };
         if (options.source === 'runtime') return { handled: false };
+        if (stagedControllerIntent) clearPendingRoomIntent(action);
         await relayActionToController(message, sourceSurface);
         return { handled: true, relayed: true };
       }

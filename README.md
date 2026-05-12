@@ -6,7 +6,7 @@ WatchParty is the active product repo for the browser extension and public site 
 
 - `extension/` - MV3 extension, popup, side panel, injected sidebar, sync runtime
 - `landing/` - public website at `watchparty.mertd.me`
-- `manual-fixtures/` - local browser fixtures for MCP/manual sync and direct-play inspection
+- `manual-fixtures/` - local browser fixtures for sync and direct-play inspection
 - `tools/` - local dev, packaging, and debug scripts
 
 ## Requirements
@@ -40,11 +40,11 @@ node tools/serve-landing.mjs
 ```bash
 npm run syntax
 npm run verify:static
-npm run manual:mcp:urls
-npm run manual:mcp:reset
-npm run manual:mcp:state
-npm run manual:mcp -- seed public --name mcp-open-room --users 2
-npm run manual:mcp:users -- room --peers 3 --room-name mcp-bot-room
+npm run manual:urls
+npm run manual:reset
+npm run manual:state
+npm run manual -- seed public --name manual-open-room --users 2
+npm run manual:users -- room --peers 3 --room-name manual-bot-room
 npm run build:store-package
 npm run gen:actions
 npm run gen:icons
@@ -52,9 +52,9 @@ npm run gen:icons
 
 ## Runtime validation
 
-- Browser/runtime confidence comes from manual MCP passes with host, peer, and clean-web profiles.
-- `manual/MCP-RUNTIME-CHECKLIST.md` is the runbook for website, Stremio, player, chat, reactions, settings, private-room, reconnect, and edge-case coverage.
-- Scripts under `manual:mcp:*` prepare, perturb, inspect, or provide live realtime users only. They should not be treated as proof that the product works.
+- Browser/runtime confidence comes from manual browser passes with host, peer, and clean-web profiles.
+- `manual/RUNTIME-CHECKLIST.md` is the runbook for website, Stremio, player, chat, reactions, settings, private-room, reconnect, and edge-case coverage.
+- Scripts under `manual:*` prepare, perturb, inspect, or provide live realtime users only. They should not be treated as proof that the product works.
 - CI/release validation keeps static hygiene only: syntax, typecheck, and generated action/protocol/domain checks.
 
 ## Notes

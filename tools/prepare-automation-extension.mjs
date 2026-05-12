@@ -13,7 +13,7 @@ function readArg(name, fallback = null) {
 }
 
 const sourceDir = readArg('--source', path.join(repoRoot, 'extension'));
-const outputDir = readArg('--output', path.join(workspaceRoot, '.playwright-mcp', 'extension-local-hosts'));
+const outputDir = readArg('--output', path.join(workspaceRoot, '.browser-local', 'extension-local-hosts'));
 const result = await prepareAutomationExtension({ sourceDir, outputDir });
 
 console.log(JSON.stringify({ ok: true, ...result }, null, 2));

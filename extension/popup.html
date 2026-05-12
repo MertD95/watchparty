@@ -623,7 +623,7 @@
           <button class="btn btn-secondary" id="btn-open-stremio" type="button">Open Stremio Web</button>
           <button class="btn btn-secondary" id="btn-open-settings" type="button">Extension Settings</button>
         </div>
-        <div class="quick-note">Use WatchParty for room discovery and Stremio for the live session. The popup stays available as a fallback surface.</div>
+        <div class="quick-note">Use the WatchParty sidebar inside Stremio for room setup, discovery, chat, and controls. This popup only opens the right surface.</div>
       </div>
     </div>
 
@@ -650,7 +650,7 @@
 
       <div class="surface">
         <div class="surface-inner">
-          <div class="surface-title">Fallback Room Setup</div>
+          <div class="surface-title">Stremio Room Setup</div>
           <div class="mode-switch" role="tablist" aria-label="Room action">
             <button class="mode-btn active" id="lobby-tab-create" type="button" role="tab" aria-selected="true">Create</button>
             <button class="mode-btn" id="lobby-tab-join" type="button" role="tab" aria-selected="false">Join</button>
@@ -672,8 +672,8 @@
 
             <label class="toggle-card" for="listed-check">
               <span class="toggle-copy">
-                <span class="toggle-title" id="listing-mode-label">Listed on WatchParty</span>
-                <span class="toggle-description" id="listing-mode-help">Shown on the WatchParty website so people can find the room there.</span>
+                <span class="toggle-title" id="listing-mode-label">Listed publicly</span>
+                <span class="toggle-description" id="listing-mode-help">Shown in public room lists so people can find the room there.</span>
               </span>
               <input type="checkbox" id="listed-check" checked aria-label="Show room on WatchParty" />
             </label>
@@ -695,7 +695,7 @@
       </div>
 
       <div class="info-banner">
-        The preferred flow now starts on <a href="https://watchparty.mertd.me" target="_blank">WatchParty</a>. Keep this popup for recovery, diagnostics, and fallback room setup when the website handoff is unavailable.
+        Room setup now lives in the WatchParty sidebar inside Stremio. This popup is kept as a launcher and recovery surface.
       </div>
     </div>
 

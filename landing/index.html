@@ -148,11 +148,9 @@
     }
 
     .hero {
-      display: grid;
-      grid-template-columns: minmax(0, 1.4fr) minmax(300px, 0.9fr);
-      gap: 20px;
-      padding: 24px;
-      align-items: stretch;
+      display: flex;
+      padding: 34px;
+      align-items: center;
     }
 
     .hero-copy {
@@ -161,6 +159,7 @@
       justify-content: flex-start;
       gap: 16px;
       min-width: 0;
+      max-width: 760px;
       padding-top: 4px;
     }
 
@@ -232,132 +231,40 @@
 
     .btn-secondary:hover { background: rgba(148, 163, 184, 0.12); }
 
-    .hero-panel {
-      border-radius: 20px;
-      border: 1px solid rgba(148, 163, 184, 0.12);
-      background:
-        linear-gradient(180deg, rgba(99, 102, 241, 0.14), rgba(15, 23, 42, 0.4)),
-        rgba(15, 23, 42, 0.72);
-      padding: 22px;
+    .rooms-stats {
       display: flex;
-      flex-direction: column;
-      gap: 18px;
-      min-height: 100%;
-    }
-
-    .hero-panel h3 {
-      font-size: 18px;
-      color: #fff;
-      line-height: 1.25;
-    }
-
-    .hero-panel p {
-      font-size: 14px;
-      color: var(--muted);
-      margin: 0;
-    }
-    .hero-guide-card {
-      display: flex;
-      flex-direction: column;
-      gap: 14px;
-      border-radius: 18px;
-      padding: 14px 16px;
-      background: rgba(148, 163, 184, 0.08);
-      border: 1px solid rgba(148, 163, 184, 0.12);
-    }
-
-    .hero-guide-list {
-      list-style: none;
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-    }
-
-    .hero-guide-list li {
-      color: #dbe3f0;
-      font-size: 13px;
-      line-height: 1.6;
-    }
-
-    .hero-guide-list strong {
-      color: #f8fafc;
-    }
-
-    .hero-feature-grid {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 12px;
-    }
-
-    .hero-feature {
-      padding: 14px 16px;
-      border-radius: 18px;
-      border: 1px solid rgba(148, 163, 184, 0.12);
-      background: rgba(15, 23, 42, 0.46);
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-    }
-
-    .hero-feature-label {
-      color: #c7d2fe;
-      font-size: 11px;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      font-weight: 700;
-    }
-
-    .hero-feature-value {
-      color: #f8fafc;
-      font-size: 14px;
-      font-weight: 700;
-      line-height: 1.4;
-    }
-
-    .hero-feature-copy {
-      color: var(--muted);
-      font-size: 12px;
-      line-height: 1.5;
-    }
-
-    .hero-summary {
-      display: flex;
-      flex-direction: column;
+      align-items: stretch;
       gap: 8px;
-      border-radius: 18px;
-      padding: 14px 16px;
-      background: rgba(148, 163, 184, 0.08);
+      border-radius: var(--radius-md);
+      padding: 6px;
+      background: rgba(15, 23, 42, 0.5);
       border: 1px solid rgba(148, 163, 184, 0.12);
+      flex-wrap: wrap;
     }
 
-    .hero-summary-kicker {
-      font-size: 11px;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: var(--soft);
-      font-weight: 700;
-    }
-
-    .hero-summary-text {
-      font-size: 18px;
-      line-height: 1.35;
-      color: #f8fafc;
-      font-weight: 700;
-    }
-
-    .hero-summary-note {
-      font-size: 12px;
-      color: var(--muted);
-    }
-
-    .hero-profile-card {
+    .rooms-stat {
       display: flex;
       flex-direction: column;
-      gap: 12px;
-      border-radius: 18px;
-      padding: 14px 16px;
-      background: rgba(148, 163, 184, 0.08);
-      border: 1px solid rgba(148, 163, 184, 0.12);
+      justify-content: center;
+      min-width: 84px;
+      padding: 8px 12px;
+      border-radius: 10px;
+      background: rgba(15, 23, 42, 0.58);
+      border: 1px solid rgba(148, 163, 184, 0.1);
+    }
+
+    .rooms-stat strong {
+      color: #f8fafc;
+      font-size: 20px;
+      line-height: 1;
+    }
+
+    .rooms-stat span {
+      color: var(--muted);
+      font-size: 11px;
+      letter-spacing: 0;
+      text-transform: uppercase;
+      font-weight: 700;
     }
 
     .hero-field-label {
@@ -391,6 +298,60 @@
       flex-wrap: wrap;
     }
 
+    .hero-extension-status {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      align-items: start;
+      gap: 11px;
+      padding: 12px 14px;
+      border-radius: var(--radius-sm);
+      border: 1px solid rgba(148, 163, 184, 0.16);
+      background: rgba(15, 23, 42, 0.48);
+    }
+
+    .hero-extension-status.is-ready {
+      border-color: rgba(34, 197, 94, 0.24);
+      background: rgba(34, 197, 94, 0.08);
+    }
+
+    .hero-extension-status.is-warn {
+      border-color: rgba(248, 113, 113, 0.24);
+      background: rgba(248, 113, 113, 0.08);
+    }
+
+    .hero-status-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: #94a3b8;
+      box-shadow: 0 0 0 4px rgba(148, 163, 184, 0.12);
+      margin-top: 5px;
+    }
+
+    .hero-extension-status.is-ready .hero-status-dot {
+      background: #22c55e;
+      box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.14);
+    }
+
+    .hero-extension-status.is-warn .hero-status-dot {
+      background: #f87171;
+      box-shadow: 0 0 0 4px rgba(248, 113, 113, 0.14);
+    }
+
+    .hero-status-copy {
+      display: grid;
+      gap: 4px;
+      min-width: 0;
+    }
+
+    .hero-status-title {
+      display: block;
+      color: #f8fafc;
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1.35;
+    }
+
     .hero-status-pill {
       display: inline-flex;
       align-items: center;
@@ -419,7 +380,9 @@
     }
 
     .hero-profile-note {
-      font-size: 13px;
+      display: block;
+      font-size: 12px;
+      line-height: 1.35;
       color: var(--muted);
       margin: 0;
     }
@@ -482,7 +445,6 @@
       margin-bottom: 6px;
     }
 
-    .steps h2,
     .rooms-section h2 {
       font-size: 28px;
       color: #fff;
@@ -495,55 +457,76 @@
       margin-top: 6px;
     }
 
-    .step-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      gap: 16px;
-    }
-
-    .step {
-      background: rgba(15, 23, 42, 0.55);
-      border: 1px solid rgba(148, 163, 184, 0.12);
-      border-radius: 18px;
-      padding: 20px;
-      transition: transform 0.12s ease, border-color 0.15s ease;
-    }
-
-    .step:hover {
-      transform: translateY(-2px);
-      border-color: rgba(129, 140, 248, 0.34);
-    }
-
-    .step-num {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      width: 32px;
-      height: 32px;
-      border-radius: 50%;
-      background: var(--accent-soft);
-      color: #fff;
-      font-size: 13px;
-      font-weight: 700;
-      margin-bottom: 12px;
-      box-shadow: inset 0 0 0 1px rgba(129, 140, 248, 0.28);
-    }
-
-    .step h3 {
-      font-size: 16px;
-      color: #fff;
-      margin-bottom: 8px;
-    }
-
-    .step p { font-size: 13px; color: var(--muted); }
-
     .rooms-toolbar {
       display: flex;
-      align-items: center;
+      align-items: flex-start;
       justify-content: space-between;
       gap: 14px;
-      margin-bottom: 18px;
+      margin-bottom: 14px;
       flex-wrap: wrap;
+    }
+
+    .rooms-heading-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      min-width: 240px;
+      flex: 1;
+    }
+
+    .rooms-session-strip {
+      display: grid;
+      grid-template-columns: minmax(320px, 1.2fr) minmax(220px, 0.9fr) auto;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 16px;
+      padding: 12px 14px;
+      border-radius: var(--radius-md);
+      border: 1px solid rgba(148, 163, 184, 0.12);
+      background: rgba(15, 23, 42, 0.46);
+    }
+
+    .rooms-name-field {
+      display: grid;
+      grid-template-columns: auto minmax(180px, 1fr) auto;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .rooms-name-field .hero-field-label {
+      flex: 0 0 auto;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
+    .rooms-name-field .hero-profile-input {
+      min-width: 0;
+    }
+
+    .rooms-name-field .btn {
+      justify-self: end;
+      white-space: nowrap;
+    }
+
+    .rooms-session-state {
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+      min-width: 0;
+    }
+
+    .rooms-session-state .hero-profile-note {
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .rooms-session-strip .hero-inline-actions {
+      justify-content: flex-end;
+    }
+
+    .rooms-session-strip .hero-room-card {
+      grid-column: 1 / -1;
     }
 
     .rooms-subtitle {
@@ -757,54 +740,6 @@
       font-family: 'Consolas','Monaco',monospace;
     }
 
-    .modal-box input.modal-text-input {
-      font-family: inherit;
-    }
-
-    .modal-toggle {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      border: 1px solid rgba(148, 163, 184, 0.16);
-      border-radius: 16px;
-      padding: 14px 16px;
-      margin-bottom: 14px;
-      background: rgba(148, 163, 184, 0.05);
-    }
-
-    .modal-toggle-copy {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-    }
-
-    .modal-toggle-title {
-      color: #fff;
-      font-size: 14px;
-      font-weight: 700;
-    }
-
-    .modal-toggle-desc {
-      color: var(--muted);
-      font-size: 12px;
-      line-height: 1.45;
-    }
-
-    .modal-toggle input {
-      width: 18px;
-      height: 18px;
-      margin: 0;
-      accent-color: var(--accent);
-      flex-shrink: 0;
-    }
-
-    .modal-helper {
-      color: var(--muted);
-      font-size: 12px;
-      margin: -4px 0 14px;
-    }
-
     .modal-box input:focus { border-color: rgba(129, 140, 248, 0.65); }
     .modal-box input::placeholder { color: #556070; }
 
@@ -886,42 +821,32 @@
       margin: 0 auto 24px;
     }
 
-    .live-badge {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 10px;
-      background: rgba(34, 197, 94, 0.18);
-      color: #86efac;
-      padding: 2px 8px;
-      border-radius: 999px;
-      margin-left: 10px;
-      vertical-align: middle;
-      font-weight: 700;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      animation: pulse 2s infinite;
-      border: 1px solid rgba(34, 197, 94, 0.22);
-    }
-
-    @keyframes pulse {
-      0%, 100% { opacity: 0.75; }
-      50% { opacity: 1; }
-    }
-
     @media (max-width: 960px) {
-      .hero {
+      .hero h1 {
+        max-width: none;
+      }
+
+      .rooms-session-strip {
         grid-template-columns: 1fr;
       }
 
-      .hero h1 {
-        max-width: none;
+      .rooms-stats {
+        justify-content: flex-start;
       }
     }
 
     @media (max-width: 720px) {
       .page-shell {
         padding: 16px 16px 42px;
+      }
+
+      .rooms-name-field {
+        grid-template-columns: 1fr;
+        align-items: stretch;
+      }
+
+      .rooms-name-field .btn {
+        justify-self: stretch;
       }
 
       .header,
@@ -932,10 +857,6 @@
 
       .nav {
         width: 100%;
-      }
-
-      .hero-feature-grid {
-        grid-template-columns: 1fr;
       }
 
       .room-card {
@@ -978,7 +899,7 @@
           <img class="logo-mark" src="/favicon.svg" alt="WatchParty" />
           <div class="logo-copy">
             <div class="logo">Watch<span>Party</span></div>
-            <div class="logo-subtitle">Sync play, chat, and room links for Stremio.</div>
+            <div class="logo-subtitle">Rooms, chat, and sync for Stremio.</div>
           </div>
         </div>
         <nav class="nav">
@@ -990,120 +911,64 @@
 
       <div class="hero surface">
         <div class="hero-copy">
-          <div class="hero-kicker">Sync play. Keep your own streams.</div>
-          <h1>Sync <span>Stremio</span> with friends</h1>
-          <p>Each person streams locally. WatchParty keeps play, pause, seek, chat, and room state aligned.</p>
+          <div class="hero-kicker">Watch together on Stremio</div>
+          <h1>WatchParty</h1>
+          <p>Install the extension, open Stremio Web, then create or join rooms with synced playback and chat.</p>
           <div class="cta-row">
             <button class="btn btn-primary" id="hero-primary-btn" type="button">Install Extension</button>
-            <a href="https://web.stremio.com" class="btn btn-secondary" id="hero-stremio-btn" target="_blank">Open Stremio</a>
-            <button class="btn btn-secondary" id="hero-private-btn" type="button">Join via Link</button>
-          </div>
-          <div class="hero-feature-grid">
-            <div class="hero-feature">
-              <div class="hero-feature-label">Local Playback</div>
-              <div class="hero-feature-value">Everyone streams on their own machine</div>
-              <div class="hero-feature-copy">WatchParty only coordinates timing and room state.</div>
-            </div>
-            <div class="hero-feature">
-              <div class="hero-feature-label">Join Access</div>
-              <div class="hero-feature-value">Open join or invite-key rooms</div>
-              <div class="hero-feature-copy">Access and listing are separate.</div>
-            </div>
-            <div class="hero-feature">
-              <div class="hero-feature-label">Live Controls</div>
-              <div class="hero-feature-value">Playback and chat stay in Stremio</div>
-              <div class="hero-feature-copy">Use WatchParty for discovery, entry, and recovery.</div>
-            </div>
-          </div>
-        </div>
-
-        <div class="hero-panel">
-          <div class="hero-profile-card">
-            <div class="hero-summary-kicker">Your Setup</div>
-            <label class="hero-field-label" for="profile-name-input">Display Name</label>
-            <input type="text" id="profile-name-input" class="hero-profile-input" placeholder="Enter your name" maxlength="25" autocomplete="nickname" />
-            <div class="hero-status-row">
-              <span class="hero-status-pill" id="hero-extension-pill">Checking extension</span>
-              <span class="hero-status-pill hidden" id="hero-room-pill"></span>
-            </div>
-            <p class="hero-profile-note" id="hero-profile-note">Install the extension to create or join from WatchParty.</p>
-            <div class="hero-inline-actions">
-              <button class="btn btn-secondary hidden" id="hero-settings-btn" type="button">Extension Settings</button>
-            </div>
-            <div class="hero-room-card hidden" id="hero-room-card">
-              <div class="hero-room-title" id="hero-room-title">Active room</div>
-              <div class="hero-room-meta" id="hero-room-meta"></div>
-              <div class="hero-inline-actions">
-                <button class="btn btn-secondary" id="hero-resume-btn" type="button">Go to Room in Stremio</button>
-              </div>
-            </div>
-          </div>
-          <div class="hero-guide-card">
-            <div class="hero-summary-kicker">Session Flow</div>
-            <h3>Start here. Watch in Stremio.</h3>
-            <p>Create, join, or resume from WatchParty. Once the room is live, use the Stremio sidebar.</p>
-            <ul class="hero-guide-list">
-              <li><strong>Join access:</strong> Open join or invite key.</li>
-              <li><strong>Listing:</strong> Show or hide the room on WatchParty separately.</li>
-              <li><strong>Direct Join:</strong> Open the same stream in Stremio when the host route is portable.</li>
-            </ul>
-            <div class="hero-summary">
-              <div class="hero-summary-kicker">Live right now</div>
-              <div class="hero-summary-text" id="hero-live-summary">0 people across 0 rooms, 0 titles identified.</div>
-              <div class="hero-summary-note">Only rooms with a real Stremio title count here. Empty lobbies and WatchParty Session placeholders do not.</div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="steps surface section-shell">
-        <div class="section-heading">
-          <div class="section-heading-copy">
-            <div class="section-kicker">How It Works</div>
-            <h2>Setup in four steps</h2>
-            <div class="section-copy">Use the website for discovery and room entry. Use Stremio for the live session.</div>
-          </div>
-        </div>
-        <div class="step-grid">
-          <div class="step">
-            <div class="step-num">1</div>
-            <h3>Install</h3>
-            <p>Add WatchParty, open Stremio Web, and keep Stremio Desktop or Stremio Service running for full playback support.</p>
-          </div>
-          <div class="step">
-            <div class="step-num">2</div>
-            <h3>Pick something</h3>
-            <p>Open a title in <a href="https://web.stremio.com" target="_blank">Stremio Web</a>.</p>
-          </div>
-          <div class="step">
-            <div class="step-num">3</div>
-            <h3>Create or join</h3>
-            <p>Start from WatchParty, then let the extension hand off to Stremio.</p>
-          </div>
-          <div class="step">
-            <div class="step-num">4</div>
-            <h3>Stay aligned</h3>
-            <p>Play, pause, seek, react, and chat in one shared session.</p>
+            <button class="btn btn-secondary" id="hero-private-btn" type="button">Browse Rooms</button>
           </div>
         </div>
       </div>
 
       <div class="rooms-section surface section-shell" id="rooms">
         <div class="rooms-toolbar">
-          <div class="section-heading-copy">
-            <div class="section-kicker">Live Discovery</div>
+          <div class="rooms-heading-stack">
+            <div class="section-kicker">Listed Rooms</div>
             <h2>Active Rooms</h2>
-            <p class="rooms-subtitle">Listed rooms appear here. Hosts choose access and listing separately.</p>
+            <p class="rooms-subtitle">Join an open room or paste a private invite link.</p>
           </div>
-          <button class="btn btn-secondary" id="rooms-private-btn" type="button">Join via Invite</button>
+          <div class="rooms-stats" id="hero-live-summary" aria-label="Live room statistics" aria-live="polite">
+            <div class="rooms-stat"><strong>0</strong><span>people</span></div>
+            <div class="rooms-stat"><strong>0</strong><span>rooms</span></div>
+          </div>
+        </div>
+        <div class="rooms-session-strip">
+          <div class="rooms-name-field">
+            <label class="hero-field-label" for="profile-name-input">Display name</label>
+            <input type="text" id="profile-name-input" class="hero-profile-input" placeholder="Enter your name" maxlength="25" autocomplete="nickname" />
+            <button class="btn btn-secondary" id="rooms-private-btn" type="button">Join via Invite</button>
+          </div>
+          <div class="rooms-session-state">
+            <div class="hero-extension-status" id="hero-extension-status">
+              <span class="hero-status-dot" aria-hidden="true"></span>
+              <span class="hero-status-copy">
+                <span class="hero-status-title" id="hero-extension-pill">Checking extension</span>
+                <span class="hero-profile-note" id="hero-profile-note">Install once to join here or create in Stremio.</span>
+              </span>
+            </div>
+            <div class="hero-status-row">
+              <span class="hero-status-pill hidden" id="hero-room-pill"></span>
+            </div>
+          </div>
+          <div class="hero-inline-actions">
+            <button class="btn btn-secondary hidden" id="hero-settings-btn" type="button">Extension Settings</button>
+          </div>
+          <div class="hero-room-card hidden" id="hero-room-card">
+            <div class="hero-room-title" id="hero-room-title">Active room</div>
+            <div class="hero-room-meta" id="hero-room-meta"></div>
+            <div class="hero-inline-actions">
+              <button class="btn btn-secondary" id="hero-resume-btn" type="button">Go to Room in Stremio</button>
+            </div>
+          </div>
         </div>
         <div class="rooms-list" id="rooms-list">
-          <div class="rooms-empty" id="rooms-empty">No listed rooms right now. Create one from WatchParty and continue in Stremio.</div>
+          <div class="rooms-empty" id="rooms-empty">No listed rooms right now.</div>
         </div>
       </div>
 
       <div class="footer">
-        Open-source. Free. Not affiliated with Stremio.
+        Created by <a href="https://github.com/MertD95" target="_blank" rel="noopener noreferrer">MertD95</a>. Open-source. Not affiliated with Stremio.
       </div>
     </div>
   </div>
@@ -1133,39 +998,11 @@
     </div>
   </div>
 
-  <div id="create-modal" class="modal-overlay" style="display:none">
-    <div class="modal-box">
-      <h3>Create Room</h3>
-      <p>Create here, then continue in Stremio.</p>
-      <div class="modal-error" id="create-error" style="display:none"></div>
-      <input type="text" id="create-room-name" class="modal-text-input" placeholder="Room name (optional)" maxlength="30" />
-      <label class="modal-toggle" for="create-room-public">
-        <span class="modal-toggle-copy">
-          <span class="modal-toggle-title">Allow open join</span>
-          <span class="modal-toggle-desc">Anyone who finds the room can join without an invite key.</span>
-        </span>
-        <input type="checkbox" id="create-room-public" />
-      </label>
-      <label class="modal-toggle" for="create-room-listed">
-        <span class="modal-toggle-copy">
-          <span class="modal-toggle-title">Show on WatchParty</span>
-          <span class="modal-toggle-desc">Show the room on WatchParty. Turn it off to hide it while still sharing the link directly.</span>
-        </span>
-        <input type="checkbox" id="create-room-listed" checked />
-      </label>
-      <div class="modal-helper">You can still change privacy and playback safeguards later from the WatchParty sidebar in Stremio.</div>
-      <div class="modal-actions">
-        <button class="btn-cancel" id="create-cancel-btn">Cancel</button>
-        <button class="btn-primary" id="create-submit-btn">Create and Continue</button>
-      </div>
-    </div>
-  </div>
-
   <script>
     const IS_DEV = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
     const WS_API = IS_DEV ? 'ws://localhost:8181' : 'wss://ws.mertd.me';
     const ROOMS_API = IS_DEV ? 'http://localhost:8181/rooms' : 'https://ws.mertd.me/rooms';
-    const CHROME_WEB_STORE_URL = 'https://chromewebstore.google.com/detail/watchparty-for-stremio';
+    const CHROME_WEB_STORE_URL = 'https://chromewebstore.google.com/detail/watchparty-for-stremio/kfkdlmmjcnndgjkbbckhcafglbmndobk';
     const WEBSITE_USERNAME_KEY = 'watchparty.website.username';
     let extStatusRequestSeq = 0;
 
@@ -1244,7 +1081,7 @@
       input?.focus();
       input?.select?.();
       const note = document.getElementById('hero-profile-note');
-      if (note) note.textContent = 'Add a display name first so WatchParty can use it when you create or join from the website.';
+      if (note) note.textContent = 'Add a display name to join from this page.';
       return '';
     }
 
@@ -1272,6 +1109,7 @@
       const extensionDetected = document.documentElement.hasAttribute('data-watchparty-ext');
       const primaryBtn = document.getElementById('hero-primary-btn');
       const extensionPill = document.getElementById('hero-extension-pill');
+      const extensionStatus = document.getElementById('hero-extension-status');
       const roomPill = document.getElementById('hero-room-pill');
       const profileNote = document.getElementById('hero-profile-note');
       const roomCard = document.getElementById('hero-room-card');
@@ -1286,13 +1124,15 @@
       if (preferredName) setPreferredUsername(preferredName, { persist: true });
 
       if (primaryBtn) {
-        primaryBtn.textContent = extensionDetected ? 'Create Room' : 'Install Extension';
+        primaryBtn.textContent = extensionDetected ? 'Open Stremio' : 'Install Extension';
       }
 
+      if (extensionStatus) {
+        extensionStatus.className = 'hero-extension-status';
+        extensionStatus.classList.add(extensionDetected ? 'is-ready' : 'is-warn');
+      }
       if (extensionPill) {
-        extensionPill.className = 'hero-status-pill';
         extensionPill.textContent = extensionDetected ? 'Extension ready' : 'Extension needed';
-        extensionPill.classList.add(extensionDetected ? 'is-ready' : 'is-warn');
       }
 
       const room = nextStatus?.room || null;
@@ -1302,7 +1142,7 @@
         roomPill.className = 'hero-status-pill is-ready';
         roomPill.textContent = room.public === false ? 'Invite key room active' : 'Open-join room active';
         roomTitle.textContent = room.name || room.meta?.name || 'Active room';
-        roomMeta.textContent = `${room.public === false ? 'Invite key required' : 'Open join'} | ${room.listed === false ? 'Hidden from WatchParty' : 'Listed on WatchParty'} | ${pluralize(room.users?.length || 0, 'person')} in the room`;
+        roomMeta.textContent = `${room.public === false ? 'Invite key required' : 'Open join'} | ${room.listed === false ? 'Hidden from public lists' : 'Listed publicly'} | ${pluralize(room.users?.length || 0, 'person')} in the room`;
       } else {
         roomCard?.classList.add('hidden');
         if (roomPill) roomPill.classList.add('hidden');
@@ -1317,15 +1157,15 @@
 
       if (profileNote) {
         if (!extensionDetected) {
-          profileNote.textContent = 'Install the extension to create or join from WatchParty.';
+          profileNote.textContent = 'Install once to join here or create in Stremio.';
         } else if (room) {
-          profileNote.textContent = 'You already have an active room. Open it in Stremio.';
+          profileNote.textContent = 'Active room ready.';
         } else if (nextStatus?.bootstrapPending) {
-          profileNote.textContent = 'WatchParty is staged. Finish in Stremio.';
+          profileNote.textContent = 'Room staged. Open Stremio.';
         } else if (nextStatus?.hasStremioTab) {
-          profileNote.textContent = 'Stremio is already open. Create here, then continue there.';
+          profileNote.textContent = 'Stremio is open.';
         } else {
-          profileNote.textContent = 'Create or join here first. WatchParty will carry the room into Stremio.';
+          profileNote.textContent = 'Open Stremio or join a listed room.';
         }
       }
     }
@@ -1385,12 +1225,12 @@
       const userCount = Number.isFinite(providedSummary?.users)
         ? Number(providedSummary.users)
         : roomList.reduce((sum, room) => sum + (Number(room?.users) || 0), 0);
-      const titleCount = Number.isFinite(providedSummary?.identifiedTitles)
-        ? Number(providedSummary.identifiedTitles)
-        : new Set(roomList.map(getRecognizedTitleKey).filter(Boolean)).size;
       const summaryEl = document.getElementById('hero-live-summary');
       if (!summaryEl) return;
-      summaryEl.textContent = `${pluralize(userCount, 'person', 'people')} across ${pluralize(roomCount, 'room')}, ${pluralize(titleCount, 'title')} identified.`;
+      summaryEl.innerHTML = `
+        <div class="rooms-stat"><strong>${userCount}</strong><span>${userCount === 1 ? 'person' : 'people'}</span></div>
+        <div class="rooms-stat"><strong>${roomCount}</strong><span>${roomCount === 1 ? 'room' : 'rooms'}</span></div>
+      `;
     }
 
     function showDirectJoinNotice(message) {
@@ -1648,7 +1488,7 @@
       syncRoomPoster(posterSlot, room);
       card.classList.toggle('room-card-reconnecting', isReconnectListing);
       title.textContent = room.name || room.meta?.name || 'Untitled';
-      metaLine1.innerHTML = `Hosted by ${escapeHtml(room.owner)}${room.meta?.year ? ` &middot; ${room.meta.year}` : ''}${isPublic ? ' &middot; Open join' : ' &middot; Invite key required'}${isListed ? '' : ' &middot; Hidden from WatchParty'}`;
+      metaLine1.innerHTML = `Hosted by ${escapeHtml(room.owner)}${room.meta?.year ? ` &middot; ${room.meta.year}` : ''}${isPublic ? ' &middot; Open join' : ' &middot; Invite key required'}${isListed ? '' : ' &middot; Hidden from public lists'}`;
       metaLine2.innerHTML = `<span style="color:${statusColor}">${statusIcon}</span> ${mins}:${secs}${room.bookmarks ? ` &middot; \uD83D\uDCCC ${room.bookmarks}` : ''}`;
       badge.className = isPublic ? 'room-badge room-badge-public' : 'room-badge room-badge-private';
       badge.textContent = isPublic ? 'Open join' : 'Invite key';
@@ -1660,6 +1500,7 @@
         : '';
       directBtn.title = getDirectJoinTitle(room);
       directBtn.disabled = !(room?.hasDirectJoin === true || directJoinType === 'debrid-url');
+      directBtn.textContent = directBtn.disabled ? 'No Direct Join' : 'Direct Join';
     }
 
     const roomCardNodes = new Map();
@@ -1834,15 +1675,6 @@
       clearScheduledPresenceRefreshes();
     });
 
-    // Show a subtle "Live" badge next to the section title
-    const roomsTitle = document.querySelector('.rooms-section h2');
-    if (roomsTitle && !roomsTitle.querySelector('.live-badge')) {
-      const badge = document.createElement('span');
-      badge.className = 'live-badge';
-      badge.textContent = 'Live';
-      roomsTitle.appendChild(badge);
-    }
-
     async function joinRoom(roomId, metaId, metaType, options = {}) {
       if (!ensureExtensionInstalled()) return;
       const username = ensurePreferredUsername();
@@ -1875,53 +1707,11 @@
       handoffToStremio(fallbackUrl);
     }
 
-    function openCreateModal() {
-      if (!ensureExtensionInstalled()) return;
-      const username = ensurePreferredUsername();
-      if (!username) return;
-      document.getElementById('create-error').style.display = 'none';
-      document.getElementById('create-room-name').value = '';
-      document.getElementById('create-room-public').checked = false;
-      document.getElementById('create-room-listed').checked = true;
-      document.getElementById('create-modal').style.display = 'flex';
-      document.getElementById('create-room-name').focus();
-    }
-
-    function closeCreateModal() {
-      document.getElementById('create-error').style.display = 'none';
-      document.getElementById('create-modal').style.display = 'none';
-    }
-
-    function submitCreateRoom() {
-      if (!ensureExtensionInstalled()) return;
-      const username = ensurePreferredUsername();
-      if (!username) return;
-
-      const roomNameInput = document.getElementById('create-room-name');
-      const errorEl = document.getElementById('create-error');
-      let roomName = roomNameInput.value.trim().toLowerCase().replace(/[^a-z0-9-]/g, '') || undefined;
-      if (roomName && roomName.length < 3) {
-        errorEl.textContent = 'Room name must be at least 3 characters using letters, numbers, or hyphens.';
-        errorEl.style.display = 'block';
-        roomNameInput.focus();
-        return;
-      }
-
-      errorEl.style.display = 'none';
-      window.postMessage({
-        type: 'watchparty-create-room',
-        username,
-        roomName,
-        public: document.getElementById('create-room-public').checked,
-        listed: document.getElementById('create-room-listed').checked,
-      }, location.origin);
-      closeCreateModal();
-      scheduleLandingPresenceRefresh();
-      handoffToStremio('https://web.stremio.com');
-    }
-
     // --- Private access key / invite modal ---
     function openPrivateJoinModal(options = {}) {
+      if (!ensureExtensionInstalled()) return;
+      const username = ensurePreferredUsername();
+      if (!username) return;
       pendingPrivateJoin = {
         roomId: options.roomId || '',
         metaId: options.metaId || '',
@@ -1983,24 +1773,16 @@
     document.getElementById('uuid-modal').addEventListener('click', (e) => {
       if (e.target === e.currentTarget) closeUuidModal();
     });
-    document.getElementById('create-cancel-btn').addEventListener('click', closeCreateModal);
-    document.getElementById('create-submit-btn').addEventListener('click', submitCreateRoom);
-    document.getElementById('create-room-name').addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') submitCreateRoom();
-      if (e.key === 'Escape') closeCreateModal();
-    });
-    document.getElementById('create-modal').addEventListener('click', (e) => {
-      if (e.target === e.currentTarget) closeCreateModal();
-    });
     document.getElementById('hero-primary-btn')?.addEventListener('click', () => {
       if (document.documentElement.hasAttribute('data-watchparty-ext')) {
-        openCreateModal();
+        window.postMessage({ type: 'watchparty-open-stremio', url: 'https://web.stremio.com' }, location.origin);
       } else {
         navigateToUrl(CHROME_WEB_STORE_URL);
       }
     });
     document.getElementById('hero-private-btn')?.addEventListener('click', () => {
-      openPrivateJoinModal();
+      document.getElementById('rooms')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      window.setTimeout(() => getProfileNameInput()?.focus(), 250);
     });
     document.getElementById('rooms-private-btn')?.addEventListener('click', () => {
       openPrivateJoinModal();

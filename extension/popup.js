@@ -245,11 +245,11 @@ function updateLobbyPrivacyState() {
       ? 'Anyone who finds the room can join instantly.'
       : 'Invite required to join.';
   }
-  if (listingLabel) listingLabel.textContent = isListed ? 'Listed on WatchParty' : 'Hidden from WatchParty';
+  if (listingLabel) listingLabel.textContent = isListed ? 'Listed publicly' : 'Hidden from public lists';
   if (listingHelp) {
     listingHelp.textContent = isListed
-      ? 'Shown on the WatchParty website so people can discover the room there.'
-      : 'Hidden from the WatchParty website. Share the room link directly instead.';
+      ? 'Shown in public room lists so people can discover the room there.'
+      : 'Hidden from public room lists. Share the room link directly instead.';
   }
 }
 
@@ -485,7 +485,7 @@ setWsStatus(false);
 // --- Views ---
 
 function showLobbyView() {
-  $('view-lobby').classList.remove('hidden');
+  $('view-lobby').classList.add('hidden');
   $('view-room').classList.add('hidden');
   currentRenderedRoom = null;
   resetRoomContentLinks();
@@ -500,7 +500,7 @@ function showLobbyView() {
 function showRoomView(room, myUserId) {
   if (room?.id && suppressedRoomId && room.id === suppressedRoomId) return;
   $('view-lobby').classList.add('hidden');
-  $('view-room').classList.remove('hidden');
+  $('view-room').classList.add('hidden');
 
   if (myUserId) currentUserId = myUserId;
   loadIdentity((resolvedUserId, resolvedSessionId) => {

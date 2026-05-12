@@ -185,7 +185,7 @@ function renderSession(status) {
   setText('session-title', getRoomDisplayName(status));
   setText(
     'session-meta',
-    `${room.public === false ? 'Invite key required' : 'Open join'} | ${room.listed === false ? 'Hidden from WatchParty' : 'Listed on WatchParty'} | ${userCount} watching`
+    `${room.public === false ? 'Invite key required' : 'Open join'} | ${room.listed === false ? 'Hidden from public lists' : 'Listed publicly'} | ${userCount} watching`
   );
 }
 
@@ -316,7 +316,7 @@ function renderStatus(status) {
   setText(
     'diag-room-state',
     status?.room
-      ? `${status.room.public === false ? 'Invite key required' : 'Open join'} | ${status.room.listed === false ? 'Hidden from WatchParty' : 'Listed on WatchParty'} | ${roomUserCount} watching`
+      ? `${status.room.public === false ? 'Invite key required' : 'Open join'} | ${status.room.listed === false ? 'Hidden from public lists' : 'Listed publicly'} | ${roomUserCount} watching`
       : 'No live room snapshot'
   );
   setText(

@@ -13,7 +13,7 @@ const workspaceRoot = path.resolve(watchpartyRoot, '..');
 async function resolveExtensionPath(extPath, options) {
   if (options.localLandingAccess !== true) return extPath;
   const outputDir = options.automationExtensionDir
-    || path.join(workspaceRoot, '.playwright-mcp', 'extension-local-hosts');
+    || path.join(workspaceRoot, '.browser-local', 'extension-local-hosts');
   const result = await prepareAutomationExtension({ sourceDir: extPath, outputDir });
   return result.outputDir;
 }

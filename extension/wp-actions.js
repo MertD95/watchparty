@@ -131,12 +131,12 @@ const WPActionRoutes = (() => {
     }),
     ROOM_CREATE: Object.freeze({
       action: WPAction.ROOM_CREATE,
-      sources: Object.freeze(['popup', 'watchparty-bridge', 'background']),
+      sources: Object.freeze(['overlay', 'popup', 'watchparty-bridge', 'background']),
       target: 'controller',
     }),
     ROOM_JOIN: Object.freeze({
       action: WPAction.ROOM_JOIN,
-      sources: Object.freeze(['popup', 'watchparty-bridge', 'background']),
+      sources: Object.freeze(['overlay', 'popup', 'watchparty-bridge', 'background']),
       target: 'controller',
     }),
     ROOM_LEAVE: Object.freeze({

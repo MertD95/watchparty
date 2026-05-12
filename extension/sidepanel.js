@@ -146,16 +146,14 @@
   }
 
   function openWatchParty() {
-    getExtensionState([
-      WPConstants.STORAGE.BACKEND_MODE,
-      WPConstants.STORAGE.ACTIVE_BACKEND,
-    ], (result) => {
-      const browseUrl = WPConstants.BACKEND.getBrowseUrl(
-        result[WPConstants.STORAGE.BACKEND_MODE],
-        result[WPConstants.STORAGE.ACTIVE_BACKEND]
-      );
-      chrome.tabs.create({ url: browseUrl }).catch(() => {});
-    });
+    chrome.runtime.sendMessage(
+      { type: 'watchparty-ext', action: WPConstants.ACTION.APP_STREMIO_OPEN, url: 'https://web.stremio.com' },
+      (response) => {
+        if (chrome.runtime.lastError || response?.ok === false) {
+          chrome.tabs.create({ url: 'https://web.stremio.com' }).catch(() => {});
+        }
+      }
+    );
   }
 
   function openOptions() {
@@ -402,15 +400,15 @@
     const chatMessages = document.getElementById('chat-messages');
     if (!status || !users || !usersEmpty || !chatContainer || !chatEmpty || !syncIndicator || !peopleCount) return;
 
-    setHeroCopy('Create or join on WatchParty, then use this panel for quick room context.');
+    setHeroCopy('Create or join in the WatchParty sidebar on Stremio, then use this panel for quick room context.');
     updateRoomCodeChip(null);
     status.innerHTML = `
       <div class="empty-state">
         <div class="eyebrow">No Active Room</div>
-        <h2 class="status-title">Create or join from WatchParty first.</h2>
-        <p>Use this panel after the room is live.</p>
+        <h2 class="status-title">Create or join from Stremio first.</h2>
+        <p>Use the WatchParty sidebar in Stremio for room setup.</p>
         <div class="action-row">
-          <button id="sp-open-watchparty-empty" class="action-btn primary" type="button">Open WatchParty</button>
+          <button id="sp-open-watchparty-empty" class="action-btn primary" type="button">Open Stremio</button>
           <button id="sp-open-settings-empty" class="action-btn" type="button">Settings</button>
         </div>
       </div>

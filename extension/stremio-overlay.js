@@ -8,9 +8,10 @@ const WPOverlay = (() => {
   const SIDEBAR_WIDTH = 320;
   const MAX_CHAT_MESSAGES = 200;
   const LOCAL_ECHO_TTL_MS = 10000;
+  const LOBBY_ROOMS_REFRESH_MS = 10000;
 
   let overlay = null;
-  let cachedUsername = 'You';
+  let cachedUsername = '';
   let cachedUserId = null;
   let cachedRoomState = null;
   let launcherHost = null;
@@ -32,6 +33,25 @@ const WPOverlay = (() => {
   let accessKeyRenderSeq = 0;
   let accessKeyDraftRoomId = null;
   let accessKeyDraftValue = '';
+  let lobbyMode = 'create';
+  let lobbyRoomsTimer = null;
+  let lobbyRoomsRequestSeq = 0;
+  let lobbyDirectoryState = {
+    rooms: [],
+    loading: false,
+    error: '',
+    backendLabel: '',
+    updatedAt: 0,
+  };
+  const fallbackGuestSuffix = (() => {
+    try {
+      const values = new Uint16Array(1);
+      crypto.getRandomValues(values);
+      return values[0].toString(16).padStart(4, '0').slice(0, 4).toUpperCase();
+    } catch {
+      return '0000';
+    }
+  })();
 
   // --- Emoji picker (emoji-picker-element library) ---
   function loadEmojiPicker() {
@@ -296,6 +316,16 @@ const WPOverlay = (() => {
     return String(value || '').trim().slice(0, 25);
   }
 
+  function getDefaultUsername() {
+    const seed = String(cachedSessionId || cachedUserId || fallbackGuestSuffix).replace(/[^a-z0-9]/gi, '');
+    const suffix = (seed.slice(0, 4) || fallbackGuestSuffix).toUpperCase();
+    return `Guest ${suffix}`;
+  }
+
+  function getPreferredUsername() {
+    return normalizeUsernameInput(localPreferences.username || cachedUsername || getDefaultUsername());
+  }
+
   function syncLocalPreferenceState(result = {}) {
     if (typeof result[WPConstants.STORAGE.USERNAME] === 'string') {
       localPreferences.username = normalizeUsernameInput(result[WPConstants.STORAGE.USERNAME]);
@@ -345,6 +375,304 @@ const WPOverlay = (() => {
     dispatchAction(WPConstants.ACTION.SESSION_USERNAME_UPDATE, { username }, event);
     refreshLocalSettingsCard();
     return true;
+  }
+
+  function setLobbyFeedback(id, message = '', tone = '') {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = message;
+    el.classList.toggle('wp-warning', tone === 'warn');
+    el.classList.toggle('wp-ok', tone === 'ok');
+  }
+
+  function getLobbyUsername() {
+    const input = document.getElementById('wp-lobby-username');
+    return normalizeUsernameInput(input?.value || getPreferredUsername());
+  }
+
+  function saveLobbyUsername(event = null, options = {}) {
+    if (!isTrustedUserEvent(event)) return false;
+    const username = getLobbyUsername();
+    if (!username) {
+      document.getElementById('wp-lobby-username')?.focus();
+      setLobbyFeedback('wp-lobby-create-feedback', 'Add a display name first.', 'warn');
+      setLobbyFeedback('wp-lobby-join-feedback', 'Add a display name first.', 'warn');
+      return false;
+    }
+    localPreferences.username = username;
+    cachedUsername = username;
+    WPRuntimeState.set({ [WPConstants.STORAGE.USERNAME]: username }).catch(() => {});
+    if (options.silent !== true) showToast('Display name saved.', 1400);
+    return true;
+  }
+
+  function sanitizeLobbyRoomName(value) {
+    return String(value || '').trim().toLowerCase().replace(/[^a-z0-9-]/g, '');
+  }
+
+  function parseLobbyInviteKeys(hash) {
+    const params = new URLSearchParams(String(hash || '').replace(/^#/, ''));
+    return {
+      accessKey: params.get('accessKey') || '',
+      e2eKey: params.get('e2eKey') || '',
+    };
+  }
+
+  function parseLobbyJoinInput(rawValue) {
+    const value = String(rawValue || '').trim();
+    if (!value) return { roomId: '', accessKey: '', e2eKey: '' };
+    const directMatch = value.match(/^([a-z0-9-]{8,})(?:#(.+))?$/i);
+    if (directMatch) {
+      return {
+        roomId: directMatch[1],
+        ...parseLobbyInviteKeys(directMatch[2] || ''),
+      };
+    }
+    try {
+      const parsed = new URL(value);
+      const roomMatch = parsed.pathname.match(/^\/r\/([a-z0-9-]+)$/i);
+      if (!roomMatch) return { roomId: value, accessKey: '', e2eKey: '' };
+      return {
+        roomId: roomMatch[1],
+        ...parseLobbyInviteKeys(parsed.hash),
+      };
+    } catch {
+      return { roomId: value, accessKey: '', e2eKey: '' };
+    }
+  }
+
+  async function hasLobbyE2eKey(parsed) {
+    if (parsed?.e2eKey) return true;
+    if (!parsed?.roomId || !parsed?.accessKey || typeof WPRoomKeys === 'undefined') return false;
+    return !!(await WPRoomKeys.getE2eKey(parsed.roomId).catch(() => null));
+  }
+
+  async function resolveLobbyBackendInfo() {
+    const stored = await WPRuntimeState.get([
+      WPConstants.STORAGE.BACKEND_MODE,
+      WPConstants.STORAGE.ACTIVE_BACKEND,
+    ]).catch(() => ({}));
+    const mode = WPWS?.getBackendMode?.() || stored[WPConstants.STORAGE.BACKEND_MODE];
+    const active = WPWS?.getActiveBackend?.() || stored[WPConstants.STORAGE.ACTIVE_BACKEND];
+    const normalizedMode = WPConstants.BACKEND.normalizeMode(mode);
+    if (normalizedMode === WPConstants.BACKEND.MODES.AUTO && !active && !('update_url' in chrome.runtime.getManifest())) {
+      try {
+        const ready = await fetch(`${WPConstants.BACKEND.LOCAL.httpUrl}/ready`, {
+          signal: AbortSignal.timeout(800),
+        });
+        if (ready.ok) return WPConstants.BACKEND.LOCAL;
+      } catch {
+        // Auto mode falls back to the live backend when localhost is unavailable.
+      }
+    }
+    return WPConstants.BACKEND.getInfo(WPConstants.BACKEND.resolveKey(mode, active));
+  }
+
+  async function refreshLobbyRooms(options = {}) {
+    if (launcherInRoom) return;
+    const requestSeq = ++lobbyRoomsRequestSeq;
+    if (options.silent !== true) {
+      lobbyDirectoryState = { ...lobbyDirectoryState, loading: true, error: '' };
+      renderLobbyDirectory();
+    }
+    try {
+      const backend = await resolveLobbyBackendInfo();
+      const res = await fetch(`${backend.httpUrl}/rooms?limit=20`, {
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!res.ok) throw new Error(`Room list returned ${res.status}`);
+      const data = await res.json();
+      if (requestSeq !== lobbyRoomsRequestSeq) return;
+      lobbyDirectoryState = {
+        rooms: Array.isArray(data?.rooms) ? data.rooms : [],
+        loading: false,
+        error: '',
+        backendLabel: backend.label,
+        updatedAt: Date.now(),
+      };
+    } catch (error) {
+      if (requestSeq !== lobbyRoomsRequestSeq) return;
+      lobbyDirectoryState = {
+        ...lobbyDirectoryState,
+        loading: false,
+        error: error instanceof Error ? error.message : 'Could not load active rooms.',
+      };
+    }
+    renderLobbyDirectory();
+  }
+
+  function startLobbyRoomsRefresh() {
+    if (lobbyRoomsTimer) return;
+    lobbyRoomsTimer = WPRuntimeClock.setInterval(() => {
+      if (!launcherInRoom && isSidebarOpen() && activePanel === 'room') {
+        refreshLobbyRooms({ silent: true }).catch(() => {});
+      }
+    }, LOBBY_ROOMS_REFRESH_MS);
+  }
+
+  function stopLobbyRoomsRefresh() {
+    if (!lobbyRoomsTimer) return;
+    WPRuntimeClock.clearInterval(lobbyRoomsTimer);
+    lobbyRoomsTimer = null;
+  }
+
+  function setLobbyMode(mode) {
+    lobbyMode = mode === 'join' ? 'join' : 'create';
+    const isCreate = lobbyMode === 'create';
+    document.getElementById('wp-lobby-create-panel')?.classList.toggle('wp-hidden-el', !isCreate);
+    document.getElementById('wp-lobby-join-panel')?.classList.toggle('wp-hidden-el', isCreate);
+    for (const button of document.querySelectorAll('.wp-lobby-mode')) {
+      const active = button.dataset.mode === lobbyMode;
+      button.classList.toggle('is-active', active);
+      button.setAttribute('aria-selected', active ? 'true' : 'false');
+    }
+  }
+
+  function bindLobbyInputGuards() {
+    bindInputFieldGuards(document.getElementById('wp-lobby-username'), {
+      allowEnterSubmit: true,
+      onEnter(event) { saveLobbyUsername(event); },
+    });
+    bindInputFieldGuards(document.getElementById('wp-lobby-room-name'), {
+      allowEnterSubmit: true,
+      onEnter(event) { handleLobbyCreate(event); },
+    });
+    bindInputFieldGuards(document.getElementById('wp-lobby-join-input'), {
+      allowEnterSubmit: true,
+      onEnter(event) { handleLobbyJoin(event); },
+    });
+  }
+
+  function renderLobby(container) {
+    if (!container) return;
+    container.classList.add('wp-lobby-surface');
+    if (container.dataset.lobbyReady !== 'true' || !container.querySelector('#wp-lobby-setup-card')) {
+      container.innerHTML = WPOverlayShells.buildLobbyShell();
+      container.dataset.lobbyReady = 'true';
+      delete container.dataset.shellKey;
+      bindLobbyInputGuards();
+    }
+    const usernameInput = document.getElementById('wp-lobby-username');
+    if (usernameInput && document.activeElement !== usernameInput) {
+      usernameInput.value = getPreferredUsername();
+    }
+    setLobbyMode(lobbyMode);
+    renderLobbyDirectory();
+    startLobbyRoomsRefresh();
+    if (lobbyDirectoryState.updatedAt === 0 && !lobbyDirectoryState.loading) {
+      refreshLobbyRooms({ silent: true }).catch(() => {});
+    }
+  }
+
+  function renderLobbyDirectory() {
+    const list = document.getElementById('wp-lobby-room-list');
+    const status = document.getElementById('wp-lobby-directory-status');
+    const copy = document.getElementById('wp-lobby-directory-copy');
+    if (!list || !status || !copy) return;
+    const { rooms, loading, error, backendLabel, updatedAt } = lobbyDirectoryState;
+    const updatedLabel = updatedAt ? new Date(updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+    copy.textContent = `${backendLabel || 'Active'}${updatedLabel ? `, ${updatedLabel}` : ''}.`;
+    status.textContent = loading && rooms.length === 0 ? 'Loading active rooms...' : error;
+    status.classList.toggle('wp-warning', !!error);
+    list.innerHTML = '';
+    if (!rooms.length) {
+      const empty = WPDOM.el('div', {
+        className: 'wp-settings-note',
+        text: loading ? 'Checking rooms.' : 'No rooms listed.',
+      });
+      list.appendChild(empty);
+      return;
+    }
+    for (const room of rooms) {
+      const card = document.createElement('div');
+      card.className = 'wp-lobby-room-card';
+      card.dataset.roomId = room.id || '';
+      card.dataset.roomPublic = room.public === false ? 'false' : 'true';
+      const mins = Math.floor((Number(room.time) || 0) / 60);
+      const secs = Math.floor((Number(room.time) || 0) % 60).toString().padStart(2, '0');
+      const accessLabel = room.public === false ? 'Invite key required' : 'Open join';
+      const title = room.name || room.meta?.name || 'Untitled room';
+      const users = Number(room.users) || 0;
+      const directReady = room.hasDirectJoin === true;
+      card.innerHTML = `
+        <div class="wp-lobby-room-title">${escapeHtml(title)}</div>
+        <div class="wp-lobby-room-meta">Hosted by ${escapeHtml(room.owner || 'Unknown')} | ${accessLabel} | ${users} watching</div>
+        <div class="wp-lobby-room-meta">${room.paused ? 'Paused' : 'Playing'} at ${mins}:${secs}${room.listingState === 'reconnecting' ? ' | Reconnecting' : ''}</div>
+        <div class="wp-lobby-room-actions">
+          <button class="wp-action-btn" type="button" data-lobby-room-action="join">Join</button>
+          <button class="wp-action-btn" type="button" data-lobby-room-action="direct" ${directReady ? '' : 'disabled'}>Direct Join</button>
+        </div>
+      `;
+      list.appendChild(card);
+    }
+  }
+
+  function handleLobbyCreate(event = null) {
+    if (!saveLobbyUsername(event, { silent: true })) return;
+    const roomName = sanitizeLobbyRoomName(document.getElementById('wp-lobby-room-name')?.value);
+    if (roomName && roomName.length < 3) {
+      setLobbyFeedback('wp-lobby-create-feedback', 'Room name must be at least 3 characters.', 'warn');
+      document.getElementById('wp-lobby-room-name')?.focus();
+      return;
+    }
+    const isPrivate = document.getElementById('wp-lobby-private')?.checked !== false;
+    const listed = document.getElementById('wp-lobby-listed')?.checked !== false;
+    setLobbyFeedback('wp-lobby-create-feedback', 'Creating room...', '');
+    const sent = dispatchAction(WPConstants.ACTION.ROOM_CREATE, {
+      username: getLobbyUsername(),
+      meta: { id: 'pending', type: 'movie', name: 'WatchParty Session' },
+      stream: { url: 'https://watchparty.mertd.me/sync' },
+      public: !isPrivate,
+      listed,
+      roomName: roomName || undefined,
+    }, event);
+    if (!sent) {
+      setLobbyFeedback('wp-lobby-create-feedback', 'Could not send create request.', 'warn');
+    }
+  }
+
+  async function handleLobbyJoin(event = null, options = {}) {
+    if (!saveLobbyUsername(event, { silent: true })) return;
+    const parsed = options.roomId
+      ? { roomId: options.roomId, accessKey: options.accessKey || '', e2eKey: options.e2eKey || '' }
+      : parseLobbyJoinInput(document.getElementById('wp-lobby-join-input')?.value);
+    if (!parsed.roomId) {
+      setLobbyMode('join');
+      setLobbyFeedback('wp-lobby-join-feedback', 'Paste an invite link or room ID.', 'warn');
+      document.getElementById('wp-lobby-join-input')?.focus();
+      return;
+    }
+    if (options.requiresKey && !parsed.accessKey) {
+      setLobbyMode('join');
+      const input = document.getElementById('wp-lobby-join-input');
+      if (input) {
+        input.value = parsed.roomId;
+        input.focus();
+      }
+      setLobbyFeedback('wp-lobby-join-feedback', 'Paste the full invite link for this private room.', 'warn');
+      return;
+    }
+    if (parsed.accessKey && !await hasLobbyE2eKey(parsed)) {
+      setLobbyMode('join');
+      const input = document.getElementById('wp-lobby-join-input');
+      if (input) {
+        input.value = parsed.roomId;
+        input.focus();
+      }
+      setLobbyFeedback('wp-lobby-join-feedback', 'Paste the full invite link. Private rooms need the e2eKey in the link so chat stays encrypted.', 'warn');
+      return;
+    }
+    setLobbyFeedback('wp-lobby-join-feedback', 'Joining room...', '');
+    const sent = dispatchAction(WPConstants.ACTION.ROOM_JOIN, {
+      username: getLobbyUsername(),
+      roomId: parsed.roomId,
+      accessKey: parsed.accessKey || undefined,
+      e2eKey: parsed.e2eKey || undefined,
+      preferDirectJoin: options.preferDirectJoin === true,
+    }, event);
+    if (!sent) {
+      setLobbyFeedback('wp-lobby-join-feedback', 'Could not send join request.', 'warn');
+    }
   }
 
   function normalizeAccessKeyInput(value) {
@@ -638,6 +966,7 @@ const WPOverlay = (() => {
     sidebar.classList.remove('wp-sidebar-hidden');
     updateContentMargin(true);
     setActivePanel(panel, { clearUnread: panel === 'chat' });
+    if (!launcherInRoom && activePanel === 'room') refreshLobbyRooms({ silent: true }).catch(() => {});
     updateLauncherState({ open: true });
   }
 
@@ -901,7 +1230,7 @@ const WPOverlay = (() => {
             <span>People</span>
           </button>
           <button class="wp-tab-btn" data-panel="room" role="tab" aria-selected="false">
-            <span>Room</span>
+            <span>Rooms</span>
           </button>
           <button class="wp-tab-btn" data-panel="prefs" role="tab" aria-selected="false">
             <span>Settings</span>
@@ -943,6 +1272,9 @@ const WPOverlay = (() => {
           <section id="wp-panel-prefs" class="wp-panel wp-panel-room wp-hidden-el" role="tabpanel">
             <div id="wp-local-settings"></div>
           </section>
+        </div>
+        <div id="wp-sidebar-credit">
+          created by <a href="https://github.com/MertD95" target="_blank" rel="noopener noreferrer">MertD95</a>
         </div>
       </div>
       <div id="wp-reaction-container"></div>
@@ -1040,7 +1372,7 @@ const WPOverlay = (() => {
   }
 
   function bindInputFieldGuards(input, options = {}) {
-    const { allowEnterSubmit = false, onEscape = null } = options;
+    const { allowEnterSubmit = false, onEnter = null, onEscape = null } = options;
     if (!input) return;
 
     input.addEventListener('keydown', (e) => {
@@ -1048,7 +1380,8 @@ const WPOverlay = (() => {
       const lowerKey = String(e.key || '').toLowerCase();
       if (allowEnterSubmit && e.key === 'Enter') {
         e.preventDefault();
-        sendChat(e);
+        if (typeof onEnter === 'function') onEnter(e);
+        else sendChat(e);
         return;
       }
       if (e.key === 'Escape') {
@@ -1079,6 +1412,41 @@ const WPOverlay = (() => {
     $('wp-close-sidebar').addEventListener('click', closeSidebar);
     document.querySelectorAll('.wp-tab-btn').forEach((btn) => {
       btn.addEventListener('click', () => setActivePanel(btn.dataset.panel));
+    });
+    $('wp-panel-room').addEventListener('click', (event) => {
+      if (!isTrustedUserEvent(event)) return;
+      const modeButton = event.target.closest?.('.wp-lobby-mode');
+      if (modeButton?.dataset.mode) {
+        setLobbyMode(modeButton.dataset.mode);
+        return;
+      }
+      if (event.target.closest?.('#wp-lobby-save-name')) {
+        saveLobbyUsername(event);
+        return;
+      }
+      if (event.target.closest?.('#wp-lobby-create-btn')) {
+        handleLobbyCreate(event);
+        return;
+      }
+      if (event.target.closest?.('#wp-lobby-join-btn')) {
+        handleLobbyJoin(event);
+        return;
+      }
+      if (event.target.closest?.('#wp-lobby-refresh-btn')) {
+        refreshLobbyRooms().catch(() => {});
+        return;
+      }
+      const roomActionButton = event.target.closest?.('[data-lobby-room-action]');
+      if (roomActionButton) {
+        const card = roomActionButton.closest('.wp-lobby-room-card');
+        const roomId = card?.dataset.roomId || '';
+        const requiresKey = card?.dataset.roomPublic === 'false';
+        handleLobbyJoin(event, {
+          roomId,
+          requiresKey,
+          preferDirectJoin: roomActionButton.dataset.lobbyRoomAction === 'direct',
+        });
+      }
     });
     $('wp-chat-send').addEventListener('click', (event) => sendChat(event));
     bindInputFieldGuards($('wp-chat-input'), { allowEnterSubmit: true });
@@ -1267,12 +1635,12 @@ const WPOverlay = (() => {
       resetRenderCache();
       clearDisplayedBookmarks();
       launcherInRoom = false;
-      if (status) status.innerHTML = '<div class="wp-empty-state">Not in a room.<br/><a class="wp-empty-link" href="https://watchparty.mertd.me" target="_blank" rel="noreferrer">Create or join from WatchParty</a>.</div>';
+      if (status) status.innerHTML = '<span class="wp-status-line wp-status-heading">No active room</span><span class="wp-status-line wp-muted">Create or join a room.</span>';
       if (roomCode) roomCode.textContent = '';
       if (usersDiv) usersDiv.innerHTML = '';
       if (contentLink) contentLink.classList.add('wp-hidden-el');
       if (syncInd) syncInd.classList.add('wp-hidden-el');
-      if (roomControls) roomControls.innerHTML = '';
+      if (roomControls) renderLobby(roomControls);
       if (localSettings) localSettings.innerHTML = '';
       if (chatContainer) chatContainer.classList.add('wp-hidden-el');
       document.getElementById('wp-chat-empty')?.classList.add('wp-hidden-el');
@@ -1283,6 +1651,7 @@ const WPOverlay = (() => {
     }
 
     // Show chat when in room
+    stopLobbyRoomsRefresh();
     if (chatContainer) chatContainer.classList.remove('wp-hidden-el');
     renderBookmarkHistory(roomState.bookmarks);
 
@@ -1294,7 +1663,10 @@ const WPOverlay = (() => {
 
     if (status) renderStatusButtons(status, isHost, hasVideo, wsConnected, roomState);
     if (contentLink) renderContentLink(contentLink, isHost, roomState);
-    if (roomControls) renderRoomControls(roomControls, roomState, isHost);
+    if (roomControls) {
+      delete roomControls.dataset.lobbyReady;
+      renderRoomControls(roomControls, roomState, isHost);
+    }
     if (localSettings) renderLocalSettingsCard(localSettings);
     if (usersDiv && roomState.users) renderUsersList(usersDiv, roomState, userId, isHost);
     if (isHost || !hasVideo) removeCatchUpButton();
@@ -1341,9 +1713,10 @@ const WPOverlay = (() => {
   }
 
   function renderRoomControls(container, roomState, isHost) {
+    container.classList.remove('wp-lobby-surface');
     const sessionSummary = roomState.public
-      ? `${roomState.listed === false ? 'Hidden from WatchParty.' : 'Listed on WatchParty.'} Anyone who finds the room can join.`
-      : `${roomState.listed === false ? 'Hidden from WatchParty.' : 'Listed on WatchParty.'} Invite key required. Private-room messages stay encrypted.`;
+      ? `${roomState.listed === false ? 'Hidden.' : 'Listed.'} Open join.`
+      : `${roomState.listed === false ? 'Hidden.' : 'Listed.'} Invite key required.`;
     const autoPause = roomState.settings?.autoPauseOnDisconnect === true;
     const isPrivateRoom = roomState.public === false;
     const shellKey = isHost ? 'host' : 'guest';
@@ -1470,7 +1843,7 @@ const WPOverlay = (() => {
       });
     }
 
-    const displayName = normalizeUsernameInput(localPreferences.username || cachedUsername);
+    const displayName = getPreferredUsername();
     const usernameInput = container.querySelector('#wp-settings-username');
     if (usernameInput && document.activeElement !== usernameInput && usernameInput.value !== displayName) {
       usernameInput.value = displayName;
