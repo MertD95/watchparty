@@ -25,6 +25,7 @@
   let lastUserAction = null;
 
   let sessionId = null; // Persistent session ID — same across all tabs
+  let sessionToken = null; // Private proof for sessionId ownership; never sent to room peers
 
   // --- Active video tab election (Spotify-style: only ONE tab syncs at a time) ---
   // When multiple tabs have video, only the most recent one sends sync/playback/stream messages.
@@ -621,8 +622,8 @@
 
   function sendSessionHello(usernameCandidate) {
     const username = resolveKnownUsername(usernameCandidate);
-    if (!username || !sessionId) return false;
-    WPWS.send({ type: WPProtocol.COMMAND.SESSION_HELLO, payload: { username, sessionId } });
+    if (!username || !sessionId || !sessionToken) return false;
+    WPWS.send({ type: WPProtocol.COMMAND.SESSION_HELLO, payload: { username, sessionId, sessionToken } });
     return true;
   }
 
@@ -2303,6 +2304,7 @@
     // This lets the server identify all tabs as the same user — Twitch-style multi-tab.
     getExtensionState([
       WPConstants.STORAGE.SESSION_ID,
+      WPConstants.STORAGE.SESSION_TOKEN,
       WPConstants.STORAGE.BACKEND_MODE,
       WPConstants.STORAGE.ACTIVE_BACKEND,
       WPConstants.STORAGE.ROOM_STATE,
@@ -2314,11 +2316,22 @@
       WPConstants.STORAGE.DEFERRED_LEAVE_ROOM,
     ]).then((result) => {
       const storedSessionId = result[WPConstants.STORAGE.SESSION_ID];
+      const storedSessionToken = result[WPConstants.STORAGE.SESSION_TOKEN];
       if (storedSessionId) {
         sessionId = storedSessionId;
       } else {
         sessionId = crypto.randomUUID();
-        setExtensionState({ [WPConstants.STORAGE.SESSION_ID]: sessionId }).catch(() => {});
+      }
+      if (storedSessionToken) {
+        sessionToken = storedSessionToken;
+      } else {
+        sessionToken = crypto.randomUUID();
+      }
+      if (!storedSessionId || !storedSessionToken) {
+        setExtensionState({
+          [WPConstants.STORAGE.SESSION_ID]: sessionId,
+          [WPConstants.STORAGE.SESSION_TOKEN]: sessionToken,
+        }).catch(() => {});
       }
       syncControllerRuntimeState('session.ready');
       syncDeferredLeaveIntent(result[WPConstants.STORAGE.DEFERRED_LEAVE_ROOM]);
