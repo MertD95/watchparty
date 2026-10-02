@@ -1,0 +1,2 @@
+# Cloud Shell bootstrap must remain executable by Bash after Windows checkouts.
+*.sh text eol=lf

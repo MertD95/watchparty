@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { runPublisher, compareVersions } from '../tools/publish-chrome-web-store.mjs';
+import fs from 'node:fs';
+import { runPublisher, compareVersions, validateReleasePackage } from '../tools/publish-chrome-web-store.mjs';
 import { readStorePackage } from '../tools/validate-store-package.mjs';
 
 const env = { CHROME_EXTENSION_ID: 'a'.repeat(32), CHROME_PUBLISHER_ID: 'test-publisher',
@@ -79,6 +80,76 @@ test('store status mode never uploads or submits and logs no credentials', async
   for (const secret of [env.CHROME_CLIENT_SECRET, env.CHROME_CLIENT_ID, env.CHROME_REFRESH_TOKEN, 'private-access-token']) assert.ok(!h.logs.join('').includes(secret));
 });
 
+test('short-lived supplied access token requires no OAuth secrets and never refreshes', async () => {
+  const shortEnv = { CHROME_EXTENSION_ID: env.CHROME_EXTENSION_ID, CHROME_PUBLISHER_ID: env.CHROME_PUBLISHER_ID,
+    CHROME_ACCESS_TOKEN: 'private-short-lived-token' };
+  const h = harness([status()], { env: shortEnv, submit: false, zipBytes: undefined });
+  assert.equal((await h.run()).event, 'status-only-no-changes');
+  assert.equal(h.calls.length, 1);
+  assert.equal(h.calls[0].headers.Authorization, 'Bearer private-short-lived-token');
+  assert.ok(!h.logs.join('').includes(shortEnv.CHROME_ACCESS_TOKEN));
+  const submit = harness([status(), uploaded(), status(), { ...identity, state: 'PENDING_REVIEW' }, pending], {
+    env: { ...shortEnv, GITHUB_ACTIONS: 'true', CHROME_PUBLISH_ENABLED: 'true', CHROME_RELEASE_TAG: 'v2.0.2' },
+  });
+  assert.equal((await submit.run()).submissionState, 'PENDING_REVIEW');
+  assert.ok(submit.calls.every(call => !call.url.includes('oauth2.googleapis.com')));
+});
+
+test('supplied token failures do not fall back to legacy secrets or expose the token', async () => {
+  for (const invalid of ['', ' ', 'private\nsecret', 'private\rsecret', 'private\tsecret']) {
+    const h = harness([], { env: { ...env, CHROME_ACCESS_TOKEN: invalid }, submit: false });
+    await assert.rejects(h.run(), /valid OAuth access token/);
+    assert.equal(h.calls.length, 0);
+  }
+  for (const response of [{ httpError: 401, error_description: 'private-short-lived-token' }, new Error('private-short-lived-token')]) {
+    const h = harness([response], { env: { ...env, CHROME_ACCESS_TOKEN: 'private-short-lived-token' }, submit: false });
+    await assert.rejects(h.run(), error => !error.message.includes('private-short-lived-token'));
+    assert.equal(h.calls.length, 1);
+    assert.ok(!h.calls[0].url.includes('oauth2.googleapis.com'));
+  }
+});
+
+test('release package must match its stable tag exactly before authentication', async () => {
+  assert.equal(validateReleasePackage(archive(), 'v2.0.2'), '2.0.2');
+  for (const tag of [undefined, '', 'main', 'refs/tags/v2.0.2', 'v2.0.2-beta', 'v02.0.2', 'v2.0.3', 'v2.0.2.0', 'v2.0.2\n']) {
+    assert.throws(() => validateReleasePackage(archive(), tag));
+  }
+  const h = harness([], { expectedTag: 'v2.0.3' });
+  await assert.rejects(h.run(), /exactly match/);
+  assert.equal(h.calls.length, 0);
+});
+
+test('CI submission requires explicit enablement and release tag but status works while disabled', async () => {
+  for (const flags of [{}, { CHROME_PUBLISH_ENABLED: 'false' }, { CHROME_PUBLISH_ENABLED: 'true' },
+    { CHROME_PUBLISH_ENABLED: 'true', CHROME_RELEASE_TAG: 'v2.0.3' }]) {
+    const h = harness([], { env: { ...env, GITHUB_ACTIONS: 'true', ...flags } });
+    await assert.rejects(h.run());
+    assert.equal(h.calls.length, 0);
+  }
+  const h = harness([token(), status()], { env: { ...env, GITHUB_ACTIONS: 'true', CHROME_PUBLISH_ENABLED: 'false' }, submit: false });
+  assert.equal((await h.run()).event, 'status-only-no-changes');
+});
+
+test('release workflow keeps short-lived auth scoped, status cheap, and exact-tag packaging separate', () => {
+  const workflow = fs.readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
+  assert.doesNotMatch(workflow, /npm (?:ci|install|test|run verify)|node --test/);
+  assert.match(workflow, /!github\.event\.release\.prerelease/);
+  assert.match(workflow, /inputs\.mode != 'status'/);
+  assert.match(workflow, /vars\.CHROME_PUBLISH_ENABLED == 'true'/);
+  assert.match(workflow, /git merge-base --is-ancestor "\$\{release_sha\}" origin\/main/);
+  assert.match(workflow, /test "\$\{GITHUB_REF\}" = 'refs\/heads\/main'/);
+  assert.match(workflow, /path: release-source/);
+  assert.match(workflow, /ref: \$\{\{ github\.sha \}\}/);
+  assert.equal((workflow.match(/id-token: write/g) || []).length, 1);
+  assert.match(workflow, /google-github-actions\/auth@[a-f0-9]{40}/);
+  assert.match(workflow, /access_token_scopes: https:\/\/www\.googleapis\.com\/auth\/chromewebstore\r?\n/);
+  assert.match(workflow, /create_credentials_file: false/);
+  assert.match(workflow, /export_environment_variables: false/);
+  assert.match(workflow, /if: vars\.CHROME_AUTH_MODE == 'wif'/);
+  assert.match(workflow, /if: vars\.CHROME_AUTH_MODE == 'oauth'/);
+  assert.ok(workflow.indexOf('Verify artifact checksum') < workflow.indexOf('Obtain short-lived'));
+});
+
 test('already published or reviewed identical version is idempotent without upload', async () => {
   for (const existing of [pending, status({ publishedItemRevisionStatus: revision('PUBLISHED', '2.0.2.0') }),
     status({ submittedItemRevisionStatus: revision('STAGED', '2.0.2') })]) {
@@ -138,6 +209,7 @@ test('store failure does not expose OAuth responses and mutations are not retrie
 
 test('upload version mismatch or another active submission appearing after upload prevents publish', async () => {
   for (const responses of [[token(), status(), uploaded({ crxVersion: '2.0.3' })],
+    [token(), status(), uploaded({ crxVersion: undefined })], [token(), status(), uploaded({ crxVersion: '' })],
     [token(), status(), uploaded(), status({ submittedItemRevisionStatus: revision('PENDING_REVIEW', '2.0.3') })]]) {
     const h = harness(responses);
     await assert.rejects(h.run(), /submission was not requested/);

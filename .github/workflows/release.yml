@@ -5,11 +5,16 @@ on:
     types: [published]
   workflow_dispatch:
     inputs:
-      submit_for_review:
-        description: 'Upload this ref and submit to Google review (publishes after approval)'
+      mode:
+        description: 'Package a tested tag, check Google status, or submit a tested tag'
         required: true
-        default: false
-        type: boolean
+        default: status
+        type: choice
+        options: [status, package, submit]
+      release_tag:
+        description: 'Existing stable tag for package/submit (e.g. v2.0.2); ignored for status'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -25,21 +30,63 @@ env:
 
 jobs:
   package:
+    if: >-
+      (github.event_name == 'release' && !github.event.release.prerelease && startsWith(github.event.release.tag_name, 'v')) ||
+      (github.event_name == 'workflow_dispatch' && inputs.mode != 'status')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     environment: release-artifacts
     permissions:
       contents: write
+    outputs:
+      release_tag: ${{ steps.source.outputs.release_tag }}
+      release_sha: ${{ steps.source.outputs.release_sha }}
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      - name: Checkout workflow tools (manual runs use the dispatched main commit)
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify trusted release source
+        id: source
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REPOSITORY}" = 'MertD95/watchparty'
+          if [ "${GITHUB_EVENT_NAME}" = 'workflow_dispatch' ]; then
+            test "${GITHUB_REF}" = 'refs/heads/main'
+          fi
+          if ! [[ "${RELEASE_TAG}" =~ ^v(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*)){0,3}$ ]]; then
+            echo '::error::Provide an existing stable release tag such as v2.0.2.'
+            exit 1
+          fi
+          release_sha="$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}")"
+          git merge-base --is-ancestor "${release_sha}" origin/main
+          if [ "${GITHUB_EVENT_NAME}" = 'release' ]; then
+            test "${GITHUB_REF}" = "refs/tags/${RELEASE_TAG}"
+            test "${release_sha}" = "${GITHUB_SHA}"
+          fi
+          echo "release_tag=${RELEASE_TAG}" >> "${GITHUB_OUTPUT}"
+          echo "release_sha=${release_sha}" >> "${GITHUB_OUTPUT}"
+      - name: Checkout exact tested tag separately from workflow tools
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          ref: ${{ steps.source.outputs.release_sha }}
+          path: release-source
+          persist-credentials: false
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
           node-version: ${{ env.NODE_VERSION }}
       - name: Package extension (no tests or dependency install)
+        env:
+          CHROME_RELEASE_TAG: ${{ steps.source.outputs.release_tag }}
         run: |
-          node tools/build-store-package.mjs
-          cp dist/chrome-web-store/watchparty-for-stremio.zip "${PACKAGE_NAME}"
+          node release-source/tools/build-store-package.mjs
+          cp release-source/dist/chrome-web-store/watchparty-for-stremio.zip "${PACKAGE_NAME}"
           node tools/validate-store-package.mjs "${PACKAGE_NAME}"
+          node --input-type=module -e 'import fs from "node:fs"; import { validateReleasePackage } from "./tools/publish-chrome-web-store.mjs"; validateReleasePackage(fs.readFileSync(process.env.PACKAGE_NAME), process.env.CHROME_RELEASE_TAG);'
           sha256sum "${PACKAGE_NAME}" > "${PACKAGE_NAME}.sha256"
       - name: Upload workflow artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -58,35 +105,108 @@ jobs:
             ${{ env.PACKAGE_NAME }}
             ${{ env.PACKAGE_NAME }}.sha256
 
-  chrome-submit:
+  chrome-store:
     needs: package
-    if: github.event_name == 'workflow_dispatch' && inputs.submit_for_review == true
+    # CHROME_PUBLISH_ENABLED is a repository variable so this gate is evaluated
+    # before entering the environment. A disabled manual submit fails closed below.
+    if: >-
+      always() && !cancelled() &&
+      ((github.event_name == 'workflow_dispatch' && inputs.mode == 'status') ||
+       (needs.package.result == 'success' &&
+        ((github.event_name == 'workflow_dispatch' && inputs.mode == 'submit') ||
+         (github.event_name == 'release' && vars.CHROME_PUBLISH_ENABLED == 'true'))))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: chrome-web-store
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      CHROME_PUBLISH_ENABLED: ${{ vars.CHROME_PUBLISH_ENABLED }}
+      CHROME_RELEASE_TAG: ${{ needs.package.outputs.release_tag }}
+      STORE_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'status' && 'status' || 'submit' }}
     steps:
-      - name: Require explicit store enablement
+      - name: Require trusted invocation and configured store identity
         env:
-          CHROME_PUBLISH_ENABLED: ${{ vars.CHROME_PUBLISH_ENABLED }}
+          CHROME_AUTH_MODE: ${{ vars.CHROME_AUTH_MODE }}
+          CHROME_EXTENSION_ID: ${{ vars.CHROME_EXTENSION_ID || secrets.CHROME_EXTENSION_ID }}
+          CHROME_PUBLISHER_ID: ${{ vars.CHROME_PUBLISHER_ID || secrets.CHROME_PUBLISHER_ID }}
+          GOOGLE_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GOOGLE_WORKLOAD_IDENTITY_PROVIDER }}
+          GOOGLE_SERVICE_ACCOUNT: ${{ vars.GOOGLE_SERVICE_ACCOUNT }}
         run: |
-          if [ "${CHROME_PUBLISH_ENABLED}" != 'true' ]; then
-            echo '::error::Set CHROME_PUBLISH_ENABLED=true only after configuring and approving the chrome-web-store environment.'
+          set -euo pipefail
+          test "${GITHUB_REPOSITORY}" = 'MertD95/watchparty'
+          if [ "${GITHUB_EVENT_NAME}" = 'workflow_dispatch' ]; then
+            test "${GITHUB_REF}" = 'refs/heads/main'
+          fi
+          if [ "${STORE_MODE}" = 'submit' ] && [ "${CHROME_PUBLISH_ENABLED}" != 'true' ]; then
+            echo '::error::Set the repository variable CHROME_PUBLISH_ENABLED=true only after a successful status check.'
             exit 1
           fi
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+          case "${CHROME_AUTH_MODE}" in
+            wif) required_variables='GOOGLE_WORKLOAD_IDENTITY_PROVIDER GOOGLE_SERVICE_ACCOUNT CHROME_EXTENSION_ID CHROME_PUBLISHER_ID' ;;
+            oauth) required_variables='CHROME_EXTENSION_ID CHROME_PUBLISHER_ID' ;;
+            *) echo '::error::Set CHROME_AUTH_MODE to wif or oauth in the chrome-web-store environment.'; exit 1 ;;
+          esac
+          for variable in ${required_variables}; do
+            if [ -z "${!variable}" ]; then
+              echo "::error::Configure ${variable} in the chrome-web-store environment."
+              exit 1
+            fi
+          done
+      - name: Checkout publisher from the trusted workflow commit
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
           node-version: ${{ env.NODE_VERSION }}
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        if: env.STORE_MODE == 'submit'
         with:
           name: extension-package
-      - name: Verify artifact checksum
-        run: sha256sum --check "${PACKAGE_NAME}.sha256"
-      - name: Submit with Chrome Web Store API v2
+      - name: Verify artifact checksum and exact release version before authentication
+        if: env.STORE_MODE == 'submit'
+        run: |
+          sha256sum --check "${PACKAGE_NAME}.sha256"
+          node --input-type=module -e 'import fs from "node:fs"; import { validateReleasePackage } from "./tools/publish-chrome-web-store.mjs"; validateReleasePackage(fs.readFileSync(process.env.PACKAGE_NAME), process.env.CHROME_RELEASE_TAG);'
+      - name: Obtain short-lived Chrome Web Store access token
+        if: vars.CHROME_AUTH_MODE == 'wif'
+        id: google-auth
+        # Official google-github-actions/auth v3.0.0, pinned to its release commit.
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: ${{ vars.GOOGLE_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GOOGLE_SERVICE_ACCOUNT }}
+          token_format: access_token
+          access_token_scopes: https://www.googleapis.com/auth/chromewebstore
+          access_token_lifetime: 600s
+          create_credentials_file: false
+          export_environment_variables: false
+      - name: Check status or submit using short-lived WIF token
+        if: vars.CHROME_AUTH_MODE == 'wif'
         env:
-          CHROME_EXTENSION_ID: ${{ secrets.CHROME_EXTENSION_ID }}
-          CHROME_PUBLISHER_ID: ${{ secrets.CHROME_PUBLISHER_ID }}
+          CHROME_EXTENSION_ID: ${{ vars.CHROME_EXTENSION_ID || secrets.CHROME_EXTENSION_ID }}
+          CHROME_PUBLISHER_ID: ${{ vars.CHROME_PUBLISHER_ID || secrets.CHROME_PUBLISHER_ID }}
+          CHROME_ACCESS_TOKEN: ${{ steps.google-auth.outputs.access_token }}
+        run: |
+          if [ "${STORE_MODE}" = 'status' ]; then
+            node tools/publish-chrome-web-store.mjs --status
+          else
+            node tools/publish-chrome-web-store.mjs --submit "${PACKAGE_NAME}"
+          fi
+      - name: Check status or submit using explicitly configured OAuth credentials
+        if: vars.CHROME_AUTH_MODE == 'oauth'
+        env:
+          CHROME_EXTENSION_ID: ${{ vars.CHROME_EXTENSION_ID || secrets.CHROME_EXTENSION_ID }}
+          CHROME_PUBLISHER_ID: ${{ vars.CHROME_PUBLISHER_ID || secrets.CHROME_PUBLISHER_ID }}
           CHROME_CLIENT_ID: ${{ secrets.CHROME_CLIENT_ID }}
           CHROME_CLIENT_SECRET: ${{ secrets.CHROME_CLIENT_SECRET }}
           CHROME_REFRESH_TOKEN: ${{ secrets.CHROME_REFRESH_TOKEN }}
-        run: node tools/publish-chrome-web-store.mjs --submit "${PACKAGE_NAME}"
+        run: |
+          if [ "${STORE_MODE}" = 'status' ]; then
+            node tools/publish-chrome-web-store.mjs --status
+          else
+            node tools/publish-chrome-web-store.mjs --submit "${PACKAGE_NAME}"
+          fi

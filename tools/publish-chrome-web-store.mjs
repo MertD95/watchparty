@@ -8,7 +8,8 @@ import { readStorePackage } from './validate-store-package.mjs';
 // ambiguous network failure, inspect --status before deciding to run again.
 // https://developer.chrome.com/docs/webstore/api/reference/rest/v2/publishers.items/publish
 const API = 'https://chromewebstore.googleapis.com';
-const REQUIRED_ENV = ['CHROME_EXTENSION_ID', 'CHROME_PUBLISHER_ID', 'CHROME_CLIENT_ID', 'CHROME_CLIENT_SECRET', 'CHROME_REFRESH_TOKEN'];
+const ID_ENV = ['CHROME_EXTENSION_ID', 'CHROME_PUBLISHER_ID'];
+const LEGACY_AUTH_ENV = ['CHROME_CLIENT_ID', 'CHROME_CLIENT_SECRET', 'CHROME_REFRESH_TOKEN'];
 const ACTIVE_STATES = new Set(['PENDING_REVIEW', 'STAGED', 'PUBLISHED', 'PUBLISHED_TO_TESTERS']);
 const KNOWN_STATES = new Set([...ACTIVE_STATES, 'REJECTED', 'CANCELLED']);
 // The UploadState schema calls this IN_PROGRESS; method prose also mentions
@@ -23,6 +24,15 @@ export function compareVersions(a, b) {
     if (difference) return Math.sign(difference);
   }
   return 0;
+}
+
+export function validateReleasePackage(zipBytes, releaseTag) {
+  if (typeof releaseTag !== 'string' || !/^v(?:0|[1-9]\d*)(?:\.(?:0|[1-9]\d*)){0,3}$/.test(releaseTag)) {
+    throw new Error('A stable version tag such as v2.0.2 is required.');
+  }
+  const { manifest } = readStorePackage(zipBytes);
+  if (releaseTag !== `v${manifest.version}`) throw new Error('Release tag does not exactly match the ZIP manifest version.');
+  return manifest.version;
 }
 
 function versions(revision) {
@@ -41,13 +51,16 @@ function summarize(status) {
   };
 }
 
-export async function runPublisher({ env = process.env, submit = false, zipBytes,
+export async function runPublisher({ env = process.env, submit = false, zipBytes, expectedTag = env.CHROME_RELEASE_TAG,
   fetchImpl = globalThis.fetch, sleep = delay, now = Date.now, log = console.log,
   pollIntervalMs = 5000, maxPolls = 24, uploadDeadlineMs = 180000 } = {}) {
-  const missing = REQUIRED_ENV.filter(name => !env[name]?.trim());
+  const suppliedToken = env.CHROME_ACCESS_TOKEN !== undefined;
+  const missing = [...ID_ENV, ...(suppliedToken ? [] : LEGACY_AUTH_ENV)].filter(name => !env[name]?.trim());
   if (missing.length) throw new Error(`Missing required environment variables: ${missing.join(', ')}.`);
   if (!/^[a-p]{32}$/.test(env.CHROME_EXTENSION_ID) || !/^[A-Za-z0-9_-]+$/.test(env.CHROME_PUBLISHER_ID)) throw new Error('Invalid Chrome item or publisher ID.');
-  const version = submit ? readStorePackage(zipBytes).manifest.version : null;
+  if (submit && env.GITHUB_ACTIONS === 'true' && env.CHROME_PUBLISH_ENABLED !== 'true') throw new Error('Chrome submission is disabled; CHROME_PUBLISH_ENABLED must be true.');
+  if (submit && env.GITHUB_ACTIONS === 'true' && !expectedTag) throw new Error('A release tag is required for CI submission.');
+  const version = submit ? (expectedTag === undefined ? readStorePackage(zipBytes).manifest.version : validateReleasePackage(zipBytes, expectedTag)) : null;
   const name = `publishers/${env.CHROME_PUBLISHER_ID}/items/${env.CHROME_EXTENSION_ID}`;
   const endpoint = `${API}/v2/${name}`;
   let token;
@@ -68,13 +81,20 @@ export async function runPublisher({ env = process.env, submit = false, zipBytes
     return data;
   }
 
-  const authorization = await request('OAuth token refresh', 'https://oauth2.googleapis.com/token', {
-    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ grant_type: 'refresh_token', client_id: env.CHROME_CLIENT_ID,
-      client_secret: env.CHROME_CLIENT_SECRET, refresh_token: env.CHROME_REFRESH_TOKEN }),
-  });
-  token = authorization.access_token;
-  if (typeof token !== 'string' || !token) throw new Error('OAuth response did not contain an access token.');
+  if (suppliedToken) {
+    // CI supplies only a short-lived, chromewebstore-scoped WIF token. Never
+    // fall back to a stored refresh token when an explicitly supplied token fails.
+    token = env.CHROME_ACCESS_TOKEN;
+  } else {
+    // Explicit OAuth mode for local operators or an OAuth-configured release.
+    const authorization = await request('OAuth token refresh', 'https://oauth2.googleapis.com/token', {
+      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'refresh_token', client_id: env.CHROME_CLIENT_ID,
+        client_secret: env.CHROME_CLIENT_SECRET, refresh_token: env.CHROME_REFRESH_TOKEN }),
+    });
+    token = authorization.access_token;
+  }
+  if (typeof token !== 'string' || !token || /[\s\x00-\x1f\x7f]/.test(token)) throw new Error('A valid OAuth access token is required.');
   const headers = { Authorization: `Bearer ${token}` };
 
   async function fetchStatus(timeoutMs) {
@@ -108,8 +128,9 @@ export async function runPublisher({ env = process.env, submit = false, zipBytes
     method: 'POST', headers: { ...headers, 'Content-Type': 'application/zip' }, body: zipBytes,
   }, 60000);
   if (upload.name !== name || upload.itemId !== env.CHROME_EXTENSION_ID) throw new Error('Upload returned a different item identity; submission was not requested.');
-  if (upload.crxVersion && (typeof upload.crxVersion !== 'string' || !/^\d+(?:\.\d+){0,3}$/.test(upload.crxVersion)
-    || compareVersions(upload.crxVersion, version) !== 0)) throw new Error('Uploaded version differs from the ZIP; submission was not requested.');
+  if ((upload.uploadState === 'SUCCEEDED' || upload.crxVersion !== undefined)
+    && (typeof upload.crxVersion !== 'string' || !/^\d+(?:\.\d+){0,3}$/.test(upload.crxVersion)
+    || compareVersions(upload.crxVersion, version) !== 0)) throw new Error('Uploaded version is missing or differs from the ZIP; submission was not requested.');
   let uploadState = upload.uploadState;
   const deadline = now() + uploadDeadlineMs;
   let status = initial;
