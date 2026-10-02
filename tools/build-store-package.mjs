@@ -14,11 +14,13 @@ const STAGE_DIR = path.join(DIST_DIR, 'extension');
 const ZIP_PATH = path.join(DIST_DIR, 'watchparty-for-stremio.zip');
 
 const EXCLUDED_NAMES = new Set(['_metadata', 'types']);
-const DEV_LOCAL_LANDING_ORIGINS = new Set([
+const DEV_LOCAL_ORIGINS = new Set([
   'http://localhost:8080/*',
   'http://localhost:8090/*',
+  'http://localhost:8181/*',
   'http://127.0.0.1:8080/*',
   'http://127.0.0.1:8090/*',
+  'http://127.0.0.1:8181/*',
 ]);
 
 async function copyDirectory(sourceDir, targetDir) {
@@ -40,8 +42,13 @@ async function writeStoreManifest() {
   const manifestPath = path.join(EXT_DIR, 'manifest.json');
   const manifest = JSON.parse(await fsp.readFile(manifestPath, 'utf8'));
   const optionalOrigins = Array.isArray(manifest.optional_host_permissions)
-    ? manifest.optional_host_permissions.filter((origin) => !DEV_LOCAL_LANDING_ORIGINS.has(origin))
+    ? manifest.optional_host_permissions.filter((origin) => !DEV_LOCAL_ORIGINS.has(origin))
     : [];
+  const hostOrigins = Array.isArray(manifest.host_permissions)
+    ? manifest.host_permissions.filter((origin) => !DEV_LOCAL_ORIGINS.has(origin))
+    : [];
+
+  manifest.host_permissions = hostOrigins;
 
   if (optionalOrigins.length > 0) {
     manifest.optional_host_permissions = optionalOrigins;
@@ -82,12 +89,16 @@ async function main() {
 
   const manifest = JSON.parse(await fsp.readFile(path.join(STAGE_DIR, 'manifest.json'), 'utf8'));
   const optionalOrigins = manifest.optional_host_permissions || [];
-  const removedOrigins = [...DEV_LOCAL_LANDING_ORIGINS].filter((origin) => !optionalOrigins.includes(origin));
+  const retainedOrigins = new Set([
+    ...(manifest.host_permissions || []),
+    ...optionalOrigins,
+  ]);
+  const removedOrigins = [...DEV_LOCAL_ORIGINS].filter((origin) => !retainedOrigins.has(origin));
 
   console.log(`Staged store extension in ${STAGE_DIR}`);
   console.log(`Created store zip at ${ZIP_PATH}`);
   if (removedOrigins.length > 0) {
-    console.log(`Removed dev-only optional origins: ${removedOrigins.join(', ')}`);
+    console.log(`Removed dev-only origins: ${removedOrigins.join(', ')}`);
   }
 }
 

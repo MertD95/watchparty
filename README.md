@@ -55,7 +55,7 @@ npm run gen:icons
 - Browser/runtime confidence comes from manual browser passes with host, peer, and clean-web profiles.
 - `manual/RUNTIME-CHECKLIST.md` is the runbook for website, Stremio, player, chat, reactions, settings, private-room, reconnect, and edge-case coverage.
 - Scripts under `manual:*` prepare, perturb, inspect, or provide live realtime users only. They should not be treated as proof that the product works.
-- CI/release validation keeps static hygiene only: syntax, typecheck, and generated action/protocol/domain checks.
+- Run regression tests, syntax, typecheck, and generated action/protocol/domain checks locally before pushing. Isolated installed-extension browser checks complement these deterministic tests. GitHub Actions does not run test suites on pushes or pull requests; its manual package check and release workflow only package and validate the ZIP.
 
 ## Notes
 
@@ -64,6 +64,6 @@ npm run gen:icons
 - The default manifest no longer ships localhost landing-page access; unpacked dev installs can opt into localhost landing access from the options page when needed
 - `localhost:11470` is the Stremio local service, not just a development host
 - The Stremio auth key is forwarded to the background worker and kept in memory only; it is not persisted in extension storage
-- The website can auto-deploy through Cloudflare Pages Git integration, but the browser extension is not published to the Chrome Web Store by a normal push
-- `npm run build:store-package` creates a Chrome Web Store bundle under `dist/chrome-web-store/` and strips dev-only localhost landing origins from the packaged manifest
+- The website auto-deploys through Cloudflare Workers Builds Git integration, but a normal push does not publish the browser extension. GitHub releases create store artifacts; only an explicit manual release dispatch can submit them for Google review.
+- `npm run build:store-package` creates a Chrome Web Store bundle under `dist/chrome-web-store/` and strips dev-only localhost backend and landing origins from the packaged manifest; the release workflow uses this same package builder
 - Deployment and external-service hardening notes live in `SECURITY.md`

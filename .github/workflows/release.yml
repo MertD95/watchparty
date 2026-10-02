@@ -1,84 +1,46 @@
-name: Release
+name: Extension Release
 
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      submit_for_review:
+        description: 'Upload this ref and submit to Google review (publishes after approval)'
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
 
+# Never overlap two store submissions, even when they originate from different refs.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.release.tag_name || github.ref }}
+  group: watchparty-extension-release
   cancel-in-progress: false
 
 env:
   NODE_VERSION: '24'
-  SERVER_REPO: MertD95/watchparty-server
-  SERVER_CHECKOUT_PATH: watchparty-server
   PACKAGE_NAME: watchparty-extension.zip
 
 jobs:
-  validate:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
-
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-
-      - name: Install extension repo dependencies
-        run: npm ci
-
-      - name: Run static extension checks
-        run: npm run verify:static
-
-      - name: Checkout backend repo
-        env:
-          SERVER_TOKEN: ${{ secrets.SERVER_REPO_TOKEN }}
-          SERVER_REPO_REF: ${{ vars.SERVER_REPO_REF }}
-        run: |
-          set -euo pipefail
-          if [ -z "${SERVER_TOKEN:-}" ]; then
-            echo "::error title=Missing SERVER_REPO_TOKEN::Release validation requires a token that can clone ${SERVER_REPO}. Add a fine-grained read-only Contents token as the SERVER_REPO_TOKEN repository secret."
-            exit 1
-          fi
-          REMOTE="https://x-access-token:${SERVER_TOKEN}@github.com/${SERVER_REPO}.git"
-          if [ -n "${SERVER_REPO_REF:-}" ]; then
-            git clone --depth 1 --branch "${SERVER_REPO_REF}" "${REMOTE}" "${SERVER_CHECKOUT_PATH}"
-          else
-            git clone --depth 1 "${REMOTE}" "${SERVER_CHECKOUT_PATH}"
-          fi
-
-      - name: Verify generated protocol and domains are current
-        run: |
-          node tools/gen-protocol.js --check
-          node tools/gen-room-domain.js --check
-          node tools/gen-direct-play-domain.js --check
-        working-directory: ${{ env.SERVER_CHECKOUT_PATH }}
-        env:
-          WATCHPARTY_EXTENSION_ROOT: ${{ github.workspace }}/extension
-
   package:
-    needs: validate
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     environment: release-artifacts
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
-
-      - name: Package extension
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Package extension (no tests or dependency install)
         run: |
-          cd extension
-          zip -r "../${PACKAGE_NAME}" . \
-            -x "*.mjs"
-          cd ..
+          node tools/build-store-package.mjs
+          cp dist/chrome-web-store/watchparty-for-stremio.zip "${PACKAGE_NAME}"
+          node tools/validate-store-package.mjs "${PACKAGE_NAME}"
           sha256sum "${PACKAGE_NAME}" > "${PACKAGE_NAME}.sha256"
-
       - name: Upload workflow artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -88,32 +50,43 @@ jobs:
             ${{ env.PACKAGE_NAME }}.sha256
           if-no-files-found: error
           retention-days: 7
-
       - name: Upload release assets
+        if: github.event_name == 'release'
         uses: softprops/action-gh-release@6da8fa9354ddfdc4aeace5fc48d7f679b5214090
         with:
           files: |
             ${{ env.PACKAGE_NAME }}
             ${{ env.PACKAGE_NAME }}.sha256
 
-  chrome-publish:
+  chrome-submit:
     needs: package
+    if: github.event_name == 'workflow_dispatch' && inputs.submit_for_review == true
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: chrome-web-store
-    if: ${{ vars.CHROME_PUBLISH_ENABLED == 'true' }}
     steps:
-      - name: Download packaged extension
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - name: Require explicit store enablement
+        env:
+          CHROME_PUBLISH_ENABLED: ${{ vars.CHROME_PUBLISH_ENABLED }}
+        run: |
+          if [ "${CHROME_PUBLISH_ENABLED}" != 'true' ]; then
+            echo '::error::Set CHROME_PUBLISH_ENABLED=true only after configuring and approving the chrome-web-store environment.'
+            exit 1
+          fi
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: extension-package
-
-      - name: Publish to Chrome Web Store
-        uses: mnao305/chrome-extension-upload@4008e29e13c144d0f6725462cbd49b7c291b4928
-        with:
-          file-path: ${{ env.PACKAGE_NAME }}
-          extension-id: ${{ secrets.CHROME_EXTENSION_ID }}
-          client-id: ${{ secrets.CHROME_CLIENT_ID }}
-          client-secret: ${{ secrets.CHROME_CLIENT_SECRET }}
-          refresh-token: ${{ secrets.CHROME_REFRESH_TOKEN }}
-          publish: true
+      - name: Verify artifact checksum
+        run: sha256sum --check "${PACKAGE_NAME}.sha256"
+      - name: Submit with Chrome Web Store API v2
+        env:
+          CHROME_EXTENSION_ID: ${{ secrets.CHROME_EXTENSION_ID }}
+          CHROME_PUBLISHER_ID: ${{ secrets.CHROME_PUBLISHER_ID }}
+          CHROME_CLIENT_ID: ${{ secrets.CHROME_CLIENT_ID }}
+          CHROME_CLIENT_SECRET: ${{ secrets.CHROME_CLIENT_SECRET }}
+          CHROME_REFRESH_TOKEN: ${{ secrets.CHROME_REFRESH_TOKEN }}
+        run: node tools/publish-chrome-web-store.mjs --submit "${PACKAGE_NAME}"

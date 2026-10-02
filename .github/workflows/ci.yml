@@ -1,76 +1,26 @@
-name: CI
+name: Manual Package Check
 
+# Product tests run locally before pushing; no push/PR Actions minutes are used.
 on:
-  push:
-    branches: ['**']
-    tags-ignore: ['**']
-  pull_request:
-    branches: ['**']
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: manual-package-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  NODE_VERSION: '24'
-  SERVER_REPO: MertD95/watchparty-server
-  SERVER_CHECKOUT_PATH: watchparty-server
-
 jobs:
-  static:
+  package:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
-
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-
-      - name: Install extension repo dependencies
-        run: npm ci
-
-      - name: Run static extension checks
-        run: npm run verify:static
-
-      - name: Determine backend checkout availability
-        id: backend
-        env:
-          SERVER_TOKEN: ${{ secrets.SERVER_REPO_TOKEN }}
+          node-version: '24'
+      - name: Build and verify store artifact (no tests or dependency install)
         run: |
-          set -euo pipefail
-          if [ -n "${SERVER_TOKEN:-}" ]; then
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Backend codegen skipped::SERVER_REPO_TOKEN is unavailable, so cross-repo generated protocol/domain checks were skipped."
-          fi
-
-      - name: Checkout backend repo
-        if: steps.backend.outputs.enabled == 'true'
-        env:
-          SERVER_TOKEN: ${{ secrets.SERVER_REPO_TOKEN }}
-          SERVER_REPO_REF: ${{ vars.SERVER_REPO_REF }}
-        run: |
-          set -euo pipefail
-          REMOTE="https://x-access-token:${SERVER_TOKEN}@github.com/${SERVER_REPO}.git"
-          if [ -n "${SERVER_REPO_REF:-}" ]; then
-            git clone --depth 1 --branch "${SERVER_REPO_REF}" "${REMOTE}" "${SERVER_CHECKOUT_PATH}"
-          else
-            git clone --depth 1 "${REMOTE}" "${SERVER_CHECKOUT_PATH}"
-          fi
-
-      - name: Verify generated protocol and domains are current
-        if: steps.backend.outputs.enabled == 'true'
-        run: |
-          node tools/gen-protocol.js --check
-          node tools/gen-room-domain.js --check
-          node tools/gen-direct-play-domain.js --check
-        working-directory: ${{ env.SERVER_CHECKOUT_PATH }}
-        env:
-          WATCHPARTY_EXTENSION_ROOT: ${{ github.workspace }}/extension
+          node tools/build-store-package.mjs
+          node tools/validate-store-package.mjs dist/chrome-web-store/watchparty-for-stremio.zip
