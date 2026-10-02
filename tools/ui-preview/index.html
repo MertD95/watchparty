@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WatchParty — Local UI playground</title>
+  <link rel="icon" href="/extension/icons/icon16.png">
+  <link rel="stylesheet" href="/preview/preview.css">
+  <script src="/preview/preview.js" defer></script>
+</head>
+<body>
+  <header>
+    <div class="brand"><img src="/extension/icons/icon48.png" width="32" height="32" alt=""><h1>WatchParty <span>Local UI playground</span></h1></div>
+    <p class="notice">Sample rooms, not a live party. Click through the actual redesigned screens without installing the extension. No production changes or real playback syncing.</p>
+  </header>
+  <main>
+    <div class="controls">
+      <nav aria-label="Preview screen">
+        <button type="button" data-screen="overlay" aria-pressed="true">Stremio sidebar</button>
+        <button type="button" data-screen="options" aria-pressed="false">Settings page</button>
+        <button type="button" data-screen="popup" aria-pressed="false">Popup</button>
+        <button type="button" data-screen="sidepanel" aria-pressed="false">Side panel</button>
+      </nav>
+      <label>Sample state <select id="scenario"><option value="host">Hosting a room</option><option value="guest">Guest in a room</option><option value="idle">Not in a room</option></select></label>
+    </div>
+    <p class="hint" id="screen-hint" role="status">Open Settings in the sidebar to try the new preferences.</p>
+    <section class="stage" data-screen="overlay" aria-label="Interactive extension preview">
+      <iframe id="preview" src="/preview/overlay.html?scenario=host" title="Stremio sidebar preview"></iframe>
+    </section>
+    <details class="real-testing">
+      <summary>Want to test real rooms and syncing?</summary>
+      <p>The playground above uses sample data. For real room testing, use the local backend and the unpacked extension in a separate Chrome profile.</p>
+      <ol>
+        <li>Open <code>chrome://extensions</code>, enable Developer mode, then choose <strong>Load unpacked</strong>.</li>
+        <li>Select <code>C:\Users\mertd\WatchParty\watchparty\extension</code>. If already loaded from that folder, click Reload instead. Avoid enabling the store and unpacked copies together.</li>
+        <li>In WatchParty's extension options, open <strong>Connection</strong> and select <strong>Local development</strong>.</li>
+        <li>Open Stremio Web and use the WatchParty sidebar. If prompted, allow local-network access so it can connect to your local server.</li>
+      </ol>
+      <p>The local backend should be available at <a href="http://localhost:8181/health" target="_blank" rel="noopener">localhost:8181/health</a>. Use separate browser profiles with the unpacked extension for separate users; two tabs in one profile are the same user.</p>
+    </details>
+  </main>
+</body>
+</html>

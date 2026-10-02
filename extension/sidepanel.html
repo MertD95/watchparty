@@ -3,30 +3,28 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>WatchParty Companion</title>
+  <title>WatchParty Chat</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
 
     :root {
+      color-scheme: dark;
       --wp-accent: #6366f1;
       --wp-accent-hover: #5558e6;
       --wp-accent-light: #818cf8;
       --wp-accent-rgb: 99, 102, 241;
-      --wp-bg: #08111d;
-      --wp-card: rgba(15, 23, 42, 0.82);
+      --wp-bg: #101320;
+      --wp-card: #191d2c;
       --wp-card-strong: rgba(15, 23, 42, 0.94);
       --wp-border: rgba(148, 163, 184, 0.16);
       --wp-border-strong: rgba(148, 163, 184, 0.22);
       --wp-text: #e5e7eb;
-      --wp-muted: #98a2b3;
-      --wp-shadow: 0 24px 48px rgba(2, 6, 23, 0.42);
+      --wp-muted: #acb2c6;
     }
 
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      background:
-        radial-gradient(circle at top left, rgba(var(--wp-accent-rgb), 0.24), transparent 28%),
-        linear-gradient(180deg, var(--wp-bg) 0%, #050b14 100%);
+      background: var(--wp-bg);
       color: var(--wp-text);
       min-height: 100vh;
     }
@@ -45,21 +43,18 @@
       min-height: 100vh;
       display: flex;
       flex-direction: column;
-      gap: 14px;
+      gap: 16px;
       padding: 14px;
     }
 
-    .hero,
     .panel-card {
       background: var(--wp-card);
       border: 1px solid var(--wp-border);
-      border-radius: 18px;
-      box-shadow: var(--wp-shadow);
-      backdrop-filter: blur(12px);
+      border-radius: 12px;
     }
 
     .hero {
-      padding: 18px;
+      padding: 4px 2px;
       display: flex;
       flex-direction: column;
       gap: 12px;
@@ -81,7 +76,7 @@
     }
 
     .hero h1 {
-      font-size: 23px;
+      font-size: 20px;
       line-height: 1.05;
       margin-top: 4px;
     }
@@ -98,6 +93,17 @@
       flex-wrap: wrap;
       gap: 8px;
     }
+
+    .hero-actions .companion-btn:first-child { flex: 1; }
+    .hero-copy:empty { display: none; }
+    button:focus-visible, a:focus-visible, summary:focus-visible, input:focus-visible {
+      outline: 2px solid #b9b2ff;
+      outline-offset: 3px;
+    }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    .room-tools { border-top: 1px solid var(--wp-border); padding-top: 10px; }
+    .room-tools summary { color: var(--wp-muted); cursor: pointer; font-size: 12px; }
+    .room-tools .action-row, .room-tools .session-links { margin-top: 10px; }
 
     .room-code {
       appearance: none;
@@ -148,6 +154,7 @@
     .status-title {
       font-size: 18px;
       line-height: 1.15;
+      overflow-wrap: anywhere;
     }
 
     .status-note {
@@ -205,17 +212,15 @@
     .companion-btn:hover,
     .action-btn:hover,
     .bookmark-time:hover {
-      transform: translateY(-1px);
       border-color: rgba(var(--wp-accent-rgb), 0.36);
       background: rgba(var(--wp-accent-rgb), 0.15);
     }
 
     .companion-btn.primary,
     .action-btn.primary {
-      background: linear-gradient(180deg, var(--wp-accent-light) 0%, var(--wp-accent) 100%);
+      background: var(--wp-accent);
       border-color: transparent;
       color: #ffffff;
-      box-shadow: 0 14px 26px rgba(var(--wp-accent-rgb), 0.26);
     }
 
     .action-btn.leave-btn {
@@ -333,7 +338,7 @@
 
     .chat-card {
       flex: 1;
-      min-height: 280px;
+      min-height: 240px;
       display: flex;
       flex-direction: column;
     }
@@ -349,6 +354,7 @@
     .chat-messages {
       flex: 1;
       overflow-y: auto;
+      max-height: 45vh;
       display: flex;
       flex-direction: column;
       gap: 8px;
@@ -395,6 +401,7 @@
 
     .chat-input {
       flex: 1;
+      min-width: 0;
       border-radius: 12px;
       border: 1px solid rgba(148, 163, 184, 0.16);
       background: rgba(255, 255, 255, 0.06);
@@ -410,24 +417,23 @@
     }
 
     .chat-input::placeholder {
-      color: #64748b;
+      color: #a0a8bd;
     }
 
     .chat-send {
       appearance: none;
       border: none;
       border-radius: 12px;
-      background: linear-gradient(180deg, var(--wp-accent-light) 0%, var(--wp-accent) 100%);
+      background: var(--wp-accent);
       color: #ffffff;
       font-size: 12px;
       font-weight: 700;
       padding: 10px 14px;
       cursor: pointer;
-      box-shadow: 0 14px 26px rgba(var(--wp-accent-rgb), 0.26);
     }
 
     .chat-send:hover {
-      background: linear-gradient(180deg, #9aa5ff 0%, var(--wp-accent-hover) 100%);
+      background: var(--wp-accent-hover);
     }
 
     .empty-state {
@@ -473,58 +479,52 @@
     <header class="hero">
       <div class="hero-top">
         <div>
-          <div class="eyebrow">Companion Panel</div>
           <h1>WatchParty</h1>
         </div>
-        <button id="room-code" class="room-code hidden" type="button"></button>
+        <button id="room-code" class="room-code hidden" type="button" aria-label="Copy room invite link" title="Copy invite link"></button>
       </div>
-      <p id="hero-copy" class="hero-copy">Browser-native room companion for quick chat, people, and bookmarks while Stremio keeps the main session UI.</p>
+      <p id="hero-copy" class="hero-copy">Chat with your room while you watch.</p>
       <div class="hero-actions">
-        <button id="sp-open-watchparty-header" class="companion-btn" type="button">Open Stremio</button>
-        <button id="sp-open-settings-header" class="companion-btn" type="button">Extension Settings</button>
+        <button id="sp-open-watchparty-header" class="companion-btn primary" type="button">Open Stremio</button>
+        <button id="sp-open-settings-header" class="companion-btn" type="button">Settings</button>
       </div>
     </header>
 
     <section id="status" class="panel-card status-card">
       <div class="empty-state">
-        <div class="eyebrow">No Active Room</div>
-        <h2 class="status-title">Create or join from Stremio first.</h2>
-        <p>Open Stremio and use the WatchParty sidebar there for setup, discovery, chat, and controls.</p>
-        <div class="action-row">
-          <button id="sp-open-watchparty-empty" class="action-btn primary" type="button">Open Stremio</button>
-          <button id="sp-open-settings-empty" class="action-btn" type="button">Extension Settings</button>
-        </div>
+        <h2 class="status-title">You're not in a room yet.</h2>
+        <p>Open Stremio and use its WatchParty sidebar to create a room or join friends. Your people and chat will appear here.</p>
       </div>
     </section>
 
     <section id="sync-indicator" class="panel-card sync-indicator hidden"></section>
 
-    <section class="panel-card">
+    <section class="panel-card hidden" id="people-section">
       <div class="section-head">
         <h2>People</h2>
         <span id="people-count" class="section-meta hidden"></span>
       </div>
       <div id="users" class="users hidden"></div>
-      <div id="users-empty" class="section-empty">People in the room will appear here once the session is live.</div>
+      <div id="users-empty" class="section-empty">Waiting for people to join.</div>
     </section>
 
-    <section class="panel-card chat-card">
+    <section class="panel-card chat-card hidden" id="chat-section">
       <div class="section-head">
-        <h2>Companion Chat</h2>
+        <h2>Chat</h2>
         <span id="typing-indicator" class="typing-indicator hidden"></span>
       </div>
       <div id="chat-container" class="chat-container hidden">
-        <div id="chat-messages" class="chat-messages"></div>
+        <div id="chat-messages" class="chat-messages" role="log" aria-label="Room messages" aria-live="polite"></div>
         <div class="chat-input-row">
-          <input id="chat-input" class="chat-input" type="text" placeholder="Type a message..." maxlength="300" autocomplete="off">
+          <input id="chat-input" class="chat-input" type="text" placeholder="Message your room…" aria-label="Message your room" maxlength="300" autocomplete="off">
           <button id="chat-send" class="chat-send" type="button">Send</button>
         </div>
       </div>
-      <div id="chat-empty" class="section-empty">Chat appears here while the Stremio sidebar stays focused on the live session.</div>
+      <div id="chat-empty" class="section-empty">Join a room to start chatting.</div>
     </section>
   </div>
 
-  <div id="toast" class="toast"></div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
   <script src="wp-actions.js"></script>
   <script src="constants.js"></script>

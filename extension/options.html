@@ -5,680 +5,217 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>WatchParty Settings</title>
   <style>
-    :root {
-      --bg: #09111f;
-      --surface: rgba(15, 23, 42, 0.86);
-      --surface-soft: rgba(148, 163, 184, 0.08);
-      --border: rgba(148, 163, 184, 0.16);
-      --text: #e5e7eb;
-      --muted: #98a2b3;
-      --accent: #6366f1;
-      --accent-soft: rgba(99, 102, 241, 0.16);
-      --success: #22c55e;
-      --warn: #f59e0b;
-      --danger: #f87171;
-      --radius: 18px;
-      --shadow: 0 28px 60px rgba(3, 7, 18, 0.42);
-    }
-
+    :root { color-scheme: dark; --bg: #11131b; --surface: #1a1d28; --border: #303443; --text: #f1f2f7; --muted: #adb2c3; --accent: #8983ff; }
     * { box-sizing: border-box; }
-
-    body {
-      margin: 0;
-      min-height: 100vh;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      color: var(--text);
-      background:
-        radial-gradient(circle at top left, rgba(99, 102, 241, 0.22), transparent 26%),
-        linear-gradient(180deg, #09111f 0%, #070d18 100%);
-    }
-
-    .shell {
-      max-width: 980px;
-      margin: 0 auto;
-      padding: 28px 24px 40px;
-      display: flex;
-      flex-direction: column;
-      gap: 20px;
-    }
-
-    .card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 24px;
-      box-shadow: var(--shadow);
-      backdrop-filter: blur(12px);
-    }
-
-    .hero {
-      padding: 26px;
-      display: grid;
-      grid-template-columns: minmax(0, 1.3fr) minmax(260px, 0.9fr);
-      gap: 20px;
-      align-items: stretch;
-    }
-
-    .hero-copy {
-      display: flex;
-      flex-direction: column;
-      gap: 14px;
-    }
-
-    .brand-lockup {
-      display: inline-flex;
-      align-items: center;
-      gap: 12px;
-      margin-bottom: 4px;
-    }
-
-    .brand-icon {
-      width: 44px;
-      height: 44px;
-      border-radius: 14px;
-      box-shadow: 0 12px 28px rgba(99, 102, 241, 0.22);
-      flex: none;
-    }
-
-    .kicker {
-      font-size: 11px;
-      text-transform: uppercase;
-      letter-spacing: 0.16em;
-      color: #a5b4fc;
-      font-weight: 700;
-    }
-
-    h1, h2, h3, p, dl, dt, dd {
-      margin: 0;
-    }
-
-    h1 {
-      font-size: clamp(30px, 4vw, 44px);
-      line-height: 1.04;
-    }
-
-    .hero-copy p,
-    .card-copy {
-      color: var(--muted);
-      line-height: 1.65;
-      font-size: 14px;
-    }
-
-    .hero-panel {
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-      padding: 20px;
-      border-radius: 20px;
-      background: rgba(148, 163, 184, 0.08);
-      border: 1px solid rgba(148, 163, 184, 0.12);
-    }
-
-    .status-row {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-    }
-
-    .status-pill {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      padding: 6px 10px;
-      border-radius: 999px;
-      border: 1px solid rgba(148, 163, 184, 0.16);
-      background: rgba(15, 23, 42, 0.44);
-      color: #dbe3f0;
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
-    }
-
-    .status-pill.success {
-      color: #86efac;
-      border-color: rgba(34, 197, 94, 0.28);
-      background: rgba(34, 197, 94, 0.12);
-    }
-
-    .status-pill.warn {
-      color: #fcd34d;
-      border-color: rgba(245, 158, 11, 0.28);
-      background: rgba(245, 158, 11, 0.12);
-    }
-
-    .status-pill.danger {
-      color: #fca5a5;
-      border-color: rgba(248, 113, 113, 0.28);
-      background: rgba(248, 113, 113, 0.12);
-    }
-
-    .actions {
-      display: flex;
-      gap: 10px;
-      flex-wrap: wrap;
-    }
-
-    button {
-      border: none;
-      border-radius: 14px;
-      padding: 12px 16px;
-      font-size: 14px;
-      font-weight: 700;
-      cursor: pointer;
-      transition: transform 0.12s ease, background 0.15s ease, border-color 0.15s ease;
-    }
-
-    button:hover {
-      transform: translateY(-1px);
-    }
-
-    button:active {
-      transform: translateY(0) scale(0.98);
-    }
-
-    button:focus-visible {
-      outline: none;
-      box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.22);
-    }
-
-    button:disabled {
-      opacity: 0.72;
-      cursor: not-allowed;
-      transform: none;
-    }
-
-    .btn-primary {
-      background: linear-gradient(180deg, #7f85ff 0%, #6366f1 100%);
-      color: #fff;
-      box-shadow: 0 16px 30px rgba(99, 102, 241, 0.24);
-    }
-
-    .btn-secondary {
-      background: rgba(148, 163, 184, 0.08);
-      color: #dbe3f0;
-      border: 1px solid rgba(148, 163, 184, 0.16);
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-    }
-
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-      gap: 20px;
-    }
-
-    .section {
-      padding: 22px;
-      display: flex;
-      flex-direction: column;
-      gap: 14px;
-    }
-
-    .section h2 {
-      font-size: 22px;
-      line-height: 1.15;
-    }
-
-    .backend-toggle {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 10px;
-    }
-
-    .backend-btn {
-      background: rgba(148, 163, 184, 0.08);
-      color: #dbe3f0;
-      border: 1px solid rgba(148, 163, 184, 0.16);
-    }
-
-    .backend-btn.active {
-      background: linear-gradient(180deg, rgba(127, 133, 255, 0.9) 0%, rgba(99, 102, 241, 0.8) 100%);
-      color: #fff;
-      border-color: rgba(129, 140, 248, 0.62);
-      box-shadow: 0 14px 28px rgba(99, 102, 241, 0.18), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
-    }
-
-    .backend-btn.pending {
-      background: rgba(99, 102, 241, 0.18);
-      color: #fff;
-      border-color: rgba(99, 102, 241, 0.34);
-      box-shadow: inset 0 0 0 1px rgba(99, 102, 241, 0.12);
-    }
-
-    .backend-feedback {
-      min-height: 20px;
-      margin-top: -6px;
-      font-size: 12px;
-      color: #c7d2fe;
-      line-height: 1.5;
-    }
-
-    .backend-feedback.success {
-      color: #86efac;
-    }
-
-    .backend-feedback.warn {
-      color: #fcd34d;
-    }
-
-    .session-card {
-      padding: 16px;
-      border-radius: var(--radius);
-      border: 1px solid rgba(99, 102, 241, 0.16);
-      background: rgba(15, 23, 42, 0.55);
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
-
-    .session-meta {
-      color: var(--muted);
-      font-size: 13px;
-    }
-
-    .control-grid {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr);
-      gap: 16px;
-    }
-
-    .control-block {
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-      padding: 16px;
-      border-radius: 18px;
-      border: 1px solid rgba(148, 163, 184, 0.12);
-      background: rgba(15, 23, 42, 0.4);
-      min-width: 0;
-    }
-
-    .control-title {
-      color: #f8fafc;
-      font-size: 16px;
-      font-weight: 700;
-    }
-
-    .section-wide {
-      grid-column: 1 / -1;
-    }
-
-    .section-head {
-      display: flex;
-      align-items: flex-start;
-      justify-content: space-between;
-      gap: 16px;
-      flex-wrap: wrap;
-    }
-
-    .diag-summary-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-      gap: 12px;
-    }
-
-    .diag-stat {
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-      padding: 14px 16px;
-      border-radius: 18px;
-      border: 1px solid rgba(148, 163, 184, 0.12);
-      background: rgba(15, 23, 42, 0.48);
-    }
-
-    .diag-stat-label,
-    .diag-group-title {
-      color: #c7d2fe;
-      font-size: 11px;
-      text-transform: uppercase;
-      letter-spacing: 0.1em;
-      font-weight: 700;
-    }
-
-    .diag-stat-value {
-      color: #f8fafc;
-      font-size: 20px;
-      font-weight: 800;
-      line-height: 1.2;
-      word-break: break-word;
-    }
-
-    .diag-stat-meta {
-      color: var(--muted);
-      font-size: 12px;
-      line-height: 1.5;
-      word-break: break-word;
-    }
-
-    .diag-detail-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      gap: 14px;
-    }
-
-    .diag-group {
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-      padding: 16px;
-      border-radius: 18px;
-      border: 1px solid rgba(148, 163, 184, 0.12);
-      background: rgba(15, 23, 42, 0.4);
-      min-width: 0;
-    }
-
-    .diag-row {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-      min-width: 0;
-    }
-
-    .diag-row-label {
-      color: var(--muted);
-      font-size: 12px;
-      font-weight: 600;
-    }
-
-    .diag-row-value {
-      color: #e5e7eb;
-      font-size: 14px;
-      line-height: 1.5;
-      word-break: break-word;
-    }
-
-    .diag-list {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      padding: 0;
-      margin: 0;
-      list-style: none;
-    }
-
-    .diag-list li {
-      padding: 10px 12px;
-      border-radius: 14px;
-      background: rgba(148, 163, 184, 0.08);
-      color: #dbe3f0;
-      font-size: 13px;
-      line-height: 1.5;
-    }
-
-    .diag-list-empty {
-      color: var(--muted);
-    }
-
-    .diag-note {
-      margin-top: -2px;
-      color: var(--muted);
-      font-size: 12px;
-      line-height: 1.5;
-    }
-
-    .diag-advanced {
-      border-radius: 18px;
-      border: 1px solid rgba(148, 163, 184, 0.12);
-      background: rgba(15, 23, 42, 0.4);
-      padding: 14px 16px;
-    }
-
-    .diag-advanced > summary {
-      list-style: none;
-      cursor: pointer;
-      color: #f8fafc;
-      font-size: 14px;
-      font-weight: 700;
-    }
-
-    .diag-advanced > summary::-webkit-details-marker {
-      display: none;
-    }
-
-    .diag-advanced-copy {
-      margin-top: 8px;
-      color: var(--muted);
-      font-size: 12px;
-      line-height: 1.5;
-    }
-
-    .diag-advanced-body {
-      margin-top: 14px;
-      display: flex;
-      flex-direction: column;
-      gap: 14px;
-    }
-
-    .mono {
-      font-family: Consolas, Monaco, monospace;
-      font-size: 12px;
-    }
-
-    .hidden {
-      display: none !important;
-    }
-
-    @media (max-width: 760px) {
-      .shell {
-        padding: 18px 16px 32px;
-      }
-
-      .hero {
-        grid-template-columns: 1fr;
-        padding: 22px;
-      }
-
-      .backend-toggle {
-        grid-template-columns: 1fr;
-      }
-
-      .section-head {
-        flex-direction: column;
-      }
-
-      .control-grid {
-        grid-template-columns: 1fr;
-      }
+    body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--text); font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    h1, h2, h3, p { margin: 0; }
+    h1 { font-size: 30px; line-height: 1.2; letter-spacing: -0.03em; }
+    h2 { font-size: 17px; line-height: 1.4; }
+    h3 { font-size: 14px; }
+    button { font: inherit; }
+    .shell { max-width: 740px; margin: 0 auto; padding: 42px 24px 48px; }
+    .page-header { margin-bottom: 24px; }
+    .brand-lockup { display: flex; align-items: center; gap: 10px; margin-bottom: 22px; color: var(--muted); font-weight: 600; }
+    .brand-icon { width: 28px; height: 28px; border-radius: 8px; }
+    .page-header > p { margin-top: 8px; color: var(--muted); }
+    .card { padding: 24px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); }
+    .status-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 14px; }
+    .status-pill { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+    .status-pill + .status-pill::before { content: "·"; margin-right: 2px; color: var(--muted); }
+    .status-pill.success { color: #a1e4bc; }
+    .status-pill.warn { color: #f5cf88; }
+    .status-pill.danger { color: #f7a8ab; }
+    .hero-note { margin-top: 6px; color: var(--muted); }
+    .session-card { margin-top: 16px; padding-left: 12px; border-left: 2px solid var(--accent); overflow-wrap: anywhere; }
+    .session-meta { margin-top: 3px; color: var(--muted); font-size: 13px; }
+    .actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    .main-actions { margin-top: 20px; }
+    button { min-height: 42px; padding: 9px 15px; border: 1px solid transparent; border-radius: 9px; color: var(--text); background: transparent; cursor: pointer; font-weight: 600; }
+    button:hover { background: #2b2e3e; }
+    button:disabled { opacity: 0.55; cursor: not-allowed; }
+    button:focus-visible, summary:focus-visible { outline: 2px solid #b7b3ff; outline-offset: 4px; }
+    .btn-primary { background: #7168e8; color: #fff; }
+    .btn-primary:hover:not(:disabled) { background: #8178f2; }
+    .btn-secondary { border-color: var(--border); }
+    .btn-danger { color: #ffb3b6; border-color: #674349; }
+    .preference-note { margin: 18px 0 28px; padding: 0 3px; color: var(--muted); font-size: 13px; }
+    .preference-note strong { color: var(--text); font-weight: 500; }
+    .help-heading { margin-bottom: 12px; }
+    .settings-sections { border: 1px solid var(--border); border-radius: 14px; background: var(--surface); overflow: hidden; }
+    .settings-section + .settings-section { border-top: 1px solid var(--border); }
+    summary { display: flex; align-items: center; gap: 14px; padding: 18px 20px; cursor: pointer; list-style: none; }
+    summary::-webkit-details-marker { display: none; }
+    summary::after { content: "+"; margin-left: auto; color: var(--muted); font-size: 22px; line-height: 1; font-weight: 400; }
+    details[open] > summary::after { content: "−"; }
+    summary:hover { background: #212431; }
+    summary:focus-visible { outline-offset: -5px; border-radius: 8px; }
+    .summary-title { display: block; font-weight: 600; }
+    .summary-description { display: block; margin-top: 2px; color: var(--muted); font-size: 12px; font-weight: 400; }
+    .section-body { padding: 0 20px 20px; }
+    .card-copy { color: var(--muted); font-size: 13px; }
+    .backend-toggle { display: flex; gap: 8px; flex-wrap: wrap; margin: 14px 0; }
+    .backend-btn { border-color: var(--border); }
+    .backend-btn.active { color: #e8e6ff; border-color: var(--accent); background: #34304e; }
+    .backend-btn.pending { color: #e8e6ff; border-style: dashed; }
+    .backend-feedback { margin-top: 12px; color: #cecaff; font-size: 13px; }
+    .backend-feedback:empty { margin: 0; }
+    .backend-feedback.success { color: #a1e4bc; }
+    .backend-feedback.warn { color: #f5cf88; }
+    .control-block { margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--border); }
+    .control-block .card-copy { margin: 6px 0 12px; }
+    .recovery-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding-top: 18px; margin-top: 18px; border-top: 1px solid var(--border); }
+    .recovery-row > div { flex: 1; }
+    .recovery-row .card-copy { margin-top: 3px; }
+    .recovery-row button { flex: none; }
+    .section-head { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; align-items: center; margin-bottom: 18px; }
+    .diag-summary-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+    .diag-stat { min-width: 0; }
+    .diag-stat-label, .diag-row-label { color: var(--muted); font-size: 12px; }
+    .diag-stat-value { margin-top: 3px; font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+    .diag-stat-meta, .diag-note { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+    .diag-detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; margin-top: 20px; }
+    .diag-group { min-width: 0; padding-top: 16px; border-top: 1px solid var(--border); }
+    .diag-group-title { margin-bottom: 12px; font-weight: 600; }
+    .diag-row + .diag-row { margin-top: 10px; }
+    .diag-row-value { overflow-wrap: anywhere; }
+    .diag-note { margin-top: 8px; }
+    .diag-list { margin: 10px 0 0; padding: 0; list-style: none; }
+    .diag-list li { margin-top: 8px; font-size: 12px; overflow-wrap: anywhere; }
+    .diag-list-empty { color: var(--muted); }
+    .mono { font-family: Consolas, Monaco, monospace; font-size: 12px; }
+    .hidden, [hidden] { display: none !important; }
+    @media (max-width: 520px) {
+      .shell { padding: 24px 16px 32px; }
+      .card { padding: 20px; }
+      .main-actions { align-items: stretch; flex-direction: column; }
+      .recovery-row { flex-direction: column; align-items: flex-start; gap: 10px; }
+      .diag-detail-grid { grid-template-columns: 1fr; }
+      .backend-toggle { flex-direction: column; }
     }
   </style>
 </head>
 <body>
-  <div class="shell">
-    <section class="card hero">
-      <div class="hero-copy">
-        <div class="brand-lockup">
-          <img class="brand-icon" src="icons/icon48.png" alt="WatchParty" />
-          <div class="kicker">Extension Settings</div>
-        </div>
-        <h1>Manage the WatchParty runtime.</h1>
-        <p>Start rooms from the WatchParty sidebar inside Stremio. This page is for connection, recovery, and diagnostics.</p>
-        <div class="actions">
-          <button class="btn-primary" id="btn-resume-room" type="button">Go to Room in Stremio</button>
-          <button class="btn-secondary" id="btn-open-stremio" type="button">Open Stremio</button>
-        </div>
+  <main class="shell">
+    <header class="page-header">
+      <div class="brand-lockup">
+        <img class="brand-icon" src="icons/icon48.png" alt="" width="28" height="28">
+        <span>WatchParty</span>
       </div>
-      <div class="hero-panel">
-        <div class="kicker">Current Status</div>
-        <div class="status-row">
-          <span class="status-pill" id="pill-extension">Checking extension</span>
-          <span class="status-pill" id="pill-backend">Backend</span>
-          <span class="status-pill hidden" id="pill-room">Room</span>
-        </div>
-        <p class="card-copy" id="hero-note">Loading WatchParty status...</p>
-        <div class="session-card hidden" id="session-card">
-          <strong id="session-title">Current room</strong>
-          <div class="session-meta" id="session-meta"></div>
-        </div>
+      <h1>Settings</h1>
+      <p>A quick check on your extension, and help when you need it.</p>
+    </header>
+    <section class="card" aria-labelledby="watch-together-title">
+      <div class="status-row">
+        <span class="status-pill" id="pill-extension">Checking extension…</span>
+        <span class="status-pill" id="pill-backend">Checking connection…</span>
+        <span class="status-pill hidden" id="pill-room">Room</span>
+      </div>
+      <h2 id="watch-together-title">Watch together in Stremio</h2>
+      <p class="hero-note" id="hero-note" role="status">Loading WatchParty status…</p>
+      <div class="session-card hidden" id="session-card">
+        <strong id="session-title">Current room</strong>
+        <div class="session-meta" id="session-meta"></div>
+      </div>
+      <div class="actions main-actions">
+        <button class="btn-primary hidden" id="btn-resume-room" type="button" disabled>Return to room</button>
+        <button class="btn-primary" id="btn-open-stremio" type="button">Open Stremio</button>
+        <button id="btn-open-watchparty" type="button">Browse rooms</button>
       </div>
     </section>
-
-    <div class="grid">
-      <section class="card section section-wide">
-        <div class="kicker">Connection & Recovery</div>
-        <h2>Runtime</h2>
-        <p class="card-copy">Backend selection and local recovery in one place.</p>
-        <div class="control-grid">
-          <div class="control-block">
-            <div class="control-title">Backend Mode</div>
-            <p class="card-copy">Use Auto normally. Local and Live stay available for debugging.</p>
-            <div class="backend-toggle" id="backend-toggle">
-              <button class="backend-btn" id="backend-auto" data-mode="auto" type="button">Auto</button>
-              <button class="backend-btn" id="backend-local" data-mode="local" type="button">Local</button>
-              <button class="backend-btn" id="backend-live" data-mode="live" type="button">Live</button>
-            </div>
-            <p class="backend-feedback" id="backend-feedback" aria-live="polite"></p>
-            <p class="card-copy" id="backend-note">Loading backend details...</p>
+    <p class="preference-note">To change your name, chat or appearance, open <strong>WatchParty → Settings</strong> inside Stremio.</p>
+    <h2 class="help-heading">Connection &amp; help</h2>
+    <div class="settings-sections">
+      <details class="settings-section" id="connection-section">
+        <summary><span><span class="summary-title">Connection</span><span class="summary-description">Automatic is recommended.</span></span></summary>
+        <div class="section-body">
+          <p class="card-copy">WatchParty chooses the server for you. Change this only for troubleshooting or local development.</p>
+          <div class="backend-toggle" id="backend-toggle" role="group" aria-label="Connection mode">
+            <button class="backend-btn" id="backend-auto" data-mode="auto" type="button" aria-pressed="false">Automatic</button>
+            <button class="backend-btn" id="backend-local" data-mode="local" type="button" aria-pressed="false">Local development</button>
+            <button class="backend-btn" id="backend-live" data-mode="live" type="button" aria-pressed="false">Production</button>
           </div>
-          <div class="control-block">
-            <div class="control-title">Local Recovery</div>
-            <p class="card-copy">These actions only reset browser-side state. They do not delete rooms on the server.</p>
-            <div class="actions">
-              <button class="btn-secondary" id="btn-clear-bootstrap" type="button">Clear Staged Handoff</button>
-              <button class="btn-secondary" id="btn-clear-room-keys" type="button">Clear Room Keys</button>
-              <button class="btn-secondary" id="btn-reset-runtime" type="button">Reset WatchParty State</button>
-              <button class="btn-secondary" id="btn-copy-diagnostics" type="button">Copy Diagnostics</button>
-            </div>
-            <p class="backend-feedback" id="recovery-feedback" aria-live="polite"></p>
-            <p class="card-copy">Reset keeps backend mode and appearance settings, but clears session and room runtime state.</p>
-          </div>
+          <p class="card-copy" id="backend-note">Loading connection details…</p>
+          <p class="backend-feedback" id="backend-feedback" role="status"></p>
           <div class="control-block hidden" id="dev-localhost-block">
-            <div class="control-title">Development Access</div>
-            <p class="card-copy">Local WatchParty landing pages are no longer part of the default shipped site-access list. Enable them only when testing localhost landing flows in an unpacked development build.</p>
-            <div class="actions">
-              <button class="btn-secondary" id="btn-toggle-local-landing" type="button">Enable Local Landing Access</button>
-            </div>
-            <p class="backend-feedback" id="dev-localhost-feedback" aria-live="polite"></p>
-            <p class="card-copy" id="dev-localhost-note">Local landing access is disabled.</p>
+            <h3>Local website access</h3>
+            <p class="card-copy">Only needed to test the WatchParty website on localhost.</p>
+            <button class="btn-secondary" id="btn-toggle-local-landing" type="button">Enable local access</button>
+            <p class="backend-feedback" id="dev-localhost-feedback" role="status"></p>
+            <p class="card-copy" id="dev-localhost-note">Local access is off.</p>
           </div>
         </div>
-      </section>
-
-      <section class="card section section-wide">
-        <div class="section-head">
-          <div>
-            <div class="kicker">Diagnostics</div>
-            <h2>Status</h2>
-            <p class="card-copy">Live extension and backend state.</p>
+      </details>
+      <details class="settings-section" id="recovery-section">
+        <summary><span><span class="summary-title">Fix a problem</span><span class="summary-description">Get help or reset saved information.</span></span></summary>
+        <div class="section-body">
+          <p class="card-copy">If something isn't working, copy a report to share when asking for help.</p>
+          <div class="actions main-actions">
+            <button class="btn-secondary" id="btn-copy-diagnostics" type="button">Copy diagnostic report</button>
           </div>
-          <div class="actions">
-            <button class="btn-secondary" id="btn-refresh" type="button">Refresh Status</button>
+          <div class="recovery-row">
+            <div><h3>Room won't open?</h3><p class="card-copy">Clear the pending join and saved room state in this browser, then try your invite again.</p></div>
+            <button class="btn-secondary" id="btn-clear-bootstrap" type="button">Clear saved room</button>
+          </div>
+          <div class="recovery-row">
+            <div><h3>Forget private room access</h3><p class="card-copy">Remove saved room keys. You'll need the original invites to rejoin private rooms.</p></div>
+            <button class="btn-secondary" id="btn-clear-room-keys" type="button">Forget room keys</button>
+          </div>
+          <div class="recovery-row">
+            <div><h3>Start fresh</h3><p class="card-copy">Reset your saved name, session and room keys. Appearance and connection preferences stay as they are.</p></div>
+            <button class="btn-danger" id="btn-reset-runtime" type="button">Reset WatchParty</button>
+          </div>
+          <p class="backend-feedback" id="recovery-feedback" role="status"></p>
+        </div>
+      </details>
+      <details class="settings-section" id="diagnostics-section">
+        <summary><span><span class="summary-title">Technical details</span><span class="summary-description">Version, connection status and diagnostic checks.</span></span></summary>
+        <div class="section-body">
+          <div class="section-head">
+            <p class="card-copy">Details for troubleshooting. Updates while this page is visible.</p>
+            <button class="btn-secondary" id="btn-refresh" type="button">Refresh</button>
+          </div>
+          <div class="diag-summary-grid">
+            <div class="diag-stat"><div class="diag-stat-label">Extension</div><div class="diag-stat-value" id="diag-extension">—</div><div class="diag-stat-meta" id="diag-bg-version">—</div></div>
+            <div class="diag-stat"><div class="diag-stat-label">Connection</div><div class="diag-stat-value" id="diag-ws">—</div><div class="diag-stat-meta" id="diag-backend-mode">—</div></div>
+            <div class="diag-stat"><div class="diag-stat-label">Room</div><div class="diag-stat-value" id="diag-room-target">—</div><div class="diag-stat-meta" id="diag-room-service">—</div></div>
+            <div class="diag-stat"><div class="diag-stat-label">Checks</div><div class="diag-stat-value" id="diag-issue-summary">—</div><div class="diag-stat-meta" id="diag-server-generated">—</div></div>
+          </div>
+          <div class="diag-detail-grid">
+            <div class="diag-group">
+              <h3 class="diag-group-title">Connection</h3>
+              <div class="diag-row"><div class="diag-row-label">Server address</div><div class="diag-row-value mono" id="diag-backend-url">—</div></div>
+              <div class="diag-row"><div class="diag-row-label">Stremio service</div><div class="diag-row-value" id="diag-stremio">—</div></div>
+              <div class="diag-row"><div class="diag-row-label">Stremio tab</div><div class="diag-row-value" id="diag-surface">—</div></div>
+            </div>
+            <div class="diag-group">
+              <h3 class="diag-group-title">Session</h3>
+              <div class="diag-row"><div class="diag-row-label">Saved room</div><div class="diag-row-value" id="diag-coordinator-mode">—</div></div>
+              <div class="diag-row"><div class="diag-row-label">Room access</div><div class="diag-row-value" id="diag-room-state">—</div></div>
+              <div class="diag-row"><div class="diag-row-label">Playback</div><div class="diag-row-value" id="diag-adapter-availability">—</div></div>
+              <p class="diag-note" id="diag-room-error">—</p>
+            </div>
+            <div class="diag-group">
+              <h3 class="diag-group-title">Internal state</h3>
+              <div class="diag-row"><div class="diag-row-label">Coordinator mode</div><div class="diag-row-value" id="diag-advanced-coordinator-mode">—</div></div>
+              <div class="diag-row"><div class="diag-row-label">Controller phase</div><div class="diag-row-value" id="diag-controller-phase">—</div></div>
+              <div class="diag-row"><div class="diag-row-label">Adapter route</div><div class="diag-row-value" id="diag-adapter-route">—</div></div>
+              <div class="diag-row"><div class="diag-row-label">Adapter availability</div><div class="diag-row-value" id="diag-advanced-adapter-availability">—</div></div>
+            </div>
+            <div class="diag-group">
+              <h3 class="diag-group-title">Extension checks</h3>
+              <div class="diag-row-value" id="diag-ext-issues">—</div>
+              <ul class="diag-list" id="diag-ext-issue-list"></ul>
+            </div>
+            <div class="diag-group">
+              <h3 class="diag-group-title">Server checks</h3>
+              <div class="diag-row-value" id="diag-server-issues">—</div>
+              <ul class="diag-list" id="diag-server-issue-list"></ul>
+            </div>
           </div>
         </div>
-
-        <div class="diag-summary-grid">
-          <div class="diag-stat">
-            <div class="diag-stat-label">Extension Build</div>
-            <div class="diag-stat-value" id="diag-extension">-</div>
-            <div class="diag-stat-meta" id="diag-bg-version">-</div>
-          </div>
-          <div class="diag-stat">
-            <div class="diag-stat-label">Connection</div>
-            <div class="diag-stat-value" id="diag-ws">-</div>
-            <div class="diag-stat-meta" id="diag-backend-mode">-</div>
-          </div>
-          <div class="diag-stat">
-            <div class="diag-stat-label">Active Room</div>
-            <div class="diag-stat-value" id="diag-room-target">-</div>
-            <div class="diag-stat-meta" id="diag-room-service">-</div>
-          </div>
-          <div class="diag-stat">
-            <div class="diag-stat-label">Health</div>
-            <div class="diag-stat-value" id="diag-issue-summary">-</div>
-            <div class="diag-stat-meta" id="diag-server-generated">-</div>
-          </div>
-        </div>
-
-        <div class="diag-detail-grid">
-          <div class="diag-group">
-            <div class="diag-group-title">Connection Details</div>
-            <div class="diag-row">
-              <div class="diag-row-label">Backend URL</div>
-              <div class="diag-row-value mono" id="diag-backend-url">-</div>
-            </div>
-            <div class="diag-row">
-              <div class="diag-row-label">Stremio</div>
-              <div class="diag-row-value" id="diag-stremio">-</div>
-            </div>
-            <div class="diag-row">
-              <div class="diag-row-label">Known Surface</div>
-              <div class="diag-row-value" id="diag-surface">-</div>
-            </div>
-          </div>
-
-          <div class="diag-group">
-            <div class="diag-group-title">Current Session</div>
-            <div class="diag-row">
-              <div class="diag-row-label">Resume Target</div>
-              <div class="diag-row-value" id="diag-coordinator-mode">-</div>
-            </div>
-            <div class="diag-row">
-              <div class="diag-row-label">Room State</div>
-              <div class="diag-row-value" id="diag-room-state">-</div>
-            </div>
-            <div class="diag-row">
-              <div class="diag-row-label">Content Handoff</div>
-              <div class="diag-row-value" id="diag-adapter-availability">-</div>
-            </div>
-            <div class="diag-note" id="diag-room-error">-</div>
-          </div>
-        </div>
-
-        <details class="diag-advanced">
-          <summary>Advanced diagnostics</summary>
-          <div class="diag-advanced-copy">Internal controller, adapter, and invariant detail for debugging direct-join, recovery, or runtime consistency problems. Most users should only need the health summary above.</div>
-          <div class="diag-advanced-body">
-            <div class="diag-detail-grid">
-              <div class="diag-group">
-                <div class="diag-group-title">Runtime Internals</div>
-                <div class="diag-row">
-                  <div class="diag-row-label">Coordinator Mode</div>
-                  <div class="diag-row-value" id="diag-advanced-coordinator-mode">-</div>
-                </div>
-                <div class="diag-row">
-                  <div class="diag-row-label">Controller Phase</div>
-                  <div class="diag-row-value" id="diag-controller-phase">-</div>
-                </div>
-                <div class="diag-row">
-                  <div class="diag-row-label">Adapter Route</div>
-                  <div class="diag-row-value" id="diag-adapter-route">-</div>
-                </div>
-                <div class="diag-row">
-                  <div class="diag-row-label">Raw Adapter Availability</div>
-                  <div class="diag-row-value" id="diag-advanced-adapter-availability">-</div>
-                </div>
-              </div>
-
-              <div class="diag-group">
-                <div class="diag-group-title">Extension Invariants</div>
-                <div class="diag-row">
-                  <div class="diag-row-label">Summary</div>
-                  <div class="diag-row-value" id="diag-ext-issues">-</div>
-                </div>
-                <ul class="diag-list" id="diag-ext-issue-list">
-                  <li class="diag-list-empty">No extension invariant issues.</li>
-                </ul>
-              </div>
-
-              <div class="diag-group">
-                <div class="diag-group-title">Backend Invariants</div>
-                <div class="diag-row">
-                  <div class="diag-row-label">Summary</div>
-                  <div class="diag-row-value" id="diag-server-issues">-</div>
-                </div>
-                <ul class="diag-list" id="diag-server-issue-list">
-                  <li class="diag-list-empty">No backend invariant issues.</li>
-                </ul>
-              </div>
-            </div>
-          </div>
-        </details>
-      </section>
-
+      </details>
     </div>
-  </div>
-
+  </main>
   <script src="wp-actions.js"></script>
   <script src="constants.js"></script>
   <script src="runtime-state.js"></script>

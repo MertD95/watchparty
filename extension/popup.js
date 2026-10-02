@@ -85,7 +85,7 @@ function openOptionsPage() {
 function updateQuickActions() {
   const resumeBtn = $('btn-resume-room');
   if (!resumeBtn) return;
-  resumeBtn.textContent = currentRenderedRoom?.id ? 'Go to Room in Stremio' : 'Open Stremio';
+  resumeBtn.textContent = currentRenderedRoom?.id ? 'Return to room in Stremio' : 'Open Stremio';
 }
 
 function resumeRoomInStremio() {
@@ -127,13 +127,13 @@ function copyTextWithFeedback(textSource, target, idleText, successText) {
     .catch(() => {});
 }
 
-function setStremioStatus(isRunning) {
-  if (isRunning) {
+function setStremioStatus(hasStremioTab) {
+  if (hasStremioTab) {
     $('stremio-dot').className = 'dot on';
-    $('stremio-status').textContent = 'Stremio is running';
+    $('stremio-status').textContent = 'Stremio open';
   } else {
-    $('stremio-dot').className = 'dot off';
-    $('stremio-status').textContent = 'Stremio not detected';
+    $('stremio-dot').className = 'dot';
+    $('stremio-status').textContent = 'Stremio closed';
   }
 }
 
@@ -141,18 +141,18 @@ function updateStatusHint(hasStremioTab, stremioRunning, bootstrapPending) {
   const hint = $('status-hint');
   if (!hint) return;
   if (bootstrapPending) {
-    hint.textContent = 'WatchParty is staged and waiting for Stremio Web. Finish setup there to create or join the room.';
+    hint.textContent = 'Open Stremio to finish joining your room.';
     return;
   }
   if (!hasStremioTab) {
-    hint.textContent = 'No Stremio Web tab is open. Create or join here and WatchParty will hand the room off when Stremio opens.';
+    hint.textContent = '';
     return;
   }
   if (!stremioRunning) {
-    hint.textContent = 'Stremio Web is open. The local streaming server is optional for room setup and only needed for local playback features.';
+    hint.textContent = '';
     return;
   }
-  hint.textContent = 'Stremio Web is ready. Create or join here and WatchParty will attach to the active session.';
+  hint.textContent = '';
 }
 
 function getKnownBackendKey(value) {
@@ -172,11 +172,12 @@ function setWsStatus(isConnected) {
   const backendInfo = displayBackendKey ? WPConstants.BACKEND.getInfo(displayBackendKey) : null;
   if (isConnected) {
     $('ws-dot').className = 'dot on';
-    $('ws-status').textContent = backendInfo ? `Connected to ${backendInfo.label} server` : 'Connected to server';
+    $('ws-status').textContent = 'Connected';
   } else {
-    $('ws-dot').className = 'dot off';
-    $('ws-status').textContent = backendInfo ? `${backendInfo.label} server disconnected` : 'Server disconnected';
+    $('ws-dot').className = currentRenderedRoom ? 'dot off' : 'dot';
+    $('ws-status').textContent = currentRenderedRoom ? 'Reconnecting…' : 'Not connected';
   }
+  $('ws-status').title = backendInfo ? `${backendInfo.label} server` : 'WatchParty server';
 }
 
 function buildInviteUrl(roomId) {
@@ -228,6 +229,8 @@ function setLobbyMode(mode) {
   joinTab.classList.toggle('active', !isCreate);
   createTab.setAttribute('aria-selected', isCreate ? 'true' : 'false');
   joinTab.setAttribute('aria-selected', isCreate ? 'false' : 'true');
+  createTab.tabIndex = isCreate ? 0 : -1;
+  joinTab.tabIndex = isCreate ? -1 : 0;
   createPanel.classList.toggle('hidden', !isCreate);
   joinPanel.classList.toggle('hidden', isCreate);
 }
@@ -239,17 +242,17 @@ function updateLobbyPrivacyState() {
   const help = $('privacy-mode-help');
   const listingLabel = $('listing-mode-label');
   const listingHelp = $('listing-mode-help');
-  if (label) label.textContent = isPublic ? 'Public room' : 'Private room';
+  if (label) label.textContent = isPublic ? 'Anyone can join' : 'Invite only';
   if (help) {
     help.textContent = isPublic
-      ? 'Anyone who finds the room can join instantly.'
-      : 'Invite required to join.';
+      ? 'No invite key needed.'
+      : 'Friends need your full invite link.';
   }
-  if (listingLabel) listingLabel.textContent = isListed ? 'Listed publicly' : 'Hidden from public lists';
+  if (listingLabel) listingLabel.textContent = isListed ? 'Show in room browser' : 'Hidden from room browser';
   if (listingHelp) {
     listingHelp.textContent = isListed
-      ? 'Shown in public room lists so people can discover the room there.'
-      : 'Hidden from public room lists. Share the room link directly instead.';
+      ? 'Others can find the room. Invite rules still apply.'
+      : 'Only people with your link can find the room.';
   }
 }
 
@@ -261,6 +264,7 @@ function renderBackendControls() {
     btn.hidden = localUnavailable;
     btn.disabled = localUnavailable;
     btn.classList.toggle('active', btn.dataset.mode === selectedMode);
+    btn.setAttribute('aria-pressed', btn.dataset.mode === selectedMode ? 'true' : 'false');
   });
 
   const browseLink = $('browse-rooms-link');
@@ -273,9 +277,9 @@ function renderBackendControls() {
   if (selectedMode === WPConstants.BACKEND.MODES.AUTO) {
     if (displayBackendKey) {
       const info = WPConstants.BACKEND.getInfo(displayBackendKey);
-      backendNote.textContent = `Auto mode is selected. Current backend: ${info.label}${currentActiveBackendUrl ? ` (${currentActiveBackendUrl})` : ''}.`;
+      backendNote.textContent = `Automatic (recommended). Using the ${info.label.toLowerCase()} server.`;
     } else {
-      backendNote.textContent = 'Auto mode is selected. Installed builds use the live backend. Unpacked development builds may use localhost when it is available.';
+      backendNote.textContent = 'Automatic is recommended. Development builds can use a local server when available.';
     }
     return;
   }
@@ -292,6 +296,7 @@ function applyStatusResponse(response) {
   currentWsConnected = !!response.wsConnected;
   currentUserId = response.userId || currentUserId || null;
   currentSessionId = response.sessionId || currentSessionId || null;
+  setStremioStatus(!!response.hasStremioTab);
   updateStatusHint(!!response.hasStremioTab, !!response.stremioRunning, !!response.bootstrapPending);
   renderBackendControls();
   setWsStatus(currentWsConnected);
@@ -435,10 +440,8 @@ chrome.runtime.sendMessage(
     if (!response) return;
 
     // Version
-    $('version').textContent = `v${chrome.runtime.getManifest().version} [${response.bgVersion || 'OLD'}]`;
-
-    // Stremio status
-    setStremioStatus(response.stremioRunning);
+    $('version').textContent = `v${chrome.runtime.getManifest().version}`;
+    $('version').title = `Background version: ${response.bgVersion || 'unknown'}`;
 
     applyStatusResponse(response);
 
@@ -491,7 +494,10 @@ setWsStatus(false);
 function showLobbyView() {
   $('view-lobby').classList.remove('hidden');
   $('view-room').classList.add('hidden');
+  $('room-actions').classList.add('hidden');
+  $('setup-card').classList.remove('hidden');
   currentRenderedRoom = null;
+  setWsStatus(currentWsConnected);
   resetRoomContentLinks();
   resetLobbyActionButtons();
   // Clear any error messages
@@ -505,9 +511,15 @@ function showRoomView(room, myUserId) {
   if (room?.id && suppressedRoomId && room.id === suppressedRoomId) return;
   $('view-lobby').classList.add('hidden');
   $('view-room').classList.remove('hidden');
+  $('room-actions').classList.remove('hidden');
+  $('setup-card').classList.add('hidden');
+  currentRenderedRoom = room;
+  updateQuickActions();
+  setWsStatus(currentWsConnected);
 
   if (myUserId) currentUserId = myUserId;
   loadIdentity((resolvedUserId, resolvedSessionId) => {
+    if (currentRenderedRoom !== room) return;
     renderRoomDetails(room, resolvedUserId, resolvedSessionId);
   });
 }
@@ -528,12 +540,12 @@ function showRoomView(room, myUserId) {
   $('room-id-display').textContent = room.id;
   $('room-meta').textContent = room.meta?.name
     ? `${room.meta.name}${room.meta.year ? ` (${room.meta.year})` : ''}`
-    : 'WatchParty Session';
+    : 'WatchParty room';
 
   const isHost = amIHost();
   currentRenderedRoom = room || null;
-  $('room-privacy-badge').textContent = room.public ? 'Open join' : 'Invite key required';
-  $('room-role-badge').textContent = isHost ? 'Host' : 'Synced';
+  $('room-privacy-badge').textContent = room.public ? 'Open to anyone' : 'Invite only';
+  $('room-role-badge').textContent = isHost ? 'Host' : 'Guest';
   $('room-count-badge').textContent = `${room.users?.length || 0} watching`;
   updateQuickActions();
   const detailUrl = getContentDetailUrl(room);
@@ -678,10 +690,19 @@ $('btn-leave').addEventListener('click', () => {
 
 $('lobby-tab-create').addEventListener('click', () => setLobbyMode('create'));
 $('lobby-tab-join').addEventListener('click', () => setLobbyMode('join'));
+for (const id of ['lobby-tab-create', 'lobby-tab-join']) {
+  $(id).addEventListener('keydown', (event) => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const nextMode = event.key === 'Home' ? 'create' : event.key === 'End' ? 'join'
+      : currentLobbyMode === 'create' ? 'join' : 'create';
+    setLobbyMode(nextMode);
+    $(`lobby-tab-${nextMode}`).focus();
+  });
+}
 $('public-check').addEventListener('change', updateLobbyPrivacyState);
 $('listed-check').addEventListener('change', updateLobbyPrivacyState);
 $('btn-open-watchparty').addEventListener('click', openWatchPartyTab);
-$('btn-open-stremio').addEventListener('click', openStremioTab);
 $('btn-open-settings').addEventListener('click', openOptionsPage);
 $('btn-resume-room').addEventListener('click', resumeRoomInStremio);
 setLobbyMode(currentLobbyMode);

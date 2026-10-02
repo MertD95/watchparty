@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>WatchParty sidebar — Local UI preview</title>
+  <link rel="stylesheet" href="/extension/stremio-overlay.css">
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #101117; color: #edecf4; font: 16px/1.6 system-ui, sans-serif; }
+    .preview-scene { padding: 32px; max-width: 860px; }
+    .preview-scene a { color: #bcb5ff; }
+    .preview-scene h1 { font-size: clamp(25px,4vw,44px); line-height:1.2; margin:36px 0 16px; }
+    .preview-scene p { color: #aaa7b8; max-width: 560px; }
+    .preview-label { display:block; margin-top:32px; color:#d8c5ff; font-size:12px; text-transform:uppercase; letter-spacing:1.4px; }
+    .preview-controls { display:flex; gap:10px; flex-wrap:wrap; margin-top:24px; }
+    .preview-controls a, .preview-controls button { border:1px solid #484355; background:#24212e; padding:8px 14px; border-radius:8px; color:#eee; font:inherit; text-decoration:none; cursor:pointer; }
+    .preview-placeholder { margin-top:40px; border:1px solid #393541; border-radius:16px; background:#19171f; min-height:180px; padding:28px; display:grid; align-content:center; }
+    .preview-placeholder strong { font-size:20px; }
+    @media(max-width:680px) { .preview-scene { padding:16px; } }
+  </style>
+  <script src="/preview/bridge.js"></script>
+</head>
+<body>
+  <main class="preview-scene">
+    <a href="/" target="_top">← All UI previews</a>
+    <span class="preview-label">Local interactive preview</span>
+    <h1>Try the new WatchParty sidebar.</h1>
+    <p>This is the actual extension UI on a sample backdrop. Change your preferences, explore host and guest controls, or create a sample room.</p>
+    <div class="preview-controls">
+      <a href="?scenario=idle">No room</a>
+      <a href="?scenario=host">Host view</a>
+      <a href="?scenario=guest">Guest view</a>
+      <button id="preview-show-settings" type="button">Open settings</button>
+      <button id="preview-reset" type="button">Reset preview preferences</button>
+    </div>
+    <div class="preview-placeholder">
+      <strong>Simulated room · no video playback</strong>
+      <p>Alex is a sample participant, not another connected user. Chat echoes locally. This preview does not test real multi-user synchronization or contact production services.</p>
+    </div>
+  </main>
+  <script src="/extension/wp-actions.js"></script>
+  <script src="/extension/constants.js"></script>
+  <script src="/extension/runtime-clock.js"></script>
+  <script src="/extension/runtime-state.js"></script>
+  <script src="/extension/room-keys.js"></script>
+  <script src="/extension/wp-room-domain.js"></script>
+  <script src="/extension/wp-direct-play-domain.js"></script>
+  <script src="/extension/direct-play.js"></script>
+  <script src="/extension/wp-protocol.js"></script>
+  <script src="/extension/utils.js"></script>
+  <script src="/extension/stremio-overlay-theme.js"></script>
+  <script src="/extension/stremio-overlay-modals.js"></script>
+  <script src="/extension/stremio-overlay-shells.js"></script>
+  <script src="/preview/overlay.js"></script>
+  <script src="/extension/stremio-overlay.js"></script>
+</body>
+</html>

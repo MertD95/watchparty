@@ -37,6 +37,23 @@ node tools/serve-landing.mjs
 
 ## Main commands
 
+For an interactive preview of the extension UI without installing it:
+
+```bash
+npm run preview:ui
+```
+
+Open `http://localhost:8091/`. Switch between the Stremio sidebar, popup,
+settings and side panel, with sample host/guest/no-room states. This loopback-only
+playground loads the actual UI files with a development-only browser API adapter;
+rooms, chat and connection status are simulated. It does not test real syncing
+or change production/installed-extension data. The page also includes setup
+instructions for real testing with the unpacked extension and local backend.
+
+The preview runs separately from the optional landing server on port 8090.
+Set `WATCHPARTY_UI_PREVIEW_PORT` to change its port. Preview files stay under
+`tools/` and are not included in the store package.
+
 ```bash
 npm run syntax
 npm run verify:static

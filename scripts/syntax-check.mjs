@@ -1,15 +1,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-const extensionDir = path.resolve('extension');
-const files = fs.readdirSync(extensionDir)
+const files = ['extension', 'landing'].flatMap((directory) => fs.readdirSync(path.resolve(directory))
   .filter((name) => name.endsWith('.js'))
-  .sort();
+  .sort()
+  .map((name) => path.join(directory, name)));
 
 let failed = false;
 
 for (const name of files) {
-  const fullPath = path.join(extensionDir, name);
+  const fullPath = path.resolve(name);
   try {
     new Function(fs.readFileSync(fullPath, 'utf8'));
     console.log(`OK ${name}`);

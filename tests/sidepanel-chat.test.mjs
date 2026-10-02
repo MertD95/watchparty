@@ -6,15 +6,21 @@ import vm from 'node:vm';
 
 // Exercise the real companion event handlers. Visual/layout verification lives
 // in the isolated installed-extension MCP suite, not this minimal DOM adapter.
-async function companion({ deferInitialStatus = false } = {}) {
+async function companion({ deferInitialStatus = false, fullDom = false } = {}) {
   const ids = new Map(), timers = new Map(), sent = [];
   let listener, timerId = 0;
   let response = async () => ({ ok: true });
   let initialStatus;
+  let activeElement = null;
   class Element {
     children = []; value = ''; textContent = ''; disabled = false;
     style = { setProperty() {} };
-    classList = { add() {}, remove() {}, toggle() {} };
+    classes = new Set();
+    classList = {
+      add: name => this.classes.add(name), remove: name => this.classes.delete(name),
+      contains: name => this.classes.has(name),
+      toggle: (name, force) => { if (force ?? !this.classes.has(name)) this.classes.add(name); else this.classes.delete(name); },
+    };
     listeners = new Map();
     addEventListener(type, callback) { this.listeners.set(type, callback); }
     append(...children) { this.children.push(...children); }
@@ -22,14 +28,26 @@ async function companion({ deferInitialStatus = false } = {}) {
     removeChild(child) { this.children.splice(this.children.indexOf(child), 1); }
     get childElementCount() { return this.children.length; }
     get firstChild() { return this.children[0]; }
-    set innerHTML(value) { if (!value) this.children = []; }
+    setAttribute() {}
+    focus() { activeElement = this; }
+    contains(child) { return !!child && this.children.includes(child); }
+    set innerHTML(value) {
+      this.children = [];
+      for (const match of value.matchAll(/<[^>]*\bid="([^"]+)"[^>]*>/g)) {
+        const child = new Element(); child.id = match[1]; child.open = /\bopen(?:\s|>)/.test(match[0]);
+        ids.set(child.id, child); this.children.push(child);
+      }
+    }
   }
   for (const id of ['chat-input', 'chat-send', 'chat-messages', 'toast']) ids.set(id, new Element());
+  if (fullDom) {
+    for (const id of ['status', 'users', 'users-empty', 'chat-container', 'chat-empty', 'sync-indicator', 'people-count', 'people-section', 'chat-section', 'hero-copy', 'room-code', 'sp-open-watchparty-header']) ids.set(id, new Element());
+  }
   const room = { id: 'room-a', public: true, users: [{ id: 'me', sessionId: 'session-me', name: 'Me' }] };
   const context = vm.createContext({
     console, crypto: webcrypto, URL, URLSearchParams,
-    HTMLInputElement: Element, HTMLTextAreaElement: Element, HTMLButtonElement: Element,
-    document: { getElementById: id => ids.get(id), createElement: () => new Element(), body: new Element(), documentElement: new Element() },
+    Node: Element, HTMLInputElement: Element, HTMLTextAreaElement: Element, HTMLButtonElement: Element, HTMLDetailsElement: Element,
+    document: { getElementById: id => ids.get(id), createElement: () => new Element(), createTextNode: text => text, body: new Element(), documentElement: new Element(), get activeElement() { return activeElement; } },
     setTimeout: (callback, ms) => { const id = ++timerId; timers.set(id, { callback, ms }); return id; },
     clearTimeout: id => timers.delete(id),
     WPRuntimeState: { get: async () => ({}) },
@@ -55,7 +73,8 @@ async function companion({ deferInitialStatus = false } = {}) {
   const emit = (action, payload) => listener({ type: 'watchparty-ext', action, payload });
   const chatCommands = () => sent.filter(m => m.action === 'room.chat.send');
   return {
-    input: ids.get('chat-input'), button: ids.get('chat-send'), timers, sent, room,
+    input: ids.get('chat-input'), button: ids.get('chat-send'), timers, sent, room, ids,
+    focused: () => activeElement,
     click: () => ids.get('chat-send').listeners.get('click')({ isTrusted: true }),
     messages: () => ids.get('chat-messages').children,
     toast: () => ids.get('toast').textContent,
@@ -140,4 +159,23 @@ test('late initial coordinator snapshot cannot overwrite a newer room broadcast 
   ui.initialStatus();
   assert.equal(ui.input.value, 'room B draft');
   await ui.click(); assert.equal(ui.command().roomId, 'room-b');
+});
+
+test('companion only shows People and Chat in an active room', async () => {
+  const ui = await companion({ fullDom: true });
+  for (const id of ['people-section', 'chat-section']) assert.equal(ui.ids.get(id).classList.contains('hidden'), false);
+  assert.equal(ui.ids.get('sp-open-watchparty-header').textContent, 'Return to Stremio');
+  ui.update({ room: null });
+  for (const id of ['people-section', 'chat-section']) assert.equal(ui.ids.get(id).classList.contains('hidden'), true);
+  assert.equal(ui.ids.get('sp-open-watchparty-header').textContent, 'Open Stremio');
+  assert.equal(ui.ids.has('sp-open-watchparty-empty'), false, 'the empty state does not duplicate the launcher');
+});
+
+test('companion room refresh preserves disclosure and keyboard action focus', async () => {
+  const ui = await companion({ fullDom: true });
+  ui.ids.get('sp-room-tools').open = true;
+  ui.ids.get('sp-bookmark').focus();
+  ui.update({ wsConnected: true });
+  assert.equal(ui.ids.get('sp-room-tools').open, true);
+  assert.equal(ui.focused(), ui.ids.get('sp-bookmark'));
 });

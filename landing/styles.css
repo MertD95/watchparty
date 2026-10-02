@@ -1,0 +1,195 @@
+:root {
+  color-scheme: dark;
+  --bg: #11131b;
+  --surface: #1a1d28;
+  --surface-hover: #222634;
+  --border: #303443;
+  --text: #f1f2f7;
+  --muted: #adb2c3;
+  --accent: #aaa1ff;
+  --primary: #7063dc;
+  --primary-hover: #6956dc;
+  --green: #a1e4bc;
+  --amber: #f5cf88;
+  --danger: #ffb3b6;
+}
+
+* { box-sizing: border-box; }
+html { scroll-padding-top: 24px; }
+body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--text); font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+h1, h2, h3, p { margin: 0; }
+button, input { font: inherit; }
+button, a, summary, input { -webkit-tap-highlight-color: transparent; }
+button { cursor: pointer; }
+button:disabled { cursor: not-allowed; opacity: 0.55; }
+a { color: var(--accent); text-underline-offset: 4px; }
+a:hover { color: #c9c3ff; }
+:focus-visible { outline: 2px solid #b7b3ff; outline-offset: 4px; }
+[hidden], .hidden { display: none !important; }
+.page-shell { max-width: 1136px; margin: 0 auto; padding: 0 28px 28px; }
+.skip-link { position: absolute; top: -100px; left: 20px; z-index: 10000; padding: 10px 16px; border-radius: 8px; background: var(--primary); color: #fff; }
+.skip-link:focus { top: 16px; }
+
+/* Navigation stays quiet so starting a watch party is the primary action. */
+.header { display: flex; align-items: center; justify-content: space-between; gap: 24px; min-height: 94px; padding: 24px 0; }
+.logo-wrap { display: inline-flex; align-items: center; gap: 10px; min-width: 0; color: var(--text); text-decoration: none; }
+.logo-wrap:hover { color: var(--text); }
+.logo-mark { flex: none; width: 32px; height: 32px; border-radius: 9px; }
+.logo { font-size: 20px; font-weight: 700; letter-spacing: -0.035em; line-height: 1.25; }
+.nav { display: flex; align-items: center; gap: 6px 22px; flex-wrap: wrap; }
+.nav a { display: inline-flex; align-items: center; min-height: 40px; color: var(--muted); font-size: 14px; text-decoration: none; }
+.nav a:hover { color: var(--text); text-decoration: underline; }
+
+.hero { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 0.9fr); align-items: center; gap: 72px; padding: 62px 0 68px; }
+.hero-copy { min-width: 0; }
+.hero-kicker { margin-bottom: 16px; font-size: 13px; font-weight: 600; color: var(--accent); }
+.hero h1 { max-width: 11ch; font-size: clamp(42px, 5.6vw, 64px); line-height: 1.06; letter-spacing: -0.055em; font-weight: 750; text-wrap: balance; }
+.hero h1 span { color: var(--accent); }
+.hero-copy > p:not(.hero-kicker):not(.hero-footnote) { max-width: 43ch; margin-top: 22px; font-size: 17px; color: var(--muted); }
+.cta-row { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 28px; }
+.hero-footnote { margin-top: 14px; font-size: 12px; color: var(--muted); }
+.btn, .room-join-btn, .room-direct-btn, .modal-actions button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; padding: 10px 17px; border: 1px solid transparent; border-radius: 9px; color: var(--text); background: transparent; font-size: 14px; line-height: 1.4; font-weight: 600; text-align: center; text-decoration: none; transition: background 140ms ease, border-color 140ms ease; }
+.btn:hover { text-decoration: none; }
+.btn-primary, .room-join-btn, .modal-actions .btn-primary { background: var(--primary); color: #fff; }
+.btn-primary:hover:not(:disabled), .room-join-btn:hover:not(:disabled) { background: var(--primary-hover); color: #fff; }
+.btn-secondary, .btn-cancel, .room-direct-btn, .modal-actions .btn-cancel { border-color: var(--border); }
+.btn-secondary:hover:not(:disabled), .btn-cancel:hover:not(:disabled), .room-direct-btn:hover:not(:disabled) { background: var(--surface-hover); color: #fff; }
+
+.how-it-works { min-width: 0; padding-left: 32px; border-left: 1px solid var(--border); }
+.how-it-works h2 { margin-bottom: 22px; font-size: 14px; font-weight: 600; color: var(--muted); }
+.steps { display: grid; gap: 22px; margin: 0; padding: 0; list-style: none; }
+.steps li { display: grid; grid-template-columns: 28px minmax(0, 1fr); align-items: start; gap: 14px; min-width: 0; }
+.step-number { display: grid; place-items: center; width: 28px; height: 28px; border: 1px solid var(--border); border-radius: 50%; color: var(--accent); font-size: 12px; font-weight: 600; }
+.steps h3 { margin-bottom: 3px; font-size: 15px; font-weight: 600; }
+.steps p { color: var(--muted); font-size: 14px; line-height: 1.5; }
+
+/* Joining needs one name and one action, not a dashboard. */
+.rooms-section { padding: 34px 0 36px; border-top: 1px solid var(--border); }
+.rooms-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 18px; margin-bottom: 24px; }
+.rooms-heading-stack { min-width: 0; }
+.rooms-section h2 { font-size: 27px; line-height: 1.25; letter-spacing: -0.025em; }
+.rooms-subtitle { max-width: 58ch; margin-top: 7px; font-size: 14px; color: var(--muted); }
+.rooms-stats { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; color: var(--muted); font-size: 13px; }
+.rooms-stat { display: flex; align-items: baseline; gap: 5px; }
+.rooms-stat strong { color: var(--text); font-weight: 600; }
+.rooms-session-strip { display: flex; align-items: flex-end; justify-content: space-between; flex-wrap: wrap; gap: 12px 20px; margin-bottom: 14px; }
+.rooms-name-field { display: grid; gap: 7px; width: min(100%, 320px); min-width: 0; }
+.hero-field-label { display: block; color: var(--text); font-size: 14px; font-weight: 500; }
+.hero-profile-input, .modal-box input { width: 100%; min-width: 0; min-height: 44px; padding: 10px 13px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); color: var(--text); font-size: 16px; line-height: 1.4; }
+.hero-profile-input::placeholder, .modal-box input::placeholder { color: #969cad; opacity: 1; }
+.hero-profile-input:focus, .modal-box input:focus { border-color: var(--accent); }
+.hero-extension-status { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 8px; min-width: 0; margin-bottom: 20px; }
+.hero-status-dot { flex: none; align-self: flex-start; width: 7px; height: 7px; border-radius: 50%; margin-top: 7px; background: var(--muted); }
+.hero-extension-status.is-ready .hero-status-dot { background: var(--green); }
+.hero-extension-status.is-warn .hero-status-dot { background: var(--amber); }
+.hero-status-title { font-size: 13px; font-weight: 500; color: var(--text); }
+.hero-profile-note { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+.hero-status-pill { font-size: 12px; color: var(--muted); }
+.hero-status-pill.is-ready { color: var(--green); }
+.hero-status-pill.is-warn { color: var(--amber); }
+.hero-inline-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; }
+.hero-room-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 20px; align-items: center; margin-bottom: 26px; padding: 17px 18px; border: 1px solid #45415f; border-radius: 12px; background: var(--surface); }
+.hero-room-title { font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+.hero-room-meta { margin-top: 3px; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.rooms-feedback { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 14px; color: var(--amber); font-size: 13px; }
+.rooms-feedback:has(#rooms-status:empty):has(.hidden) { display: none; }
+.rooms-feedback p:empty { display: none; }
+.site-help { margin-top: 24px; border-top: 1px solid var(--border); font-size: 13px; color: var(--muted); }
+.site-help > summary { width: fit-content; padding: 16px 0; cursor: pointer; color: var(--muted); }
+.site-help > summary:hover { color: var(--text); }
+.site-help > p { max-width: 72ch; margin-bottom: 16px; }
+.site-help .hero-inline-actions { padding-bottom: 8px; }
+
+.rooms-list { display: grid; gap: 12px; }
+.room-card { display: grid; grid-template-columns: 56px minmax(0, 1fr) auto; grid-template-areas: "poster info badge" "poster users actions"; align-items: start; gap: 10px 18px; min-width: 0; padding: 18px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.room-card-reconnecting { border-style: dashed; border-color: #746448; }
+.room-poster-slot { grid-area: poster; width: 56px; }
+.room-poster { display: block; width: 56px; height: 80px; border-radius: 6px; background: #2a2e3d; object-fit: cover; }
+.room-info { grid-area: info; min-width: 0; }
+.room-title { font-size: 16px; font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; }
+.room-meta { margin-top: 4px; font-size: 13px; line-height: 1.5; color: var(--muted); overflow-wrap: anywhere; }
+.room-meta:empty { display: none; }
+.room-badge { grid-area: badge; align-self: start; justify-self: end; padding: 3px 9px; border-radius: 5px; background: #292c39; color: var(--muted); font-size: 11px; font-weight: 600; }
+.room-badge-public { color: var(--green); background: #21342e; }
+.room-badge-private { color: #d7cdff; background: #302c44; }
+.room-users { grid-area: users; align-self: center; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.room-users-reconnecting { color: var(--amber); }
+.room-actions { grid-area: actions; display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+.room-join-btn, .room-direct-btn { min-height: 40px; padding: 9px 14px; font-size: 13px; }
+.rooms-empty { padding: 32px 22px; border: 1px dashed var(--border); border-radius: 12px; color: var(--muted); font-size: 14px; text-align: center; overflow-wrap: anywhere; }
+.rooms-empty strong { display: block; margin-bottom: 6px; color: var(--text); font-size: 16px; font-weight: 600; }
+.rooms-empty p { max-width: 52ch; margin: 0 auto; }
+.rooms-empty .btn { margin-top: 16px; }
+
+.modal-overlay { position: fixed; inset: 0; z-index: 9999; display: flex; align-items: center; justify-content: center; padding: 24px; background: rgba(4, 6, 12, 0.78); }
+.modal-box { width: min(100%, 460px); max-height: calc(100vh - 48px); max-height: calc(100dvh - 48px); overflow-y: auto; overscroll-behavior: contain; padding: 28px; border: 1px solid #454958; border-radius: 16px; background: var(--surface); box-shadow: 0 20px 80px #0006; }
+.modal-box h2, .modal-box h3 { margin-bottom: 10px; color: var(--text); font-size: 22px; line-height: 1.25; letter-spacing: -0.025em; }
+.modal-box p { margin-bottom: 20px; font-size: 14px; color: var(--muted); overflow-wrap: anywhere; }
+.modal-box label { display: block; margin-bottom: 7px; font-size: 13px; font-weight: 500; }
+.modal-box input { margin-bottom: 18px; background: var(--bg); }
+.modal-actions { display: flex; gap: 10px; }
+.modal-actions button { flex: 1; min-width: 0; }
+.modal-error { margin-bottom: 12px; color: var(--danger); font-size: 13px; overflow-wrap: anywhere; }
+.redirect-page { display: none; width: min(100%, 580px); margin: 0 auto; padding: 100px 24px 48px; text-align: center; }
+.redirect-back { display: inline-block; margin-bottom: 34px; font-size: 14px; }
+.redirect-page h1, .redirect-page h2 { margin-bottom: 16px; font-size: 32px; line-height: 1.2; letter-spacing: -0.025em; }
+.redirect-page p { margin-bottom: 22px; color: var(--muted); overflow-wrap: anywhere; }
+.redirect-page > .btn { margin: 0 4px 12px; }
+.redirect-room-id { display: inline-block; padding: 2px 9px; border-radius: 6px; background: var(--surface); color: var(--accent); font-family: Consolas, Monaco, monospace; font-size: 14px; overflow-wrap: anywhere; }
+.no-ext { display: none; margin-bottom: 24px; padding: 16px; border: 1px solid #746448; border-radius: 10px; color: var(--amber); font-size: 14px; }
+.footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 24px; padding-top: 22px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; }
+.footer a { color: var(--muted); }
+.footer nav { display: flex; flex-wrap: wrap; gap: 16px; }
+
+@media (max-width: 800px) {
+  .hero { gap: 34px; padding: 44px 0 48px; }
+  .how-it-works { padding-left: 24px; }
+  .hero h1 { font-size: 48px; }
+  .hero-copy > p:not(.hero-kicker):not(.hero-footnote) { font-size: 16px; }
+  .nav { column-gap: 16px; }
+}
+
+@media (max-width: 650px) {
+  .page-shell { padding: 0 20px 24px; }
+  .header { min-height: 80px; flex-wrap: wrap; gap: 8px 20px; padding: 20px 0; }
+  .nav { gap: 6px 18px; }
+  .nav a { font-size: 13px; }
+  .hero { grid-template-columns: minmax(0, 1fr); gap: 32px; padding-top: 26px; }
+  .hero h1 { font-size: clamp(40px, 9vw, 54px); }
+  .hero-copy > p:not(.hero-kicker):not(.hero-footnote) { margin-top: 18px; }
+  .cta-row { margin-top: 22px; }
+  .how-it-works { padding-left: 0; border: 0; }
+  .how-it-works h2 { margin-bottom: 16px; }
+  .steps { gap: 16px; }
+  .steps li { gap: 12px; }
+  .rooms-section { padding-top: 28px; }
+  .rooms-toolbar { gap: 12px; margin-bottom: 20px; }
+  .rooms-section h2 { font-size: 25px; }
+  .rooms-name-field { flex: 1 1 220px; width: auto; }
+  .hero-extension-status .hero-profile-note { flex-basis: 100%; padding-left: 15px; }
+  .hero-room-card { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  .hero-room-card .btn { justify-self: start; }
+  .room-card { grid-template-columns: 48px minmax(0, 1fr); grid-template-areas: "poster info" "poster badge" "users users" "actions actions"; gap: 9px 14px; padding: 16px; }
+  .room-poster-slot, .room-poster { width: 48px; }
+  .room-poster { height: 69px; }
+  .room-badge { justify-self: start; }
+  .room-actions { justify-content: stretch; padding-top: 3px; }
+  .room-join-btn, .room-direct-btn { flex: 1; min-height: 44px; }
+  .modal-overlay { padding: 16px; }
+  .modal-box { max-height: calc(100vh - 32px); max-height: calc(100dvh - 32px); padding: 22px; }
+  .redirect-page { padding-top: 64px; }
+}
+
+@media (max-width: 380px) {
+  .page-shell { padding-inline: 16px; }
+  .hero h1 { font-size: 40px; }
+  .cta-row { flex-direction: column; align-items: stretch; }
+  .rooms-session-strip { align-items: stretch; flex-direction: column; }
+  .rooms-name-field { flex: auto; }
+  .hero-room-card .btn { width: 100%; }
+  .modal-box { padding: 20px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
+}

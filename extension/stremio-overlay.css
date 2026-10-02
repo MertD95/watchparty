@@ -85,9 +85,7 @@
     gap: 12px;
     padding: 14px 16px 10px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-    background:
-      linear-gradient(180deg, rgba(var(--wp-accent-rgb), 0.14), rgba(var(--wp-accent-rgb), 0.06)),
-      rgba(15, 15, 30, 0.96);
+    background: #141422;
   }
 
   #wp-header-main {
@@ -152,9 +150,7 @@
     flex: 1;
     min-height: 0;
     overflow: hidden;
-    background:
-      radial-gradient(circle at top right, rgba(var(--wp-accent-rgb), 0.08), transparent 34%),
-      linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 36%);
+    background: #11111d;
   }
 
   #wp-sidebar-credit {
@@ -188,6 +184,10 @@
     background: rgba(255, 255, 255, 0.02);
   }
 
+  #wp-tabbar.wp-lobby-tabs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .wp-tab-btn {
     appearance: none;
     position: relative;
@@ -197,10 +197,11 @@
     gap: 4px;
     width: 100%;
     min-width: 0;
+    min-height: 36px;
     padding: 8px 6px;
     border-radius: 10px;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid transparent;
+    background: transparent;
     color: #9aa3c7;
     font-size: 11px;
     font-weight: 600;
@@ -301,7 +302,7 @@
   }
 
   .wp-muted {
-    color: #666;
+    color: #9ba3bb;
   }
 
   .wp-warning {
@@ -334,7 +335,10 @@
     min-height: 0;
     max-height: none;
     overflow: visible !important;
-    padding: 16px;
+    padding: 4px 0;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
   }
 
   #wp-room-controls.wp-lobby-surface {
@@ -351,6 +355,22 @@
     border-radius: 8px;
     background: rgba(255, 255, 255, 0.03);
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
+  }
+
+  #wp-lobby-setup-card {
+    padding: 4px 0 16px;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  #wp-lobby-directory-card {
+    padding: 18px 0 0;
+    border: 0;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
   }
 
   .wp-lobby-card-head {
@@ -411,11 +431,12 @@
 
   .wp-lobby-primary {
     width: 100%;
+    min-height: 40px;
     justify-content: center;
     margin-top: 4px;
     padding: 9px 12px;
     color: #eef2ff;
-    background: rgba(var(--wp-accent-rgb), 0.18);
+    background: var(--wp-accent);
     border-color: rgba(var(--wp-accent-rgb), 0.32);
   }
 
@@ -424,6 +445,10 @@
     color: #8f98ba;
     font-size: 11px;
     line-height: 1.5;
+  }
+
+  .wp-lobby-feedback:empty {
+    display: none;
   }
 
   .wp-lobby-feedback.wp-warning {
@@ -483,7 +508,7 @@
   }
 
   .wp-card-title {
-    font-size: 14px;
+    font-size: 17px;
     font-weight: 700;
     color: #eef2ff;
     margin-bottom: 6px;
@@ -499,25 +524,25 @@
   .wp-setting-list {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 0;
   }
 
   .wp-setting-row {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     justify-content: space-between;
     gap: 12px;
-    padding: 10px 12px;
-    border-radius: 12px;
-    background: rgba(255, 255, 255, 0.025);
-    border: 1px solid rgba(255, 255, 255, 0.05);
+    padding: 12px 0;
+    border-radius: 0;
+    background: transparent;
+    border: 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.07);
     cursor: pointer;
     transition: background .12s ease, border-color .12s ease, transform .12s ease;
   }
 
   .wp-setting-row:hover {
-    background: rgba(255, 255, 255, 0.05);
-    border-color: rgba(255, 255, 255, 0.1);
+    background: rgba(255, 255, 255, 0.025);
   }
 
   .wp-setting-row:active {
@@ -525,8 +550,7 @@
   }
 
   .wp-setting-row:has(.wp-toggle-shell input:checked) {
-    background: rgba(var(--wp-accent-rgb), 0.1);
-    border-color: rgba(var(--wp-accent-rgb), 0.3);
+    background: transparent;
   }
 
   .wp-toggle-shell {
@@ -682,12 +706,87 @@
   }
 
   .wp-settings-subtitle {
-    color: #c7d2fe;
+    display: block;
+    color: #c5c9db;
+    font-size: 12px;
+    font-weight: 600;
+    margin: 20px 0 8px;
+  }
+
+  .wp-settings-details {
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    margin-top: 18px;
+  }
+
+  .wp-settings-details > summary {
+    padding: 14px 0;
+    cursor: pointer;
+    color: #d7dbeb;
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .wp-settings-details > summary > span {
+    display: block;
+    padding-left: 15px;
+    color: #9ba3bb;
     font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    margin: 14px 0 8px;
+    font-weight: 400;
+  }
+
+  .wp-lobby-options {
+    margin: 0;
+    border: 0;
+  }
+
+  .wp-lobby-options > summary {
+    padding: 6px 0;
+    color: #aab2cd;
+  }
+
+  .wp-lobby-panel > .wp-settings-subtitle {
+    margin: 0;
+  }
+
+  .wp-preference-note {
+    color: #9ba3bb;
+    font-size: 11px;
+    line-height: 1.6;
+    margin-top: 16px;
+  }
+
+  .wp-color-setting {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 16px 0 4px;
+  }
+
+  .wp-room-actions {
+    margin: 0 0 16px;
+  }
+
+  .wp-room-actions .wp-action-btn {
+    min-height: 38px;
+    justify-content: center;
+  }
+
+  .wp-room-actions .wp-primary-action {
+    background: var(--wp-accent);
+    border-color: var(--wp-accent);
+    color: white;
+  }
+
+  .wp-room-actions .wp-leave-action {
+    color: #fda4af;
+    background: transparent;
+  }
+
+  button:focus-visible,
+  summary:focus-visible,
+  a:focus-visible {
+    outline: 2px solid var(--wp-accent-light);
+    outline-offset: 3px;
   }
 
   .wp-color-row {
@@ -697,8 +796,8 @@
   }
 
   .wp-color-btn {
-    width: 22px;
-    height: 22px;
+    width: 28px;
+    height: 28px;
     border-radius: 999px;
     border: 2px solid transparent;
     cursor: pointer;

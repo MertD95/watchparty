@@ -124,16 +124,17 @@ function renderBackend(status) {
 
   const displayBackendKey = WPConstants.BACKEND.resolveKey(selectedMode, status?.activeBackend);
   const info = WPConstants.BACKEND.getInfo(displayBackendKey);
-  const nextUrl = status?.activeBackendUrl || info.wsUrl;
   const backendNote = $('backend-note');
   if (!backendNote) return;
   if (selectedMode === WPConstants.BACKEND.MODES.AUTO) {
     backendNote.textContent = status?.activeBackend
-      ? `Auto mode is selected. Current backend: ${info.label}${status.activeBackendUrl ? ` (${status.activeBackendUrl})` : ''}.`
-      : 'Auto mode is selected. Installed builds use the live backend. Unpacked development builds may use localhost when it is available.';
+      ? `Automatic selection is using the ${info.key === WPConstants.BACKEND.MODES.LOCAL ? 'local development' : 'production'} server.`
+      : 'Automatic selection is on. No changes are needed for normal use.';
     return;
   }
-  backendNote.textContent = `${info.label} mode is selected. ${status?.wsConnected ? `Connected via ${nextUrl}.` : `Next connection will use ${nextUrl}.`}`;
+  backendNote.textContent = info.key === WPConstants.BACKEND.MODES.LOCAL
+    ? 'Using your local development server. Choose Automatic when you are done testing.'
+    : 'Using the production server.';
 }
 
 function renderSession(status) {
@@ -147,23 +148,25 @@ function renderSession(status) {
   const roomCard = $('session-card');
   const resumeBtn = buttonById('btn-resume-room');
   if (!roomPill || !roomCard || !resumeBtn) return;
+  setHidden(resumeBtn, !hasResumeTarget);
+  setHidden($('btn-open-stremio'), hasResumeTarget);
 
   if (!hasResumeTarget) {
     setHidden(roomPill, true);
     setHidden(roomCard, true);
-    resumeBtn.textContent = 'Go to Room in Stremio';
+    resumeBtn.textContent = 'Return to room';
     resumeBtn.disabled = true;
     return;
   }
 
-  resumeBtn.textContent = 'Go to Room in Stremio';
+  resumeBtn.textContent = bootstrapPending && !room ? 'Continue in Stremio' : 'Return to room';
   resumeBtn.disabled = false;
 
   if (!room) {
     setHidden(roomPill, false);
     setPill(
       'pill-room',
-      bootstrapPending ? 'Room handoff pending' : 'Room available to resume',
+      bootstrapPending ? 'Setup pending' : 'Room saved',
       'warn'
     );
     setHidden(roomCard, false);
@@ -176,20 +179,20 @@ function renderSession(status) {
     setText(
       'session-meta',
       bootstrapPending
-        ? 'WatchParty has a staged create or join waiting for Stremio.'
-        : 'WatchParty still has a resumable room target even though no live room snapshot is available.'
+        ? 'Continue in Stremio to create or join your room.'
+        : 'Return to Stremio to reconnect to this room.'
     );
     return;
   }
 
   const userCount = Array.isArray(room.users) ? room.users.length : 0;
   setHidden(roomPill, false);
-  setPill('pill-room', room.public === false ? 'Invite key room active' : 'Open-join room active', 'success');
+  setPill('pill-room', 'In a room', 'success');
   setHidden(roomCard, false);
   setText('session-title', getRoomDisplayName(status));
   setText(
     'session-meta',
-    `${room.public === false ? 'Invite key required' : 'Open join'} | ${room.listed === false ? 'Hidden from public lists' : 'Listed publicly'} | ${userCount} watching`
+    `${room.public === false ? 'Invite key required' : 'Anyone can join'} · ${userCount} watching`
   );
 }
 
@@ -233,10 +236,10 @@ function renderLocalLandingAccess(status) {
   block.classList.remove('hidden');
   const enabled = access?.enabled === true;
   const granted = access?.granted === true;
-  button.textContent = granted ? 'Disable Local Landing Access' : 'Enable Local Landing Access';
+  button.textContent = granted ? 'Disable local access' : 'Enable local access';
   note.textContent = enabled
-    ? 'Local landing access is enabled for localhost and 127.0.0.1 WatchParty pages in this development install.'
-    : 'Enable this only when testing local WatchParty landing pages. Installed builds do not need it.';
+    ? 'Enabled for localhost and 127.0.0.1 in this development install.'
+    : 'Off. Installed extensions do not need local website access.';
 }
 
 function formatDiagnosticTimestamp(value) {
@@ -248,7 +251,7 @@ function formatDiagnosticTimestamp(value) {
 
 function describeHealth(extensionIssues, serverIssues) {
   const total = extensionIssues + serverIssues;
-  if (total === 0) return 'Healthy';
+  if (total === 0) return 'No warnings reported';
   if (extensionIssues > 0 && serverIssues > 0) return 'Needs attention';
   return total === 1 ? '1 warning' : `${total} warnings`;
 }
@@ -287,12 +290,12 @@ function renderStatus(status) {
   const roomTarget = status?.room
     ? getRoomDisplayName(status)
     : (status?.bootstrapPending ? 'Staged handoff' : (status?.currentRoomId ? `Resume ${status.currentRoomId.slice(0, 8)}` : 'No active room'));
-  const health = describeHealth(extensionIssues, serverIssues);
+  const health = status ? describeHealth(extensionIssues, serverIssues) : 'Unavailable';
   const contentHandoff = describeContentHandoff(status);
 
   setText('diag-extension', `v${extensionVersion}`);
   setText('diag-bg-version', `Runtime build v${status?.bgVersion || extensionVersion}`);
-  setText('diag-ws', status?.wsConnected ? 'Connected' : 'Disconnected');
+  setText('diag-ws', status ? (status.wsConnected ? 'Connected' : 'Disconnected') : 'Unavailable');
   setText('diag-backend-mode', `${backendInfo.label} backend${status?.backendMode === WPConstants.BACKEND.MODES.AUTO ? ' via Auto' : ''}`);
   setText('diag-backend-url', status?.activeBackendUrl || 'Waiting for backend selection');
   setText('diag-stremio', status?.stremioRunning ? 'Detected locally' : 'Not detected locally');
@@ -307,9 +310,10 @@ function renderStatus(status) {
   setText('diag-issue-summary', health);
   setText(
     'diag-server-generated',
-    extensionIssues + serverIssues === 0
-      ? 'No runtime consistency issues detected'
-      : `${extensionIssues} extension / ${serverIssues} backend issue${extensionIssues + serverIssues === 1 ? '' : 's'}`
+    !status ? 'Could not read the extension status'
+      : !status.serverDiagnostics ? 'Extension checks only. Server checks are unavailable.'
+        : extensionIssues + serverIssues === 0 ? 'Extension and server checks completed'
+          : `${extensionIssues} extension / ${serverIssues} server issue${extensionIssues + serverIssues === 1 ? '' : 's'}`
   );
   setText('diag-coordinator-mode', roomTarget);
   setText('diag-advanced-coordinator-mode', coordinatorMode);
@@ -340,21 +344,26 @@ function renderStatus(status) {
       : 'Backend diagnostics unavailable'
   );
   renderIssueList('diag-ext-issue-list', status?.invariants, 'No extension invariant issues.');
-  renderIssueList('diag-server-issue-list', status?.serverDiagnostics?.invariants, 'No backend invariant issues.');
+  renderIssueList('diag-server-issue-list', status?.serverDiagnostics?.invariants,
+    status?.serverDiagnostics ? 'No server warnings reported.' : 'Server checks are not available for this connection.');
 
-  setPill('pill-extension', status?.stremioRunning ? 'Extension ready' : 'Extension active', status?.stremioRunning ? 'success' : '');
-  setPill('pill-backend', `${backendInfo.label} backend`, status?.wsConnected ? 'success' : 'warn');
+  setPill('pill-extension', status ? 'Extension ready' : 'Status unavailable', status ? 'success' : 'warn');
+  const roomExpected = !!(status?.room || status?.currentRoomId || status?.bootstrapPending);
+  setPill('pill-backend', !status ? 'Connection unknown' : status.wsConnected ? 'Connected' : roomExpected ? 'Not connected' : 'No room connected',
+    status?.wsConnected ? 'success' : roomExpected ? 'warn' : '');
 
   if (!status) {
-    setText('hero-note', 'Could not read extension status. Refresh and try again.');
+    setText('hero-note', 'Could not read the extension status. Open Technical details below to refresh.');
   } else if (status.room) {
-    setText('hero-note', 'A room is active. Open it in Stremio.');
+    setText('hero-note', 'Your room is ready to open in Stremio.');
   } else if (status.bootstrapPending) {
-    setText('hero-note', 'WatchParty is staged. Finish in Stremio.');
+    setText('hero-note', 'One more step: continue your room setup in Stremio.');
+  } else if (status.currentRoomId) {
+    setText('hero-note', 'You have a saved room. Return to Stremio to reconnect.');
   } else if (status.hasStremioTab) {
-    setText('hero-note', 'Stremio is already open and ready.');
+    setText('hero-note', 'Stremio is open. Use its WatchParty sidebar to create or join a room.');
   } else {
-    setText('hero-note', 'No room is active. Create or join on WatchParty, then continue in Stremio.');
+    setText('hero-note', 'Open Stremio, then use the WatchParty sidebar to create or join a room.');
   }
 
   renderSession(status);
@@ -508,18 +517,20 @@ async function resetWatchPartyState() {
 
 function bindRecoveryButtons() {
   $('btn-clear-bootstrap')?.addEventListener('click', () => {
+    if (recoveryMutationInFlight || !window.confirm('Clear the pending join and saved room state in this browser? You may need to open your invite again.')) return;
     runRecoveryAction('btn-clear-bootstrap', clearBootstrapHandoff, {
       pendingLabel: 'Clearing...',
-      pendingMessage: 'Clearing staged handoff and room runtime state...',
-      successMessage: 'Cleared staged handoff and runtime room state.',
-      errorMessage: 'Could not clear staged handoff state.',
+      pendingMessage: 'Clearing the saved room...',
+      successMessage: 'Saved room cleared. Open your invite or create a room in Stremio to try again.',
+      errorMessage: 'Could not clear the saved room.',
     }).catch(() => {});
   });
 
   $('btn-clear-room-keys')?.addEventListener('click', () => {
+    if (recoveryMutationInFlight || !window.confirm('Forget all saved private room keys? You will need the original invite links to rejoin those rooms.')) return;
     runRecoveryAction('btn-clear-room-keys', clearPrivateKeys, {
       pendingLabel: 'Clearing...',
-      pendingMessage: 'Removing cached room access and E2E keys from extension storage...',
+      pendingMessage: 'Removing saved room keys...',
       successWithCount: (count) => count > 0
         ? `Cleared ${count} cached private invite key${count === 1 ? '' : 's'}.`
         : 'No cached private invite keys were stored.',
@@ -528,10 +539,11 @@ function bindRecoveryButtons() {
   });
 
   $('btn-reset-runtime')?.addEventListener('click', () => {
+    if (recoveryMutationInFlight || !window.confirm('Reset WatchParty in this browser? This clears your saved name, session, room state and private room keys. Appearance and connection preferences will be kept.')) return;
     runRecoveryAction('btn-reset-runtime', resetWatchPartyState, {
       pendingLabel: 'Resetting...',
-      pendingMessage: 'Resetting WatchParty session identity, runtime state, auth, and invite caches...',
-      successMessage: 'Reset WatchParty local and session state while keeping backend mode and appearance preferences.',
+      pendingMessage: 'Resetting WatchParty...',
+      successMessage: 'WatchParty reset. Your appearance and connection preferences were kept.',
       errorMessage: 'Could not reset WatchParty state.',
     }).catch(() => {});
   });
@@ -725,7 +737,8 @@ function init() {
   });
 
   getExtensionState([WPConstants.STORAGE.BACKEND_MODE]).then((result) => {
-    renderStatus({
+    // Reading a saved preference must not replace a newer live room snapshot.
+    if (!lastStatus) renderBackend({
       backendMode: WPConstants.BACKEND.normalizeMode(result?.[WPConstants.STORAGE.BACKEND_MODE]),
     });
   }).catch(() => {});

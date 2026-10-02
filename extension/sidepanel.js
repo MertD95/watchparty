@@ -451,21 +451,18 @@
     const chatMessages = document.getElementById('chat-messages');
     if (!status || !users || !usersEmpty || !chatContainer || !chatEmpty || !syncIndicator || !peopleCount) return;
 
-    setHeroCopy('Create or join in the WatchParty sidebar on Stremio, then use this panel for quick room context.');
+    setHeroCopy('Chat with your room while you watch.');
+    const openButton = document.getElementById('sp-open-watchparty-header');
+    if (openButton) openButton.textContent = 'Open Stremio';
+    document.getElementById('people-section')?.classList.add('hidden');
+    document.getElementById('chat-section')?.classList.add('hidden');
     updateRoomCodeChip(null);
     status.innerHTML = `
       <div class="empty-state">
-        <div class="eyebrow">No Active Room</div>
-        <h2 class="status-title">Create or join from Stremio first.</h2>
-        <p>Use the WatchParty sidebar in Stremio for room setup.</p>
-        <div class="action-row">
-          <button id="sp-open-watchparty-empty" class="action-btn primary" type="button">Open Stremio</button>
-          <button id="sp-open-settings-empty" class="action-btn" type="button">Settings</button>
-        </div>
+        <h2 class="status-title">You're not in a room yet.</h2>
+        <p>Open Stremio and use its WatchParty sidebar to create a room or join friends. Your people and chat will appear here.</p>
       </div>
     `;
-    document.getElementById('sp-open-watchparty-empty')?.addEventListener('click', openWatchParty);
-    document.getElementById('sp-open-settings-empty')?.addEventListener('click', openOptions);
 
     users.classList.add('hidden');
     users.innerHTML = '';
@@ -535,20 +532,19 @@
     const chatEmpty = document.getElementById('chat-empty');
     if (!status || !syncIndicator || !chatContainer || !chatEmpty) return;
     const roomTitle = getRoomDisplayName(roomState);
-    const userCount = roomState.users?.length || 0;
     const isHost = amIHost();
     const detailUrl = getDetailUrl(roomState);
     const directStreamUrl = getDirectStreamUrl(roomState);
-    const roleLabel = isHost ? 'Host' : 'Synced';
-    const privacyLabel = roomState.public === false ? 'Invite key required' : 'Open join';
-    const wsLabel = currentWsConnected ? 'Connected' : 'Background reconnecting';
-    const sessionCopy = roomState.public === false
-      ? `${roomState.listed === false ? 'Private room hidden from WatchParty.' : 'Private room listed on WatchParty.'}`
-      : `${roomState.listed === false ? 'Open-join room hidden from WatchParty.' : 'Open-join room listed on WatchParty.'}`;
+    const roleLabel = isHost ? 'Host' : 'Guest';
+    const privacyLabel = roomState.public === false ? 'Invite only' : 'Anyone can join';
+    const wsLabel = currentWsConnected ? 'Connected' : 'Reconnecting…';
+    const sessionCopy = `${privacyLabel} · ${roomState.listed === false ? 'Not listed' : 'Listed in room browser'}`;
 
-    setHeroCopy(isHost
-      ? 'Use the Stremio sidebar for host controls.'
-      : 'Stay synced with quick room context here.');
+    setHeroCopy('');
+    const openButton = document.getElementById('sp-open-watchparty-header');
+    if (openButton) openButton.textContent = 'Return to Stremio';
+    document.getElementById('people-section')?.classList.remove('hidden');
+    document.getElementById('chat-section')?.classList.remove('hidden');
     updateRoomCodeChip(roomState);
 
     const linkHtml = [];
@@ -559,26 +555,34 @@
       linkHtml.push(`<a class="session-link" href="${escapeHtml(directStreamUrl)}" target="_blank" rel="noreferrer">Open host stream</a>`);
     }
 
+    // Room updates should not close the user's menu or discard keyboard focus.
+    const toolsPanel = document.getElementById('sp-room-tools');
+    const toolsOpen = toolsPanel instanceof HTMLDetailsElement && toolsPanel.open;
+    const focusedId = status.contains(document.activeElement) ? document.activeElement?.id : '';
     status.innerHTML = `
       <div class="status-copy">
         <div class="eyebrow">Room</div>
         <h2 class="status-title">${escapeHtml(roomTitle)}</h2>
         <div class="pill-row">
           <span class="pill ${isHost ? 'success' : ''}">${escapeHtml(roleLabel)}</span>
-          <span class="pill">${escapeHtml(privacyLabel)}</span>
           <span class="pill ${currentWsConnected ? 'success' : 'warn'}">${escapeHtml(wsLabel)}</span>
-          <span class="pill">${userCount} watching</span>
         </div>
         <p class="status-note">${escapeHtml(sessionCopy)}</p>
-        ${linkHtml.length > 0 ? `<div class="session-links">${linkHtml.join('')}</div>` : ''}
         <div class="action-row">
           <button class="action-btn" id="sp-copy-invite" type="button">Copy Invite</button>
-          ${isHost ? '<button class="action-btn" id="sp-ready-check" type="button">Ready Check</button>' : ''}
-          <button class="action-btn" id="sp-bookmark" type="button">Bookmark</button>
-          <button class="action-btn leave-btn" id="sp-leave" type="button">Leave</button>
         </div>
+        <details class="room-tools" id="sp-room-tools"${toolsOpen ? ' open' : ''}>
+          <summary id="sp-room-tools-summary">Room actions</summary>
+          ${linkHtml.length > 0 ? `<div class="session-links">${linkHtml.join('')}</div>` : ''}
+          <div class="action-row">
+            ${isHost ? '<button class="action-btn" id="sp-ready-check" type="button">Ready Check</button>' : ''}
+            <button class="action-btn" id="sp-bookmark" type="button">Bookmark moment</button>
+            <button class="action-btn leave-btn" id="sp-leave" type="button">Leave room</button>
+          </div>
+        </details>
       </div>
     `;
+    if (focusedId) document.getElementById(focusedId)?.focus({ preventScroll: true });
 
     document.getElementById('sp-copy-invite')?.addEventListener('click', () => copyInvite(roomState));
     document.getElementById('sp-ready-check')?.addEventListener('click', (event) => {

@@ -18,6 +18,8 @@ const WPOverlay = (() => {
   let launcherLabel = null;
   let launcherInRoom = false;
   let cachedIsHost = false;
+  let syncIndicatorAvailable = false;
+  let cachedMediaMismatch = false;
   let activePanel = 'room';
   const ACCENT_SWATCHES = ['#6366f1', '#ec4899', '#22c55e', '#f59e0b', '#06b6d4', '#ef4444'];
   const localPreferences = {
@@ -332,7 +334,7 @@ const WPOverlay = (() => {
 
   function refreshLocalSettingsCard() {
     const container = document.getElementById('wp-local-settings');
-    if (!container || !cachedRoomState) return;
+    if (!container) return;
     renderLocalSettingsCard(container);
   }
 
@@ -534,6 +536,7 @@ const WPOverlay = (() => {
       const active = button.dataset.mode === lobbyMode;
       button.classList.toggle('is-active', active);
       button.setAttribute('aria-selected', active ? 'true' : 'false');
+      button.setAttribute('tabindex', active ? '0' : '-1');
     }
   }
 
@@ -580,7 +583,7 @@ const WPOverlay = (() => {
     if (!list || !status || !copy) return;
     const { rooms, loading, error, backendLabel, updatedAt } = lobbyDirectoryState;
     const updatedLabel = updatedAt ? new Date(updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
-    copy.textContent = `${backendLabel || 'Active'}${updatedLabel ? `, ${updatedLabel}` : ''}.`;
+    copy.textContent = updatedLabel ? `Updated ${updatedLabel}` : 'Rooms you can join.';
     status.textContent = loading && rooms.length === 0 ? 'Loading active rooms...' : error;
     status.classList.toggle('wp-warning', !!error);
     list.innerHTML = '';
@@ -761,7 +764,7 @@ const WPOverlay = (() => {
     setTimeout(() => {
       if (button) {
         button.disabled = false;
-        button.textContent = 'Update Key';
+        button.textContent = 'Update';
       }
       refreshRoomControlsCard();
     }, 250);
@@ -782,11 +785,15 @@ const WPOverlay = (() => {
       accessKeyDraftValue = input.value;
     };
     input.onkeydown = (event) => {
+      event.stopPropagation();
+      if (event.altKey && String(event.key).toLowerCase() === 'w') event.preventDefault();
       if (event.key === 'Enter' && isHost) {
         event.preventDefault();
         handleAccessKeySave(roomState, isHost, event).catch(() => { });
       }
     };
+    input.onkeyup = (event) => event.stopPropagation();
+    input.onkeypress = (event) => event.stopPropagation();
     if (button) {
       button.onclick = (event) => { handleAccessKeySave(roomState, isHost, event).catch(() => { }); };
     }
@@ -813,7 +820,7 @@ const WPOverlay = (() => {
     if (button) {
       button.hidden = !isHost;
       button.disabled = !isHost;
-      button.textContent = 'Update Key';
+      button.textContent = 'Update';
     }
 
     const renderSeq = ++accessKeyRenderSeq;
@@ -929,8 +936,18 @@ const WPOverlay = (() => {
   }
 
   function setActivePanel(panel, options = {}) {
-    const allowedPanel = (!launcherInRoom && panel !== 'room') ? 'room' : (panel || getDefaultPanel());
+    const nextInRoom = options.inRoom ?? launcherInRoom;
+    const requestedPanel = ['chat', 'people', 'room', 'prefs'].includes(panel) ? panel : getDefaultPanel();
+    const allowedPanel = (!nextInRoom && !['room', 'prefs'].includes(requestedPanel)) ? 'room' : requestedPanel;
     activePanel = allowedPanel;
+    // The lobby stays mounted while preferences are edited. Refresh its saved
+    // name when returning so creating a room cannot restore the previous name.
+    if (activePanel === 'room' && !nextInRoom) {
+      const usernameInput = document.getElementById('wp-lobby-username');
+      if (usernameInput && document.activeElement !== usernameInput) {
+        usernameInput.value = getPreferredUsername();
+      }
+    }
 
     const chatPanel = document.getElementById('wp-panel-chat');
     const peoplePanel = document.getElementById('wp-panel-people');
@@ -940,7 +957,7 @@ const WPOverlay = (() => {
     const peopleTab = document.querySelector('[data-panel="people"]');
     const roomTab = document.querySelector('[data-panel="room"]');
     const prefsTab = document.querySelector('[data-panel="prefs"]');
-    const nextInRoom = options.inRoom ?? launcherInRoom;
+    document.getElementById('wp-tabbar')?.classList.toggle('wp-lobby-tabs', !nextInRoom);
 
     if (chatPanel) chatPanel.classList.toggle('wp-hidden-el', activePanel !== 'chat');
     if (peoplePanel) peoplePanel.classList.toggle('wp-hidden-el', activePanel !== 'people');
@@ -949,8 +966,9 @@ const WPOverlay = (() => {
 
     for (const [btn, panelName] of [[chatTab, 'chat'], [peopleTab, 'people'], [roomTab, 'room'], [prefsTab, 'prefs']]) {
       if (!btn) continue;
-      const enabled = nextInRoom || panelName === 'room';
+      const enabled = nextInRoom || panelName === 'room' || panelName === 'prefs';
       btn.disabled = !enabled;
+      btn.classList.toggle('wp-hidden-el', !enabled);
       btn.classList.toggle('wp-tab-active', panelName === activePanel);
       btn.classList.toggle('wp-tab-disabled', !enabled);
       btn.setAttribute('aria-selected', panelName === activePanel ? 'true' : 'false');
@@ -1233,22 +1251,22 @@ const WPOverlay = (() => {
           <button id="wp-close-sidebar" title="Close" aria-label="Close sidebar">&times;</button>
         </div>
         <div id="wp-tabbar" role="tablist" aria-label="WatchParty panels">
-          <button class="wp-tab-btn wp-tab-active" data-panel="chat" role="tab" aria-selected="true">
+          <button class="wp-tab-btn wp-tab-active" id="wp-tab-chat" data-panel="chat" role="tab" aria-controls="wp-panel-chat" aria-selected="true">
             <span>Chat</span>
             <span id="wp-tab-chat-badge" class="wp-tab-badge wp-hidden-el"></span>
           </button>
-          <button class="wp-tab-btn" data-panel="people" role="tab" aria-selected="false">
+          <button class="wp-tab-btn" id="wp-tab-people" data-panel="people" role="tab" aria-controls="wp-panel-people" aria-selected="false">
             <span>People</span>
           </button>
-          <button class="wp-tab-btn" data-panel="room" role="tab" aria-selected="false">
+          <button class="wp-tab-btn" id="wp-tab-room" data-panel="room" role="tab" aria-controls="wp-panel-room" aria-selected="false">
             <span>Rooms</span>
           </button>
-          <button class="wp-tab-btn" data-panel="prefs" role="tab" aria-selected="false">
+          <button class="wp-tab-btn" id="wp-tab-prefs" data-panel="prefs" role="tab" aria-controls="wp-panel-prefs" aria-selected="false">
             <span>Settings</span>
           </button>
         </div>
         <div id="wp-body">
-          <section id="wp-panel-chat" class="wp-panel" role="tabpanel">
+          <section id="wp-panel-chat" class="wp-panel" role="tabpanel" aria-labelledby="wp-tab-chat">
             <div id="wp-chat-container" class="wp-hidden-el">
               <div id="wp-chat-empty">
                 <div class="wp-chat-empty-card">
@@ -1271,16 +1289,16 @@ const WPOverlay = (() => {
               <div id="wp-emoji-picker" class="wp-hidden-el"></div>
             </div>
           </section>
-          <section id="wp-panel-people" class="wp-panel wp-hidden-el" role="tabpanel">
+          <section id="wp-panel-people" class="wp-panel wp-hidden-el" role="tabpanel" aria-labelledby="wp-tab-people">
             <div id="wp-users"></div>
           </section>
-          <section id="wp-panel-room" class="wp-panel wp-panel-room wp-hidden-el" role="tabpanel">
+          <section id="wp-panel-room" class="wp-panel wp-panel-room wp-hidden-el" role="tabpanel" aria-labelledby="wp-tab-room">
             <div id="wp-status"></div>
             <div id="wp-sync-indicator" class="wp-hidden-el"></div>
             <div id="wp-content-link" class="wp-hidden-el"></div>
             <div id="wp-room-controls"></div>
           </section>
-          <section id="wp-panel-prefs" class="wp-panel wp-panel-room wp-hidden-el" role="tabpanel">
+          <section id="wp-panel-prefs" class="wp-panel wp-panel-room wp-hidden-el" role="tabpanel" aria-labelledby="wp-tab-prefs">
             <div id="wp-local-settings"></div>
           </section>
         </div>
@@ -1364,7 +1382,8 @@ const WPOverlay = (() => {
 
   function isOverlayInputNode(node) {
     return node instanceof Element && (
-      node.id === 'wp-chat-input'
+      (!!node.closest('#wp-sidebar') && node.matches('input, textarea, select, [contenteditable="true"]'))
+      || node.id === 'wp-chat-input'
       || node.id === 'wp-gif-search'
       || !!node.closest('#wp-chat-input-row')
       || !!node.closest('#wp-gif-picker')
@@ -1424,6 +1443,24 @@ const WPOverlay = (() => {
     document.querySelectorAll('.wp-tab-btn').forEach((btn) => {
       btn.addEventListener('click', () => setActivePanel(btn.dataset.panel));
     });
+    // Roving tab stops also need arrow-key navigation; otherwise only the
+    // selected tab can be reached without a pointer.
+    function navigateTabs(event, selector, activate) {
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+      const current = event.target.closest?.(selector);
+      if (!current) return;
+      const tabs = [...document.querySelectorAll(selector)].filter((tab) => !tab.disabled);
+      const index = tabs.indexOf(current);
+      if (index < 0 || !tabs.length) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1
+        : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+      activate(tabs[next]);
+      tabs[next].focus();
+    }
+    $('wp-tabbar').addEventListener('keydown', (event) => navigateTabs(event, '.wp-tab-btn', (tab) => setActivePanel(tab.dataset.panel)));
+    $('wp-panel-room').addEventListener('keydown', (event) => navigateTabs(event, '.wp-lobby-mode', (tab) => setLobbyMode(tab.dataset.mode)));
     $('wp-panel-room').addEventListener('click', (event) => {
       if (!isTrustedUserEvent(event)) return;
       const modeButton = event.target.closest?.('.wp-lobby-mode');
@@ -1624,6 +1661,8 @@ const WPOverlay = (() => {
   let cachedSessionId = null;
 
   function updateState({ inRoom, isHost, userId, sessionId, roomState, hasVideo, wsConnected, mediaMismatch = false }) {
+    syncIndicatorAvailable = !!(inRoom && roomState && hasVideo && wsConnected === true && !mediaMismatch);
+    cachedMediaMismatch = !!mediaMismatch;
     if (sessionId) cachedSessionId = sessionId;
     const wasLauncherInRoom = launcherInRoom;
     const previousRoomId = cachedRoomState?.id;
@@ -1666,21 +1705,25 @@ const WPOverlay = (() => {
     const localSettings = document.getElementById('wp-local-settings');
 
     const chatContainer = document.getElementById('wp-chat-container');
+    if ((!syncIndicatorAvailable || isHost) && syncInd) {
+      syncInd.classList.add('wp-hidden-el');
+      renderCache.lastSyncIndicatorKey = 'hidden';
+    }
     if (!inRoom || !roomState) {
       resetRenderCache();
       clearDisplayedBookmarks();
       launcherInRoom = false;
-      if (status) status.innerHTML = '<span class="wp-status-line wp-status-heading">No active room</span><span class="wp-status-line wp-muted">Create or join a room.</span>';
+      if (status) status.classList.add('wp-hidden-el');
       if (roomCode) roomCode.textContent = '';
       if (usersDiv) usersDiv.innerHTML = '';
       if (contentLink) contentLink.classList.add('wp-hidden-el');
       if (syncInd) syncInd.classList.add('wp-hidden-el');
       if (roomControls) renderLobby(roomControls);
-      if (localSettings) localSettings.innerHTML = '';
+      if (localSettings) renderLocalSettingsCard(localSettings);
       if (chatContainer) chatContainer.classList.add('wp-hidden-el');
       document.getElementById('wp-chat-empty')?.classList.add('wp-hidden-el');
       removeCatchUpButton();
-      setActivePanel('room', { inRoom: false, clearUnread: false });
+      setActivePanel(activePanel === 'prefs' ? 'prefs' : 'room', { inRoom: false, clearUnread: false });
       updateLauncherState({ inRoom: false });
       return;
     }
@@ -1696,7 +1739,10 @@ const WPOverlay = (() => {
       renderCache.lastRoomCode = nextRoomCode;
     }
 
-    if (status) renderStatusButtons(status, isHost, hasVideo, wsConnected, roomState);
+    if (status) {
+      status.classList.remove('wp-hidden-el');
+      renderStatusButtons(status, isHost, hasVideo, wsConnected, roomState);
+    }
     if (contentLink) renderContentLink(contentLink, isHost, roomState, mediaMismatch);
     if (mediaMismatch && syncInd) {
       renderCache.lastSyncIndicatorKey = 'media-mismatch';
@@ -1716,7 +1762,7 @@ const WPOverlay = (() => {
   }
 
   function renderStatusButtons(status, isHost, hasVideo, wsConnected, roomState) {
-    const hostLabel = isHost ? 'You are hosting this room' : 'You are synced to the host';
+    const hostLabel = isHost ? 'You are hosting this room' : 'The host controls playback';
     const videoStatus = hasVideo
       ? 'Playback can sync from this tab.'
       : 'Open a Stremio video in this tab to sync playback.';
@@ -1749,8 +1795,8 @@ const WPOverlay = (() => {
   function renderRoomControls(container, roomState, isHost) {
     container.classList.remove('wp-lobby-surface');
     const sessionSummary = roomState.public
-      ? `${roomState.listed === false ? 'Hidden.' : 'Listed.'} Open join.`
-      : `${roomState.listed === false ? 'Hidden.' : 'Listed.'} Invite key required.`;
+      ? `Anyone with the room ID can join. ${roomState.listed === false ? 'Not listed.' : 'Listed in Browse rooms.'}`
+      : `Invite link required to join. ${roomState.listed === false ? 'Not listed.' : 'Listed in Browse rooms.'}`;
     const autoPause = roomState.settings?.autoPauseOnDisconnect === true;
     const isPrivateRoom = roomState.public === false;
     const shellKey = isHost ? 'host' : 'guest';
@@ -1833,12 +1879,15 @@ const WPOverlay = (() => {
   }
 
   function buildAccentSwatchButtons() {
-    return ACCENT_SWATCHES.map((color) => `
+    const names = ['Indigo', 'Pink', 'Green', 'Amber', 'Cyan', 'Red'];
+    return ACCENT_SWATCHES.map((color, index) => `
       <button
         type="button"
         class="wp-color-btn${localPreferences.accentColor === color ? ' is-active' : ''}"
         data-color="${color}"
-        title="${color}"
+        title="${names[index]}"
+        aria-label="${names[index]} accent"
+        aria-pressed="${localPreferences.accentColor === color ? 'true' : 'false'}"
         style="background:${color}"
       ></button>
     `).join('');
@@ -1851,11 +1900,9 @@ const WPOverlay = (() => {
 
       const saveName = (event) => persistDisplayName(container.querySelector('#wp-settings-username')?.value || '', event);
       container.querySelector('#wp-settings-save-name')?.addEventListener('click', saveName);
-      container.querySelector('#wp-settings-username')?.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter') {
-          event.preventDefault();
-          saveName(event);
-        }
+      bindInputFieldGuards(container.querySelector('#wp-settings-username'), {
+        allowEnterSubmit: true,
+        onEnter: saveName,
       });
       container.querySelector('#wp-settings-compact')?.addEventListener('change', (event) => {
         if (!isTrustedUserEvent(event)) return;
@@ -2042,10 +2089,13 @@ const WPOverlay = (() => {
   function updateSyncIndicator(isHost, drift) {
     const el = document.getElementById('wp-sync-indicator');
     if (!el) return;
+    // Room membership alone is not evidence of synchronized playback.
+    // Keep the distinct media-mismatch warning until the matching video opens.
+    if (cachedMediaMismatch) return;
 
     let nextKey = 'hidden';
     let nextHtml = '';
-    if (!isHost) {
+    if (!isHost && syncIndicatorAvailable && Number.isFinite(drift)) {
       const abs = Math.abs(drift);
       if (abs < WPSync.SOFT_DRIFT_ENTER) {
         nextKey = 'ok';
