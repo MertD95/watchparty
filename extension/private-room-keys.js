@@ -20,9 +20,7 @@ const WPPrivateRoomKeys = (() => {
 
   async function generateE2eKey() {
     if (typeof WPCrypto === 'undefined') return null;
-    WPCrypto.clear();
-    await WPCrypto.generateKey();
-    return WPCrypto.exportKey();
+    return WPCrypto.generateKeyString();
   }
 
   async function resolveCreateKeys(command = {}) {

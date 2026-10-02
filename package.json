@@ -1,7 +1,7 @@
 {
   "name": "watchparty",
   "private": true,
-  "version": "2.0",
+  "version": "2.0.2",
   "scripts": {
     "dev": "node dev-reload.mjs",
     "build:store-package": "node tools/build-store-package.mjs",
@@ -9,7 +9,8 @@
     "gen:icons": "node tools/generate-icons.mjs",
     "gen:store-assets": "node tools/with-local-server.mjs tools/generate-store-assets.mjs",
     "typecheck:js": "tsc -p jsconfig.typecheck.json",
-    "verify:static": "npm run gen:actions -- --check && npm run syntax && npm run typecheck:js",
+    "test": "node --test tests/*.test.mjs",
+    "verify:static": "npm run gen:actions -- --check && npm run syntax && npm run typecheck:js && npm test",
     "manual": "node ../watchparty-server/tools/manual-control.mjs",
     "manual:help": "node ../watchparty-server/tools/manual-control.mjs help",
     "manual:urls": "node ../watchparty-server/tools/manual-control.mjs urls",

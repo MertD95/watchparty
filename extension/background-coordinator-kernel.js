@@ -7,6 +7,13 @@ const WPCoordinatorKernel = (() => {
 
   const EVENT_LOG_LIMIT = 20;
 
+  function isCurrentControllerPublication(lease, payload, senderTabId) {
+    return !!lease && Number.isInteger(senderTabId)
+      && lease.tabId === senderTabId
+      && typeof payload?.controllerLeaseId === 'string'
+      && lease.leaseId === payload.controllerLeaseId;
+  }
+
   function cloneValue(value) {
     if (value == null) return value;
     return structuredClone(value);
@@ -33,6 +40,24 @@ const WPCoordinatorKernel = (() => {
       recentEvents: [],
       updatedAt: 0,
     };
+  }
+
+  function restoreFromStorage(values) {
+    const storage = WPConstants.STORAGE;
+    const lease = WPConstants.CONTROLLER_TAB_LEASE.normalize(values[storage.CONTROLLER_TAB]);
+    return normalizeState({
+      ...createInitialState(),
+      room: values[storage.ROOM_STATE] || null,
+      userId: values[storage.USER_ID] || null,
+      sessionId: values[storage.SESSION_ID] || null,
+      wsConnected: !!lease && values[storage.WS_CONNECTED] === true,
+      activeBackend: values[storage.ACTIVE_BACKEND] || null,
+      activeBackendUrl: values[storage.ACTIVE_BACKEND_URL] || null,
+      controllerTabId: lease?.tabId ?? null,
+      bootstrapPending: !!WPConstants.BOOTSTRAP_ROOM_INTENT.normalize(values[storage.BOOTSTRAP_ROOM_INTENT]),
+      controllerRuntime: values[storage.CONTROLLER_RUNTIME] || null,
+      adapterState: values[storage.ADAPTER_STATE] || null,
+    });
   }
 
   function deriveInvariants(state) {
@@ -126,7 +151,14 @@ const WPCoordinatorKernel = (() => {
     } else if (event?.type === 'bootstrap.pending') {
       next = { ...current, bootstrapPending: payload.pending === true };
     } else if (event?.type === 'controller.lease.claim') {
-      next = { ...current, controllerTabId: payload.tabId ?? event.tabId ?? current.controllerTabId };
+      const controllerTabId = payload.tabId ?? event.tabId ?? current.controllerTabId;
+      next = {
+        ...current,
+        controllerTabId,
+        // A replacement tab has not published a connected socket yet.
+        // Preserve connection state only for the same owner's renewal.
+        wsConnected: controllerTabId === current.controllerTabId && current.wsConnected,
+      };
     } else if (event?.type === 'controller.lease.release') {
       next = event.tabId != null && current.controllerTabId === event.tabId
         ? { ...current, controllerTabId: null, wsConnected: false }
@@ -180,6 +212,8 @@ const WPCoordinatorKernel = (() => {
   }
 
   return {
+    isCurrentControllerPublication,
+    restoreFromStorage,
     createInitialState,
     cloneRoomProjection,
     cloneState,

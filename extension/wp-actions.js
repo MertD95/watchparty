@@ -15,6 +15,7 @@ const WPAction = (() => {
     OPEN_SIDEBAR: 'sidebar.open',
     BOOTSTRAP_PENDING: 'bootstrap.pending',
     SESSION_STATE_PUBLISH: 'session.state.publish',
+    SESSION_IDENTITY_GET: 'session.identity.get',
     CONTROLLER_RELEASED: 'controller.released',
     CONTROLLER_LEASE_CLAIM: 'controller.lease.claim',
     CONTROLLER_LEASE_RELEASE: 'controller.lease.release',
@@ -47,6 +48,7 @@ const WPAction = (() => {
     CLIPBOARD_COPY: 'clipboard.copy',
     SERVER_DIAGNOSTICS_GET: 'server.diagnostics.get',
     LOCAL_LANDING_ACCESS_SYNC: 'localLandingAccess.sync',
+    LOCAL_BACKEND_GET: 'localBackend.get',
     AUTH_KEY_SAVE: 'auth.key.save',
     AUTH_KEY_CLEAR: 'auth.key.clear',
     OFFSCREEN_COPY: 'offscreen.copy',
@@ -101,6 +103,11 @@ const WPActionRoutes = (() => {
     }),
     SESSION_STATE_PUBLISH: Object.freeze({
       action: WPAction.SESSION_STATE_PUBLISH,
+      sources: Object.freeze(['stremio-content']),
+      target: 'background',
+    }),
+    SESSION_IDENTITY_GET: Object.freeze({
+      action: WPAction.SESSION_IDENTITY_GET,
       sources: Object.freeze(['stremio-content']),
       target: 'background',
     }),
@@ -277,6 +284,11 @@ const WPActionRoutes = (() => {
     LOCAL_LANDING_ACCESS_SYNC: Object.freeze({
       action: WPAction.LOCAL_LANDING_ACCESS_SYNC,
       sources: Object.freeze(['options']),
+      target: 'background',
+    }),
+    LOCAL_BACKEND_GET: Object.freeze({
+      action: WPAction.LOCAL_BACKEND_GET,
+      sources: Object.freeze(['stremio-content']),
       target: 'background',
     }),
     AUTH_KEY_SAVE: Object.freeze({

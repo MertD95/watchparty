@@ -7,7 +7,6 @@ const WPOverlay = (() => {
   // --- Constants ---
   const SIDEBAR_WIDTH = 320;
   const MAX_CHAT_MESSAGES = 200;
-  const LOCAL_ECHO_TTL_MS = 10000;
   const LOBBY_ROOMS_REFRESH_MS = 10000;
 
   let overlay = null;
@@ -151,14 +150,6 @@ const WPOverlay = (() => {
     if (existing && existing.classList.contains('wp-pill-mine')) {
       return;
     }
-    if (existing) {
-      // Pill exists from others, add ours
-      const countEl = existing.querySelector('.wp-pill-count');
-      countEl.textContent = parseInt(countEl.textContent) + 1;
-      existing.classList.add('wp-pill-mine');
-    } else {
-      updateReactionPill(pillsContainer, emoji, true);
-    }
     dispatchAction(WPConstants.ACTION.ROOM_REACTION_SEND, { emoji, messageId }, event);
   }
 
@@ -231,19 +222,6 @@ const WPOverlay = (() => {
     return !document.getElementById('wp-sidebar')?.classList.contains('wp-sidebar-hidden');
   }
 
-  // --- Local echo dedup helpers ---
-  const localEchoSet = new Set();
-  function addLocalEcho(content) {
-    const key = content.substring(0, 300);
-    localEchoSet.add(key);
-    setTimeout(() => localEchoSet.delete(key), LOCAL_ECHO_TTL_MS);
-  }
-  function isLocalEcho(content) {
-    const key = content.substring(0, 300);
-    if (localEchoSet.has(key)) { localEchoSet.delete(key); return true; }
-    return false;
-  }
-
   // --- DOM pruning helper ---
   function pruneChildren(container, max = MAX_CHAT_MESSAGES) {
     while (container.childElementCount > max && container.firstElementChild) {
@@ -294,9 +272,12 @@ const WPOverlay = (() => {
     if (!isOverlayRoutedAction(action)) return false;
     const message = { action, ...detail };
     if (typeof actionDispatcher === 'function') {
-      actionDispatcher(message);
-      return true;
+      return actionDispatcher(message);
     }
+    // Never replay a message, reaction, or ready confirmation into a later room.
+    if (action !== WPConstants.ACTION.ROOM_CREATE
+      && action !== WPConstants.ACTION.ROOM_JOIN
+      && action !== WPConstants.ACTION.SESSION_USERNAME_UPDATE) return false;
     if (pendingActions.length < 20) {
       pendingActions.push(message);
       return true;
@@ -381,8 +362,22 @@ const WPOverlay = (() => {
     const el = document.getElementById(id);
     if (!el) return;
     el.textContent = message;
+    el.dataset.pending = tone === 'pending' ? 'true' : '';
     el.classList.toggle('wp-warning', tone === 'warn');
     el.classList.toggle('wp-ok', tone === 'ok');
+  }
+
+  function showRoomError(error = {}) {
+    const messages = {
+      [WPProtocol.ERROR_CODE.ROOM_KEY_REQUIRED]: 'This private room requires the full invite link, including its keys.',
+      [WPProtocol.ERROR_CODE.INVALID_ROOM_KEY]: 'Access key is invalid. Paste a fresh full invite link.',
+      [WPProtocol.ERROR_CODE.ROOM_NOT_FOUND]: 'Room no longer exists. Check the invite link or ask the host for a new one.',
+      [WPProtocol.ERROR_CODE.USERNAME_IN_USE]: 'That display name is already in use in this room. Choose another name.',
+    };
+    const message = messages[error?.code] || error?.message || 'The room request failed. Please try again.';
+    for (const id of ['wp-lobby-create-feedback', 'wp-lobby-join-feedback']) {
+      if (document.getElementById(id)?.dataset.pending === 'true') setLobbyFeedback(id, message, 'warn');
+    }
   }
 
   function getLobbyUsername() {
@@ -447,6 +442,16 @@ const WPOverlay = (() => {
     return !!(await WPRoomKeys.getE2eKey(parsed.roomId).catch(() => null));
   }
 
+  async function getLocalBackendResource(resource) {
+    const response = await chrome.runtime.sendMessage({
+      type: 'watchparty-ext',
+      action: WPConstants.ACTION.LOCAL_BACKEND_GET,
+      resource,
+    });
+    if (!response?.ok) throw new Error(response?.error || `Local backend ${resource} request failed`);
+    return response;
+  }
+
   async function resolveLobbyBackendInfo() {
     const stored = await WPRuntimeState.get([
       WPConstants.STORAGE.BACKEND_MODE,
@@ -457,9 +462,7 @@ const WPOverlay = (() => {
     const normalizedMode = WPConstants.BACKEND.normalizeMode(mode);
     if (normalizedMode === WPConstants.BACKEND.MODES.AUTO && !active && !('update_url' in chrome.runtime.getManifest())) {
       try {
-        const ready = await fetch(`${WPConstants.BACKEND.LOCAL.httpUrl}/ready`, {
-          signal: AbortSignal.timeout(800),
-        });
+        const ready = await getLocalBackendResource('ready');
         if (ready.ok) return WPConstants.BACKEND.LOCAL;
       } catch {
         // Auto mode falls back to the live backend when localhost is unavailable.
@@ -477,11 +480,17 @@ const WPOverlay = (() => {
     }
     try {
       const backend = await resolveLobbyBackendInfo();
-      const res = await fetch(`${backend.httpUrl}/rooms?limit=20`, {
-        signal: AbortSignal.timeout(5000),
-      });
-      if (!res.ok) throw new Error(`Room list returned ${res.status}`);
-      const data = await res.json();
+      let data;
+      if (backend.key === WPConstants.BACKEND.MODES.LOCAL) {
+        const response = await getLocalBackendResource('rooms');
+        data = response.data;
+      } else {
+        const res = await fetch(`${backend.httpUrl}/rooms?limit=20`, {
+          signal: AbortSignal.timeout(5000),
+        });
+        if (!res.ok) throw new Error(`Room list returned ${res.status}`);
+        data = await res.json();
+      }
       if (requestSeq !== lobbyRoomsRequestSeq) return;
       lobbyDirectoryState = {
         rooms: Array.isArray(data?.rooms) ? data.rooms : [],
@@ -607,7 +616,7 @@ const WPOverlay = (() => {
     }
   }
 
-  function handleLobbyCreate(event = null) {
+  async function handleLobbyCreate(event = null) {
     if (!saveLobbyUsername(event, { silent: true })) return;
     const roomName = sanitizeLobbyRoomName(document.getElementById('wp-lobby-room-name')?.value);
     if (roomName && roomName.length < 3) {
@@ -617,8 +626,8 @@ const WPOverlay = (() => {
     }
     const isPrivate = document.getElementById('wp-lobby-private')?.checked !== false;
     const listed = document.getElementById('wp-lobby-listed')?.checked !== false;
-    setLobbyFeedback('wp-lobby-create-feedback', 'Creating room...', '');
-    const sent = dispatchAction(WPConstants.ACTION.ROOM_CREATE, {
+    setLobbyFeedback('wp-lobby-create-feedback', 'Creating room...', 'pending');
+    const sent = await dispatchAction(WPConstants.ACTION.ROOM_CREATE, {
       username: getLobbyUsername(),
       meta: { id: 'pending', type: 'movie', name: 'WatchParty Session' },
       stream: { url: 'https://watchparty.mertd.me/sync' },
@@ -626,7 +635,7 @@ const WPOverlay = (() => {
       listed,
       roomName: roomName || undefined,
     }, event);
-    if (!sent) {
+    if (!isActionAccepted(sent) && document.getElementById('wp-lobby-create-feedback')?.dataset.pending === 'true') {
       setLobbyFeedback('wp-lobby-create-feedback', 'Could not send create request.', 'warn');
     }
   }
@@ -662,15 +671,15 @@ const WPOverlay = (() => {
       setLobbyFeedback('wp-lobby-join-feedback', 'Paste the full invite link. Private rooms need the e2eKey in the link so chat stays encrypted.', 'warn');
       return;
     }
-    setLobbyFeedback('wp-lobby-join-feedback', 'Joining room...', '');
-    const sent = dispatchAction(WPConstants.ACTION.ROOM_JOIN, {
+    setLobbyFeedback('wp-lobby-join-feedback', 'Joining room...', 'pending');
+    const sent = await dispatchAction(WPConstants.ACTION.ROOM_JOIN, {
       username: getLobbyUsername(),
       roomId: parsed.roomId,
       accessKey: parsed.accessKey || undefined,
       e2eKey: parsed.e2eKey || undefined,
       preferDirectJoin: options.preferDirectJoin === true,
     }, event);
-    if (!sent) {
+    if (!isActionAccepted(sent) && document.getElementById('wp-lobby-join-feedback')?.dataset.pending === 'true') {
       setLobbyFeedback('wp-lobby-join-feedback', 'Could not send join request.', 'warn');
     }
   }
@@ -740,12 +749,14 @@ const WPOverlay = (() => {
       button.textContent = 'Updating...';
     }
 
-    dispatchAction(WPConstants.ACTION.ROOM_VISIBILITY_UPDATE, {
+    if (cachedRoomState?.id !== roomId || !cachedIsHost) return;
+    const result = await dispatchAction(WPConstants.ACTION.ROOM_VISIBILITY_UPDATE, {
       public: false,
       listed: roomState?.listed !== false,
       accessKey: nextKey,
     }, event);
-    showToast('Invite key updated for future room links.', 2200);
+    if (cachedRoomState?.id !== roomId) return;
+    showToast(isActionAccepted(result) ? 'Invite key update requested.' : 'Could not update the invite key. Please retry.', 2200);
 
     setTimeout(() => {
       if (button) {
@@ -1487,27 +1498,12 @@ const WPOverlay = (() => {
       gifDebounce = setTimeout(() => searchGifs(q || 'trending'), 300);
     });
     // Event delegation for GIF clicks (avoids per-element listeners on every search)
-    $('wp-gif-results').addEventListener('click', (e) => {
+    $('wp-gif-results').addEventListener('click', async (e) => {
       if (!isTrustedUserEvent(e)) return;
       const img = e.target.closest('.wp-gif-item');
       if (!img?.dataset.url) return;
       const gifContent = `[gif:${img.dataset.url}]`;
-      dispatchAction(WPConstants.ACTION.ROOM_CHAT_SEND, { content: gifContent }, e);
-      // Local echo + dedup tracking (same pattern as text chat)
-      const container = document.getElementById('wp-chat-messages');
-      if (container) {
-        const div = buildMsgEl({
-          userName: cachedUsername,
-          color: getUserColor(cachedSessionId || cachedUserId),
-          gifUrl: img.dataset.url,
-        });
-        div.classList.add('wp-chat-local');
-        container.appendChild(div);
-        pruneChildren(container);
-        container.scrollTop = container.scrollHeight;
-        addLocalEcho(gifContent);
-        updateChatEmptyState(cachedRoomState);
-      }
+      if (!await submitChatContent(gifContent, e)) return;
       $('wp-gif-picker').classList.add('wp-hidden-el');
       $('wp-chat-input')?.focus();
     });
@@ -1540,70 +1536,109 @@ const WPOverlay = (() => {
       container.appendChild(error);
     }
 
+    let gifSearchGeneration = 0;
     async function searchGifs(query) {
+      const generation = ++gifSearchGeneration;
       const results = $('wp-gif-results');
       try {
         const response = await WPGifProvider.search(query, { limit: 20 });
+        if (generation !== gifSearchGeneration) return;
         renderGifResults(results, response.results || []);
       } catch {
+        if (generation !== gifSearchGeneration) return;
         renderGifSearchError(results);
       }
     }
   }
 
   let lastSendTime = 0;
-  function disableSendButton() {
+  let resetTypingInputState = () => {};
+  let pendingChatSend = null;
+  let sendCooldownTimer = null;
+  function setSendButtonDisabled(disabled) {
     const btn = document.getElementById('wp-chat-send');
     if (!btn) return;
-    btn.disabled = true;
-    btn.style.opacity = '0.4';
-    btn.style.cursor = 'not-allowed';
-    setTimeout(() => { btn.disabled = false; btn.style.opacity = ''; btn.style.cursor = ''; }, 3000);
+    btn.disabled = disabled;
+    btn.style.opacity = disabled ? '0.4' : '';
+    btn.style.cursor = disabled ? 'not-allowed' : '';
+  }
+  function isActionAccepted(result) {
+    return result === true || !!result && (result.handled === true || result.ok === true)
+      && result.handled !== false && result.ok !== false && !result.error;
+  }
+  function finishPendingChat(entry, accepted, error = '') {
+    if (!entry || pendingChatSend !== entry) return;
+    clearTimeout(entry.timer);
+    clearTimeout(sendCooldownTimer);
+    pendingChatSend = null;
+    if (accepted) {
+      lastSendTime = entry.started;
+      if (entry.input && entry.input.value === entry.draft) entry.input.value = '';
+      dispatchAction(WPConstants.ACTION.ROOM_TYPING_SEND, { typing: false });
+      resetTypingInputState();
+      const remaining = Math.max(0, 3000 - (Date.now() - lastSendTime));
+      setSendButtonDisabled(remaining > 0);
+      if (remaining > 0) sendCooldownTimer = setTimeout(() => setSendButtonDisabled(false), remaining);
+    } else {
+      lastSendTime = 0;
+      setSendButtonDisabled(false);
+      if (error) showToast(error, 3500);
+    }
+  }
+  function rejectPendingChat(message = 'Message was not sent. Your draft is still here.', clientMessageId = null) {
+    if (clientMessageId && pendingChatSend?.clientMessageId !== clientMessageId) return;
+    finishPendingChat(pendingChatSend, false, message);
+  }
+  async function submitChatContent(content, event, input = null) {
+    if (!isTrustedUserEvent(event) || !cachedRoomState?.id || pendingChatSend) return false;
+    if (!content || content.length > 300) {
+      showToast('Messages can contain up to 300 characters.', 2500);
+      return false;
+    }
+    const now = Date.now();
+    if (now - lastSendTime < 3000) return false;
+    const entry = { content, clientMessageId: crypto.randomUUID(), input, draft: input?.value, roomId: cachedRoomState.id, started: now, timer: null };
+    pendingChatSend = entry;
+    setSendButtonDisabled(true);
+    entry.timer = setTimeout(() => finishPendingChat(entry, false, 'Delivery was not confirmed. Your draft is still here.'), 10000);
+    try {
+      const result = await dispatchAction(WPConstants.ACTION.ROOM_CHAT_SEND, { content, roomId: entry.roomId, clientMessageId: entry.clientMessageId }, event);
+      if (!isActionAccepted(result)) {
+        finishPendingChat(entry, false, 'Message was not sent. Your draft is still here.');
+        return false;
+      }
+      return cachedRoomState?.id === entry.roomId;
+    } catch {
+      finishPendingChat(entry, false, 'Message was not sent. Your draft is still here.');
+      return false;
+    }
   }
   function sendChat(event = null) {
-    if (!isTrustedUserEvent(event)) return;
     const input = document.getElementById('wp-chat-input');
-    if (!input || !input.value.trim()) return;
-    const btn = document.getElementById('wp-chat-send');
-    if (btn?.disabled) return; // Already in cooldown
-    // Client-side cooldown — prevent rapid sends (server has 3s cooldown)
-    const now = Date.now();
-    if (now - lastSendTime < 3000) return;
-    lastSendTime = now;
-    disableSendButton();
-    const content = input.value.trim();
-
-    // Optimistic local echo — show message immediately
-    const container = document.getElementById('wp-chat-messages');
-    if (container) {
-      const div = buildMsgEl({
-        userName: cachedUsername,
-        color: getUserColor(cachedSessionId || cachedUserId),
-        text: content,
-      });
-      div.classList.add('wp-chat-local');
-      container.appendChild(div);
-      pruneChildren(container);
-      container.scrollTop = container.scrollHeight;
-      addLocalEcho(content);
-      updateChatEmptyState(cachedRoomState);
-    }
-
-    dispatchAction(WPConstants.ACTION.ROOM_CHAT_SEND, { content }, event);
-    dispatchAction(WPConstants.ACTION.ROOM_TYPING_SEND, { typing: false }, event);
-    input.value = '';
+    if (!input?.value.trim()) return;
+    return submitChatContent(input.value.trim(), event, input);
   }
 
   // --- State updates ---
 
   let cachedSessionId = null;
 
-  function updateState({ inRoom, isHost, userId, sessionId, roomState, hasVideo, wsConnected }) {
+  function updateState({ inRoom, isHost, userId, sessionId, roomState, hasVideo, wsConnected, mediaMismatch = false }) {
     if (sessionId) cachedSessionId = sessionId;
     const wasLauncherInRoom = launcherInRoom;
     const previousRoomId = cachedRoomState?.id;
     cachedRoomState = roomState || null;
     if (previousRoomId && previousRoomId !== roomState?.id) {
+      finishPendingChat(pendingChatSend, false);
+      clearTimeout(sendCooldownTimer);
+      lastSendTime = 0;
+      setSendButtonDisabled(false);
+      resetTypingInputState();
+      const draft = document.getElementById('wp-chat-input');
+      if (draft) draft.value = '';
+      clearChatMessages();
+      closeFloatingPanels();
+      WPModals.showReadyCheck('cancelled', [], 0, cachedUserId);
       clearAccessKeyDraft(previousRoomId);
       clearDisplayedBookmarks();
     }
@@ -1662,14 +1697,19 @@ const WPOverlay = (() => {
     }
 
     if (status) renderStatusButtons(status, isHost, hasVideo, wsConnected, roomState);
-    if (contentLink) renderContentLink(contentLink, isHost, roomState);
+    if (contentLink) renderContentLink(contentLink, isHost, roomState, mediaMismatch);
+    if (mediaMismatch && syncInd) {
+      renderCache.lastSyncIndicatorKey = 'media-mismatch';
+      syncInd.classList.remove('wp-hidden-el');
+      syncInd.textContent = 'Different video — open the host stream';
+    }
     if (roomControls) {
       delete roomControls.dataset.lobbyReady;
       renderRoomControls(roomControls, roomState, isHost);
     }
     if (localSettings) renderLocalSettingsCard(localSettings);
     if (usersDiv && roomState.users) renderUsersList(usersDiv, roomState, userId, isHost);
-    if (isHost || !hasVideo) removeCatchUpButton();
+    if (isHost || !hasVideo || mediaMismatch) removeCatchUpButton();
     updateChatEmptyState(roomState);
     if (!wasLauncherInRoom && launcherInRoom) setActivePanel(getDefaultPanel(), { inRoom: true, clearUnread: activePanel === 'chat' });
     updateLauncherState({ inRoom: true });
@@ -1695,10 +1735,6 @@ const WPOverlay = (() => {
     document.getElementById('wp-ready-check-btn')?.addEventListener('click', (event) => {
       if (!isTrustedUserEvent(event)) return;
       dispatchAction(WPConstants.ACTION.ROOM_READY_CHECK_UPDATE, { readyAction: 'initiate' }, event);
-      const video = document.querySelector('video');
-      if (video && !video.paused) video.pause();
-      const userCount = document.getElementById('wp-users')?.children.length || 1;
-      showReadyCheck('started', [], userCount, cachedUserId);
     });
     document.getElementById('wp-bookmark-btn')?.addEventListener('click', (event) => {
       if (!isTrustedUserEvent(event)) return;
@@ -1707,8 +1743,6 @@ const WPOverlay = (() => {
       const time = video.currentTime;
       const label = `Bookmark at ${formatPlaybackClock(time)}`;
       dispatchAction(WPConstants.ACTION.ROOM_BOOKMARK_ADD, { time, label }, event);
-      appendBookmark({ user: cachedUserId, userName: cachedUsername, sessionId: cachedSessionId, time, label });
-      showToast('Bookmark saved!', 1500);
     });
   }
 
@@ -1875,10 +1909,10 @@ const WPOverlay = (() => {
     return WPUtils.getDirectJoinUrl(roomState);
   }
 
-  function renderContentLink(contentLink, isHost, roomState) {
+  function renderContentLink(contentLink, isHost, roomState, mediaMismatch = false) {
     const hasMeta = !!roomState.meta?.id && roomState.meta.id !== 'pending' && roomState.meta.id !== 'unknown';
     const directStreamUrl = getDirectStreamUrl(roomState);
-    if (isHost || (!hasMeta && !directStreamUrl) || document.querySelector('video')) {
+    if (isHost || (!hasMeta && !directStreamUrl) || (document.querySelector('video') && !mediaMismatch)) {
       if (renderCache.lastContentLinkKey !== 'hidden') {
         contentLink.classList.add('wp-hidden-el');
         renderCache.lastContentLinkKey = 'hidden';
@@ -2062,15 +2096,14 @@ const WPOverlay = (() => {
       }
     }
 
-    // Content-based dedup: replace local echo with server-confirmed version
-    // Match by sessionId — msg.user is client ID which changes per-tab
+    // Match the server acknowledgment by stable identity and request ID. Do not
+    // clear a draft or show a delivered message merely because a socket sent.
     const msgSender = roomState?.users?.find(u => u.id === msg.user);
     // Use msg.sessionId (from server) for stable identity — falls back to roomState lookup, then raw client ID
     const msgSessionId = msg.sessionId || msgSender?.sessionId;
     const isMsgFromMe = msg.user === myUserId || (cachedSessionId && msgSessionId === cachedSessionId);
-    if (isMsgFromMe && isLocalEcho(msg.content)) {
-      const localMsg = container.querySelector('.wp-chat-local');
-      if (localMsg) localMsg.remove();
+    if (isMsgFromMe && pendingChatSend && pendingChatSend.roomId === roomState?.id && pendingChatSend.clientMessageId === msg.clientMessageId) {
+      finishPendingChat(pendingChatSend, true);
     }
 
     const userName = msgSender?.name || msg.userName || 'Unknown';
@@ -2312,8 +2345,19 @@ const WPOverlay = (() => {
     if (!input) return;
     let typingTimeout = null;
     let isTyping = false;
+    resetTypingInputState = () => {
+      clearTimeout(typingTimeout);
+      typingTimeout = null;
+      isTyping = false;
+    };
     input.addEventListener('input', (event) => {
       if (!isTrustedUserEvent(event)) return;
+      if (!input.value.trim()) {
+        const wasTyping = isTyping;
+        resetTypingInputState();
+        if (wasTyping) onTypingStop();
+        return;
+      }
       if (!isTyping) {
         isTyping = true;
         onTypingStart(); // Send only once per typing session
@@ -2402,9 +2446,10 @@ const WPOverlay = (() => {
   return {
     create, updateState, updateSyncIndicator,
     setActionDispatcher,
+    rejectPendingChat,
     appendChatMessage, clearChatMessages, showReaction, updateTypingIndicator,
     openSidebar, bindRoomCodeCopy, bindTypingIndicator,
-    playNotifSound, showToast,
+    playNotifSound, showToast, showRoomError,
     showReadyCheck, showCountdown, appendBookmark,
     incrementUnread, clearUnread, initKeyboardShortcuts,
     showCatchUpButton,

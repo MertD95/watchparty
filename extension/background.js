@@ -7,11 +7,18 @@ importScripts('wp-actions.js');
 importScripts('constants.js');
 importScripts('runtime-clock.js');
 importScripts('runtime-state.js');
+importScripts('session-identity.js');
 importScripts('room-keys.js');
 importScripts('wp-protocol.js');
 importScripts('background-coordinator-kernel.js');
 
 const BG_VERSION = chrome.runtime.getManifest().version;
+const sessionIdentity = WPSessionIdentity.create({
+  storage: chrome.storage.local,
+  randomUUID: () => crypto.randomUUID(),
+  sessionIdKey: WPConstants.STORAGE.SESSION_ID,
+  sessionTokenKey: WPConstants.STORAGE.SESSION_TOKEN,
+});
 const MANIFEST = chrome.runtime.getManifest();
 const STREMIO_BASE = 'http://localhost:11470';
 const STREMIO_API = 'https://api.strem.io';
@@ -51,8 +58,38 @@ const knownStremioTabIds = new Set();
 const knownWatchPartyTabIds = new Set();
 let offscreenDocumentPromise = null;
 let lastWatchPartyProjectionKey = '';
+const leaseMutationQueues = new Map();
 /** @type {any} */
 let coordinatorState = WPCoordinatorKernel.createInitialState();
+let coordinatorHydration = null;
+
+function ensureCoordinatorHydrated() {
+  if (coordinatorHydration) return coordinatorHydration;
+  coordinatorHydration = getExtensionState([
+    WPConstants.STORAGE.ROOM_STATE, WPConstants.STORAGE.USER_ID, WPConstants.STORAGE.SESSION_ID,
+    WPConstants.STORAGE.WS_CONNECTED, WPConstants.STORAGE.ACTIVE_BACKEND, WPConstants.STORAGE.ACTIVE_BACKEND_URL,
+    WPConstants.STORAGE.CONTROLLER_TAB, WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT,
+    WPConstants.STORAGE.CONTROLLER_RUNTIME, WPConstants.STORAGE.ADAPTER_STATE,
+  ]).then((values) => {
+    // A publication received while storage was being read already carries a
+    // fresher full projection. Never overwrite it with the startup snapshot.
+    if (coordinatorState.updatedAt === 0) coordinatorState = WPCoordinatorKernel.restoreFromStorage(values);
+  }).catch((error) => {
+    coordinatorHydration = null;
+    throw error;
+  });
+  return coordinatorHydration;
+}
+
+function enqueueLeaseMutation(storageKey, operation) {
+  const previous = leaseMutationQueues.get(storageKey) || Promise.resolve();
+  const run = previous.catch(() => {}).then(operation);
+  const tail = run.catch(() => {}).finally(() => {
+    if (leaseMutationQueues.get(storageKey) === tail) leaseMutationQueues.delete(storageKey);
+  });
+  leaseMutationQueues.set(storageKey, tail);
+  return run;
+}
 
 function formatErrorMessage(error) {
   return error instanceof Error ? error.message : String(error);
@@ -237,7 +274,21 @@ function updateCoordinatorState(nextState, sender) {
   publishCoordinatorState();
 }
 
+async function applyCurrentControllerPublication(payload, sender, publish) {
+  return enqueueLeaseMutation(WPConstants.STORAGE.CONTROLLER_TAB, async () => {
+    const result = await chrome.storage.session.get(WPConstants.STORAGE.CONTROLLER_TAB);
+    const lease = WPConstants.CONTROLLER_TAB_LEASE.normalize(result[WPConstants.STORAGE.CONTROLLER_TAB]);
+    if (!WPCoordinatorKernel.isCurrentControllerPublication(lease, payload, sender?.tab?.id)) {
+      return { ok: false, stale: true };
+    }
+    publish();
+    updateBadge();
+    return { ok: true };
+  });
+}
+
 async function getProjectedRuntimeState() {
+  await ensureCoordinatorHydrated();
   const result = await getExtensionState([
     WPConstants.STORAGE.ROOM_STATE,
     WPConstants.STORAGE.USER_ID,
@@ -587,11 +638,13 @@ function rememberSurfaceTab(surface, tabId) {
 }
 
 async function clearLeaseIfOwned(storageKey, leaseContract, tabId) {
-  const state = await getExtensionState(storageKey);
-  const currentLease = leaseContract.normalize(state[storageKey]);
-  if (!currentLease || currentLease.tabId !== tabId) return false;
-  await removeExtensionState(storageKey);
-  return true;
+  return enqueueLeaseMutation(storageKey, async () => {
+    const state = await getExtensionState(storageKey);
+    const currentLease = leaseContract.normalize(state[storageKey]);
+    if (!currentLease || currentLease.tabId !== tabId) return false;
+    await removeExtensionState(storageKey);
+    return true;
+  });
 }
 
 async function forgetSurfaceTab(tabId) {
@@ -601,6 +654,17 @@ async function forgetSurfaceTab(tabId) {
   clearLeaseIfOwned(WPConstants.STORAGE.ACTIVE_VIDEO_TAB, WPConstants.VIDEO_TAB_LEASE, tabId).catch(() => {});
   clearLeaseIfOwned(WPConstants.STORAGE.CONTROLLER_TAB, WPConstants.CONTROLLER_TAB_LEASE, tabId).catch(() => {});
   clearCoordinatorController(tabId);
+}
+
+async function forgetClosedSurfaceTab(tabId) {
+  // A port from the old document can reject after a reload has already
+  // elected the replacement content script. A messaging failure alone is
+  // not evidence that the tab (or its current leases) disappeared.
+  try {
+    await chrome.tabs.get(tabId);
+  } catch {
+    await forgetSurfaceTab(tabId);
+  }
 }
 
 async function resolveKnownTabs(tabIds) {
@@ -647,6 +711,7 @@ async function getWatchPartyTabs() {
 }
 
 async function clearBootstrapRoomIntent() {
+  await ensureCoordinatorHydrated();
   await removeExtensionState(WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT);
   coordinatorState = WPCoordinatorKernel.reduce(coordinatorState, {
     type: 'bootstrap.pending',
@@ -658,6 +723,7 @@ async function clearBootstrapRoomIntent() {
 }
 
 async function stageBootstrapRoomIntent(intent) {
+  await ensureCoordinatorHydrated();
   const normalizedIntent = WPConstants.BOOTSTRAP_ROOM_INTENT.normalize(intent);
   if (!normalizedIntent) throw new Error('Invalid bootstrap room intent');
   await setExtensionState({ [WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT]: normalizedIntent });
@@ -686,56 +752,81 @@ async function getBootstrapRoomIntent() {
   return normalized;
 }
 
-async function claimLease({ storageKey, leaseContract, lease, senderTabId, force = false }) {
-  const requestedLeaseBase = leaseContract.build({
-    ...lease,
-    tabId: senderTabId,
+async function claimLease({ storageKey, fenceStorageKey, leaseContract, lease, senderTabId, force = false }) {
+  return enqueueLeaseMutation(storageKey, async () => {
+    await ensureCoordinatorHydrated();
+    const requestedLeaseBase = leaseContract.build({
+      ...lease,
+      tabId: senderTabId,
+    });
+    if (!requestedLeaseBase) return { ok: false, claimed: false, lease: null };
+
+    const [leaseValues, fenceValues] = await Promise.all([
+      chrome.storage.session.get(storageKey),
+      fenceStorageKey ? chrome.storage.local.get(fenceStorageKey) : Promise.resolve({}),
+    ]);
+    const result = { ...leaseValues, ...fenceValues };
+    const currentLease = leaseContract.normalize(result[storageKey]);
+    const persistedFence = fenceStorageKey && Number.isSafeInteger(result[fenceStorageKey])
+      ? Math.max(0, result[fenceStorageKey])
+      : 0;
+    const ownsLease = leaseContract.isOwner(currentLease, requestedLeaseBase.leaseId);
+    const leaseIsExpired = leaseContract.isExpired(currentLease);
+    const shouldClaim = force || ownsLease || leaseIsExpired || !currentLease;
+
+    if (!shouldClaim) {
+      return { ok: true, claimed: false, lease: currentLease, ownerTabId: currentLease?.tabId ?? null };
+    }
+
+    if (!force && ownsLease && !leaseContract.shouldRenew(currentLease)) {
+      return { ok: true, claimed: true, lease: currentLease, ownerTabId: currentLease?.tabId ?? null };
+    }
+
+    const requestedLease = leaseContract.build({
+      ...requestedLeaseBase,
+      fence: Math.max(currentLease?.fence ?? 0, persistedFence) + 1,
+    });
+    if (!requestedLease) return { ok: false, claimed: false, lease: null };
+
+    // Persist the generation before publishing its lease. If the worker or
+    // browser exits mid-claim, the next tab must never reuse this generation.
+    if (fenceStorageKey) await chrome.storage.local.set({ [fenceStorageKey]: requestedLease.fence });
+    await chrome.storage.session.set({ [storageKey]: requestedLease });
+    const verifyResult = await chrome.storage.session.get(storageKey);
+    const storedLease = leaseContract.normalize(verifyResult[storageKey]);
+    const claimed = leaseContract.isOwner(storedLease, requestedLease.leaseId);
+    if (claimed && storageKey === WPConstants.STORAGE.CONTROLLER_TAB) {
+      coordinatorState = WPCoordinatorKernel.reduce(coordinatorState, {
+        type: 'controller.lease.claim',
+        tabId: storedLease.tabId,
+        payload: { tabId: storedLease.tabId },
+        details: { tabId: storedLease.tabId },
+      }, WPRuntimeClock.now());
+    }
+    return { ok: true, claimed, lease: storedLease, ownerTabId: storedLease?.tabId ?? null };
   });
-  if (!requestedLeaseBase) return { ok: false, claimed: false, lease: null };
-
-  const result = await getExtensionState(storageKey);
-  const currentLease = leaseContract.normalize(result[storageKey]);
-  const ownsLease = leaseContract.isOwner(currentLease, requestedLeaseBase.leaseId);
-  const leaseIsExpired = leaseContract.isExpired(currentLease);
-  const shouldClaim = force || ownsLease || leaseIsExpired || !currentLease;
-
-  if (!shouldClaim) {
-    return { ok: true, claimed: false, lease: currentLease, ownerTabId: currentLease?.tabId ?? null };
-  }
-
-  if (!force && ownsLease && !leaseContract.shouldRenew(currentLease)) {
-    return { ok: true, claimed: true, lease: currentLease, ownerTabId: currentLease?.tabId ?? null };
-  }
-
-  const requestedLease = leaseContract.build({
-    ...requestedLeaseBase,
-    fence: (currentLease?.fence ?? 0) + 1,
-  });
-  if (!requestedLease) return { ok: false, claimed: false, lease: null };
-
-  await setExtensionState({ [storageKey]: requestedLease });
-  const verifyResult = await getExtensionState(storageKey);
-  const storedLease = leaseContract.normalize(verifyResult[storageKey]);
-  const claimed = leaseContract.isOwner(storedLease, requestedLease.leaseId);
-  return { ok: true, claimed, lease: storedLease, ownerTabId: storedLease?.tabId ?? null };
 }
 
 async function releaseLease({ storageKey, leaseContract, leaseId }) {
-  const result = await getExtensionState(storageKey);
-  const currentLease = leaseContract.normalize(result[storageKey]);
-  if (!leaseContract.isOwner(currentLease, leaseId)) {
-    return { ok: true, released: false, lease: currentLease, ownerTabId: currentLease?.tabId ?? null };
-  }
-  await removeExtensionState(storageKey);
-  return { ok: true, released: true, lease: null, ownerTabId: null };
+  return enqueueLeaseMutation(storageKey, async () => {
+    const result = await getExtensionState(storageKey);
+    const currentLease = leaseContract.normalize(result[storageKey]);
+    if (!leaseContract.isOwner(currentLease, leaseId)) {
+      return { ok: true, released: false, lease: currentLease, ownerTabId: currentLease?.tabId ?? null };
+    }
+    await removeExtensionState(storageKey);
+    return { ok: true, released: true, lease: null, ownerTabId: null };
+  });
 }
 
 async function relayLiveRoomAction(message) {
-  const delivered = await forwardToStremioTabWithRetry(message);
-  if (!delivered) {
+  const response = await forwardToStremioTabWithRetry(message);
+  if (!response) {
     return { ok: false, error: 'No active Stremio WatchParty session is available for that action.' };
   }
-  return { ok: true };
+  // This acknowledges controller dispatch, not server acceptance. Preserve
+  // explicit rejection/pending/correlation fields for the originating UI.
+  return { ...response, ok: response.handled === true && response.ok !== false };
 }
 
 async function removeStorageKeys(keys) {
@@ -904,41 +995,62 @@ async function resumeRoomInStremio() {
   return { ok: true, openedStremio: opened.opened };
 }
 
+async function getLocalBackendResource(resource) {
+  if (!IS_DEV_INSTALL || !WPConstants.BACKEND.canUseLocal()) {
+    return { ok: false, error: 'Local backend access is only available in unpacked development builds.' };
+  }
+  const path = resource === 'ready'
+    ? '/ready'
+    : resource === 'rooms'
+      ? '/rooms?limit=20'
+      : null;
+  if (!path) return { ok: false, error: 'Unsupported local backend resource.' };
+
+  const response = await fetch(`${WPConstants.BACKEND.LOCAL.httpUrl}${path}`, {
+    signal: AbortSignal.timeout(resource === 'ready' ? 1000 : 5000),
+  });
+  const data = resource === 'rooms' && response.ok ? await response.json() : null;
+  return {
+    ok: response.ok,
+    status: response.status,
+    ...(data ? { data } : {}),
+  };
+}
+
 const messageHandlers = {
+  [WPConstants.ACTION.SESSION_IDENTITY_GET]: (_m, _s, sendResponse) => respondAsync(sendResponse, async () => ({
+    ok: true,
+    ...await sessionIdentity.ensure(),
+  })),
   [WPConstants.ACTION.STATUS_GET]: (_m, _s, sendResponse) => respondAsync(sendResponse, buildStatusSnapshot),
   [WPConstants.ACTION.SERVER_DIAGNOSTICS_GET]: (_m, _s, sendResponse) => respondAsync(sendResponse, buildServerDiagnosticsSnapshot),
   [WPConstants.ACTION.LOCAL_LANDING_ACCESS_SYNC]: (_m, _s, sendResponse) => respondAsync(sendResponse, async () => {
     const localLandingAccess = await syncLocalWatchPartyBridge();
     return { ok: true, localLandingAccess };
   }),
-  [WPConstants.ACTION.SESSION_STATE_PUBLISH]: (m, sender) => {
+  [WPConstants.ACTION.LOCAL_BACKEND_GET]: (m, _s, sendResponse) => respondAsync(
+    sendResponse,
+    () => getLocalBackendResource(m.resource),
+  ),
+  [WPConstants.ACTION.SESSION_STATE_PUBLISH]: (m, sender, sr) => respondAsync(sr, () => {
     const payload = m.payload && typeof m.payload === 'object' ? m.payload : {};
-    updateCoordinatorState(payload, sender);
-    updateBadge();
-  },
-  [WPConstants.ACTION.CONTROLLER_RELEASED]: (m, sender) => {
+    return applyCurrentControllerPublication(payload, sender, () => updateCoordinatorState(payload, sender));
+  }),
+  [WPConstants.ACTION.CONTROLLER_RELEASED]: (m, sender, sr) => respondAsync(sr, () => {
     const payload = m.payload && typeof m.payload === 'object' ? m.payload : {};
-    clearCoordinatorController(sender?.tab?.id, payload);
-    updateBadge();
-  },
+    return applyCurrentControllerPublication(payload, sender, () => clearCoordinatorController(sender?.tab?.id, payload));
+  }),
   [WPConstants.ACTION.CONTROLLER_LEASE_CLAIM]: (_m, sender, sr) => respondAsync(sr, async () => {
     const senderTabId = sender?.tab?.id ?? null;
     if (senderTabId == null) return { ok: false, claimed: false, lease: null };
     const response = await claimLease({
       storageKey: WPConstants.STORAGE.CONTROLLER_TAB,
+      fenceStorageKey: WPConstants.STORAGE.CONTROLLER_FENCE,
       leaseContract: WPConstants.CONTROLLER_TAB_LEASE,
       lease: _m.lease,
       senderTabId,
       force: _m.force === true,
     });
-    if (response.claimed) {
-      coordinatorState = WPCoordinatorKernel.reduce(coordinatorState, {
-        type: 'controller.lease.claim',
-        tabId: response.ownerTabId ?? null,
-        payload: { tabId: response.ownerTabId ?? null },
-        details: { tabId: response.ownerTabId ?? null },
-      }, WPRuntimeClock.now());
-    }
     return response;
   }),
   [WPConstants.ACTION.CONTROLLER_LEASE_RELEASE]: (_m, sender, sr) => respondAsync(sr, async () => {
@@ -963,6 +1075,7 @@ const messageHandlers = {
     if (senderTabId == null) return { ok: false, claimed: false, lease: null };
     return claimLease({
       storageKey: WPConstants.STORAGE.ACTIVE_VIDEO_TAB,
+      fenceStorageKey: null,
       leaseContract: WPConstants.VIDEO_TAB_LEASE,
       lease: _m.lease,
       senderTabId,
@@ -1067,15 +1180,15 @@ const messageHandlers = {
     await forwardToStremioTabWithRetry(m);
     return { ok: true };
   }),
-  [WPConstants.ACTION.ROOM_READY_CHECK_UPDATE]: (m, _s, sr) => respondAsync(sr, async () => { await forwardToStremioTabWithRetry(m); return { ok: true }; }),
-  [WPConstants.ACTION.ROOM_BOOKMARK_ADD]: (m, _s, sr) => respondAsync(sr, async () => { await forwardToStremioTabWithRetry(m); return { ok: true }; }),
-  [WPConstants.ACTION.ROOM_BOOKMARK_SEEK]: (m, _s, sr) => respondAsync(sr, async () => { await forwardToStremioTabWithRetry(m); return { ok: true }; }),
-  [WPConstants.ACTION.ROOM_CHAT_SEND]: (m, _s, sr) => respondAsync(sr, async () => { await forwardToStremioTabWithRetry(m); return { ok: true }; }),
-  [WPConstants.ACTION.ROOM_TYPING_SEND]: (m, _s, sr) => respondAsync(sr, async () => { await forwardToStremioTabWithRetry(m); return { ok: true }; }),
-  [WPConstants.ACTION.ROOM_REACTION_SEND]: (m, _s, sr) => respondAsync(sr, async () => { await forwardToStremioTabWithRetry(m); return { ok: true }; }),
-  [WPConstants.ACTION.ROOM_MEMBER_PRESENCE_PUBLISH]: (m, _s, sr) => respondAsync(sr, async () => { await forwardToStremioTabWithRetry(m); return { ok: true }; }),
-  [WPConstants.ACTION.ROOM_MEMBER_PLAYBACK_STATUS_PUBLISH]: (m, _s, sr) => respondAsync(sr, async () => { await forwardToStremioTabWithRetry(m); return { ok: true }; }),
-  [WPConstants.ACTION.ROOM_PLAYBACK_REQUEST_SYNC]: (m, _s, sr) => respondAsync(sr, async () => { await forwardToStremioTabWithRetry(m); return { ok: true }; }),
+  [WPConstants.ACTION.ROOM_READY_CHECK_UPDATE]: (m, _s, sr) => respondAsync(sr, () => relayLiveRoomAction(m)),
+  [WPConstants.ACTION.ROOM_BOOKMARK_ADD]: (m, _s, sr) => respondAsync(sr, () => relayLiveRoomAction(m)),
+  [WPConstants.ACTION.ROOM_BOOKMARK_SEEK]: (m, _s, sr) => respondAsync(sr, () => relayLiveRoomAction(m)),
+  [WPConstants.ACTION.ROOM_CHAT_SEND]: (m, _s, sr) => respondAsync(sr, () => relayLiveRoomAction(m)),
+  [WPConstants.ACTION.ROOM_TYPING_SEND]: (m, _s, sr) => respondAsync(sr, () => relayLiveRoomAction(m)),
+  [WPConstants.ACTION.ROOM_REACTION_SEND]: (m, _s, sr) => respondAsync(sr, () => relayLiveRoomAction(m)),
+  [WPConstants.ACTION.ROOM_MEMBER_PRESENCE_PUBLISH]: (m, _s, sr) => respondAsync(sr, () => relayLiveRoomAction(m)),
+  [WPConstants.ACTION.ROOM_MEMBER_PLAYBACK_STATUS_PUBLISH]: (m, _s, sr) => respondAsync(sr, () => relayLiveRoomAction(m)),
+  [WPConstants.ACTION.ROOM_PLAYBACK_REQUEST_SYNC]: (m, _s, sr) => respondAsync(sr, () => relayLiveRoomAction(m)),
   [WPConstants.ACTION.PROFILE_UPDATED]: () => broadcastToWatchParty({ action: WPConstants.ACTION.PROFILE_UPDATED }),
   [WPConstants.ACTION.SURFACE_READY]: (m, sender, sendResponse) => {
     rememberSurfaceTab(sender?.tab ? (m.surface || null) : null, sender?.tab?.id ?? null);
@@ -1144,6 +1257,7 @@ chrome.action?.onClicked?.addListener(async (tab) => {
 
 async function forwardToStremioTab(message) {
   try {
+    await ensureCoordinatorHydrated();
     const tabs = await getStremioTabs();
     // Debug logging removed for production — uncomment for troubleshooting:
     // console.log(`[WP-BG] forwardToStremioTab: action=${message.action}, tabs found=${tabs.length}`);
@@ -1158,10 +1272,14 @@ async function forwardToStremioTab(message) {
       if (tab.id == null) continue;
       try {
         const response = await chrome.tabs.sendMessage(tab.id, { type: 'watchparty-ext', ...message });
-        if (response?.handled === false) continue;
-        return true;
+        // A non-controller explicitly declines routing without an error.
+        // An application rejection belongs to the originating UI; retrying
+        // it in another tab could unexpectedly steal control or switch room.
+        if (response?.handled === false && response.error) return response;
+        if (response?.handled !== true) continue;
+        return response;
       } catch (e) {
-        forgetSurfaceTab(tab.id);
+        await forgetClosedSurfaceTab(tab.id);
         console.warn(`[WP-BG] sendMessage to tab ${tab.id} failed:`, formatErrorMessage(e));
       }
     }
@@ -1177,7 +1295,7 @@ async function forwardToStremioTab(message) {
 async function forwardToStremioTabWithRetry(message) {
   for (let attempt = 0; attempt < 8; attempt++) {
     const delivered = await forwardToStremioTab(message);
-    if (delivered) return true;
+    if (delivered) return delivered;
     const tabs = await getStremioTabs();
     if (tabs.length === 0) return false;
     await new Promise((resolve) => WPRuntimeClock.setTimeout(resolve, 400));
@@ -1194,7 +1312,7 @@ async function broadcastToTabs(urlPatterns, message) {
     for (const tab of tabs) {
       if (tab.id != null) {
         chrome.tabs.sendMessage(tab.id, { type: 'watchparty-ext', ...message }).catch(() => {
-          forgetSurfaceTab(tab.id);
+          forgetClosedSurfaceTab(tab.id).catch(() => {});
         });
       }
     }

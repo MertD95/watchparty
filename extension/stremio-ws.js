@@ -13,7 +13,6 @@ const WPWS = (() => {
   const BACKEND_MODES = BACKEND.MODES;
   const WS_URL_PROD = BACKEND.LIVE.wsUrl;
   const WS_URL_DEV = BACKEND.LOCAL.wsUrl;
-  const LOCAL_READY_URL = `${BACKEND.LOCAL.httpUrl}/ready`;
   const RECONNECT_BASE_MS = 1000;
   const RECONNECT_MAX_MS = 30000;
   const CLOCK_SAMPLES = 6;
@@ -23,6 +22,10 @@ const WPWS = (() => {
 
   // --- State ---
   let ws = null;
+  let pendingConnection = null;
+  let connectionGeneration = 0;
+  let connectionWanted = false;
+  let backendGeneration = 0;
   let reconnectAttempts = 0;
   let reconnectTimer = null;
   let keepAliveTimer = null;
@@ -33,7 +36,9 @@ const WPWS = (() => {
   let backendMode = BACKEND_MODES.AUTO;
   let resolvedBackend = null;
   let lastSeq = 0; // Track last received sequence number for reconnect replay
+  let roomScope = null;
   let applicationReady = false;
+  let serverCapabilities = new Set();
 
   // --- Callbacks (set by orchestrator) ---
   let onMessageHandler = null;
@@ -49,9 +54,12 @@ const WPWS = (() => {
 
   async function probeLocalBackend() {
     try {
-      // Probe the real health endpoint instead of `/`, which returns a non-OK response.
-      const res = await fetch(LOCAL_READY_URL, { signal: AbortSignal.timeout(1000) });
-      return res.ok;
+      const response = await chrome.runtime.sendMessage({
+        type: 'watchparty-ext',
+        action: WPConstants.ACTION.LOCAL_BACKEND_GET,
+        resource: 'ready',
+      });
+      return response?.ok === true;
     } catch {
       return false;
     }
@@ -59,6 +67,7 @@ const WPWS = (() => {
 
   async function getBackend() {
     if (resolvedBackend) return resolvedBackend;
+    const generation = backendGeneration;
 
     if (backendMode === BACKEND_MODES.LOCAL) {
       resolvedBackend = BACKEND.LOCAL;
@@ -72,7 +81,9 @@ const WPWS = (() => {
 
     if (isDevInstall) {
       try {
-        if (await probeLocalBackend()) {
+        const localAvailable = await probeLocalBackend();
+        if (generation !== backendGeneration) return getBackend();
+        if (localAvailable) {
           resolvedBackend = BACKEND.LOCAL;
           return resolvedBackend;
         }
@@ -88,12 +99,33 @@ const WPWS = (() => {
   }
 
   async function connect() {
-    if (ws) return;
-    const url = await getWsUrl();
-    try { ws = new WebSocket(url); } catch (e) { console.warn('[WatchParty] WebSocket creation failed:', formatErrorMessage(e)); scheduleReconnect(); return; }
+    if (ws || pendingConnection) return;
+    connectionWanted = true;
+    if (reconnectTimer) { WPRuntimeClock.clearTimeout(reconnectTimer); reconnectTimer = null; }
+    const attempt = {};
+    const generation = connectionGeneration;
+    pendingConnection = attempt;
+    let socket;
+    try {
+      const url = await getWsUrl();
+      if (pendingConnection !== attempt || generation !== connectionGeneration) return;
+      socket = new WebSocket(url);
+      ws = socket;
+    } catch (e) {
+      if (generation === connectionGeneration) {
+        console.warn('[WatchParty] WebSocket creation failed:', formatErrorMessage(e));
+        scheduleReconnect();
+      }
+      return;
+    } finally {
+      if (pendingConnection === attempt) pendingConnection = null;
+    }
+    const isCurrentSocket = () => ws === socket && generation === connectionGeneration;
 
-    ws.onopen = () => {
+    socket.onopen = () => {
+      if (!isCurrentSocket()) return;
       reconnectAttempts = 0;
+      serverCapabilities = new Set();
       // Keepalive ping every 25s
       WPRuntimeClock.clearInterval(keepAliveTimer);
       lastPongTime = WPRuntimeClock.now(); // Reset on connect
@@ -107,7 +139,8 @@ const WPWS = (() => {
       if (onConnectHandler) onConnectHandler();
     };
 
-    ws.onmessage = (event) => {
+    socket.onmessage = (event) => {
+      if (!isCurrentSocket()) return;
       try {
         // Reject oversized messages (100KB) to prevent memory DoS
         if (typeof event.data === 'string' && event.data.length > 102400) return;
@@ -126,32 +159,45 @@ const WPWS = (() => {
       }
     };
 
-    ws.onclose = () => {
+    socket.onclose = () => {
+      if (!isCurrentSocket()) return;
       WPRuntimeClock.clearInterval(keepAliveTimer);
+      keepAliveTimer = null;
+      WPRuntimeClock.clearInterval(clockSyncTimer);
+      clockSyncTimer = null;
       for (const t of pendingPingTimers) WPRuntimeClock.clearTimeout(t);
       pendingPingTimers = [];
       ws = null;
+      connectionGeneration += 1;
+      serverCapabilities = new Set();
       markApplicationPending();
       if (onDisconnectHandler) onDisconnectHandler();
       scheduleReconnect();
     };
 
-    ws.onerror = () => { /* onclose fires after */ };
+    socket.onerror = () => { /* onclose fires after */ };
   }
 
   function disconnect(options = {}) {
     const { resetReplay = false } = options;
+    connectionWanted = false;
+    connectionGeneration += 1;
+    pendingConnection = null;
     if (reconnectTimer) { WPRuntimeClock.clearTimeout(reconnectTimer); reconnectTimer = null; }
     WPRuntimeClock.clearInterval(clockSyncTimer);
     clockSyncTimer = null;
     for (const t of pendingPingTimers) WPRuntimeClock.clearTimeout(t);
     pendingPingTimers = [];
     sendQueue = [];
+    serverCapabilities = new Set();
     markApplicationPending();
     reconnectAttempts = 0;
     if (resetReplay) lastSeq = 0;
     if (ws) {
+      ws.onopen = null;
+      ws.onmessage = null;
       ws.onclose = null;
+      ws.onerror = null;
       ws.close();
       ws = null;
     }
@@ -161,7 +207,7 @@ const WPWS = (() => {
   }
 
   function scheduleReconnect() {
-    if (reconnectTimer) return;
+    if (!connectionWanted || reconnectTimer || ws) return;
     const base = Math.min(RECONNECT_BASE_MS * Math.pow(2, reconnectAttempts), RECONNECT_MAX_MS);
     const delay = base + WPRuntimeClock.random() * base * 0.2;
     reconnectAttempts++;
@@ -183,6 +229,9 @@ const WPWS = (() => {
     WPProtocol.COMMAND.ROOM_MEMBER_PRESENCE_PUBLISH,
     WPProtocol.COMMAND.ROOM_MEMBER_PLAYBACK_STATUS_PUBLISH,
     WPProtocol.COMMAND.ROOM_TYPING_SEND,
+    WPProtocol.COMMAND.ROOM_PLAYBACK_REQUEST,
+    WPProtocol.COMMAND.ROOM_REACTION_SEND,
+    WPProtocol.COMMAND.ROOM_READY_CHECK_UPDATE,
     WPProtocol.COMMAND.SESSION_CLOCK_PING,
   ]);
 
@@ -191,20 +240,26 @@ const WPWS = (() => {
   }
 
   function shouldQueue(msg) {
-    return !!msg?.type && !VOLATILE_COMMANDS.has(msg.type);
+    // Handshakes/room transitions are reconstructed by the controller after
+    // reconnect. Replaying an old join/create after its new handshake can
+    // move the user back into a superseded room.
+    return connectionWanted && !!msg?.type
+      && !BOOTSTRAP_COMMANDS.has(msg.type) && !VOLATILE_COMMANDS.has(msg.type);
   }
 
   function enqueue(msg) {
-    if (!shouldQueue(msg)) return;
+    if (!shouldQueue(msg)) return false;
     sendQueue.push(msg);
     if (sendQueue.length > MAX_SEND_QUEUE) sendQueue.shift();
+    return true;
   }
 
   function send(msg) {
     if (shouldSendImmediately(msg)) {
       ws.send(JSON.stringify(msg));
+      return true;
     } else {
-      enqueue(msg);
+      return enqueue(msg);
     }
   }
   function flushQueue() {
@@ -214,6 +269,14 @@ const WPWS = (() => {
   }
   function clearQueue() {
     sendQueue = [];
+  }
+
+  function setRoomScope(roomId) {
+    const nextScope = typeof roomId === 'string' && roomId ? roomId : null;
+    if (nextScope === roomScope) return;
+    roomScope = nextScope;
+    clearQueue();
+    lastSeq = 0;
   }
 
   function markApplicationPending() {
@@ -279,12 +342,21 @@ const WPWS = (() => {
 
   function getClockOffset() { return clockOffset; }
 
+  function setServerCapabilities(capabilities) {
+    serverCapabilities = new Set(Array.isArray(capabilities) ? capabilities.filter((value) => typeof value === 'string') : []);
+  }
+
+  function supportsCapability(capability) {
+    return typeof capability === 'string' && serverCapabilities.has(capability);
+  }
+
   function getLastSeq() { return lastSeq; }
 
   function setBackendMode(mode) {
     const nextMode = BACKEND.normalizeMode(mode);
     if (backendMode === nextMode) return false;
     backendMode = nextMode;
+    backendGeneration += 1;
     resolvedBackend = null;
     return true;
   }
@@ -299,7 +371,8 @@ const WPWS = (() => {
   return {
     connect, disconnect, send, isConnected, isReady: isConnected,
     flushQueue, clearQueue, markApplicationPending, markApplicationReady, isApplicationReady,
-    startClockSync, getClockOffset, getLastSeq,
+    setRoomScope, getConnectionGeneration: () => connectionGeneration,
+    startClockSync, getClockOffset, getLastSeq, setServerCapabilities, supportsCapability,
     setBackendMode, getBackendMode, getActiveBackend, getActiveWsUrl,
     // Callback setters
     onMessage(handler) { onMessageHandler = handler; },

@@ -123,10 +123,14 @@ const WPRoomKeys = (() => {
     return `${inviteUrl}#${params.toString()}`;
   }
 
-  async function loadIntoCrypto(roomId) {
+  async function loadIntoCrypto(roomId, options = {}) {
     if (typeof WPCrypto === 'undefined' || WPCrypto.isEnabled()) return null;
+    // Storage is asynchronous too: capturing the generation only inside
+    // importKey allows a late read from the previous room to replace its key.
+    const generation = WPCrypto.getGeneration();
     const e2eKey = await getE2eKey(roomId);
-    if (!e2eKey) return null;
+    if (!e2eKey || WPCrypto.getGeneration() !== generation || WPCrypto.isEnabled()
+      || (options.isCurrent && !options.isCurrent())) return null;
     try {
       await WPCrypto.importKey(e2eKey);
       return e2eKey;

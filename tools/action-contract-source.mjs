@@ -8,6 +8,7 @@ export const ACTION = Object.freeze({
   OPEN_SIDEBAR: 'sidebar.open',
   BOOTSTRAP_PENDING: 'bootstrap.pending',
   SESSION_STATE_PUBLISH: 'session.state.publish',
+  SESSION_IDENTITY_GET: 'session.identity.get',
   CONTROLLER_RELEASED: 'controller.released',
   CONTROLLER_LEASE_CLAIM: 'controller.lease.claim',
   CONTROLLER_LEASE_RELEASE: 'controller.lease.release',
@@ -40,6 +41,7 @@ export const ACTION = Object.freeze({
   CLIPBOARD_COPY: 'clipboard.copy',
   SERVER_DIAGNOSTICS_GET: 'server.diagnostics.get',
   LOCAL_LANDING_ACCESS_SYNC: 'localLandingAccess.sync',
+  LOCAL_BACKEND_GET: 'localBackend.get',
   AUTH_KEY_SAVE: 'auth.key.save',
   AUTH_KEY_CLEAR: 'auth.key.clear',
   OFFSCREEN_COPY: 'offscreen.copy',
@@ -79,6 +81,10 @@ export const ACTION_ROUTE = Object.freeze({
     target: 'stremio-content',
   },
   SESSION_STATE_PUBLISH: {
+    sources: ['stremio-content'],
+    target: 'background',
+  },
+  SESSION_IDENTITY_GET: {
     sources: ['stremio-content'],
     target: 'background',
   },
@@ -223,6 +229,10 @@ export const ACTION_ROUTE = Object.freeze({
   },
   LOCAL_LANDING_ACCESS_SYNC: {
     sources: ['options'],
+    target: 'background',
+  },
+  LOCAL_BACKEND_GET: {
+    sources: ['stremio-content'],
     target: 'background',
   },
   AUTH_KEY_SAVE: {

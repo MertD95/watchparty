@@ -100,11 +100,14 @@ function setBackendButtonsState(selectedMode, options = {}) {
   const disabled = !!options.disabled;
   document.querySelectorAll('#backend-toggle .backend-btn').forEach((btn) => {
     if (!(btn instanceof HTMLButtonElement)) return;
+    const localUnavailable = btn.dataset.mode === WPConstants.BACKEND.MODES.LOCAL
+      && !WPConstants.BACKEND.canUseLocal();
+    btn.hidden = localUnavailable;
     const isActive = btn.dataset.mode === selectedMode;
     const isPending = btn.dataset.mode === pendingMode;
     btn.classList.toggle('active', isActive);
     btn.classList.toggle('pending', isPending);
-    btn.disabled = disabled;
+    btn.disabled = disabled || localUnavailable;
     btn.setAttribute('aria-pressed', isActive ? 'true' : 'false');
   });
 }

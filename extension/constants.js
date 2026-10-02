@@ -32,17 +32,32 @@ const WPConstants = (() => {
     return value === BACKEND_MODES.LOCAL || value === BACKEND_MODES.LIVE;
   }
 
+  function canUseLocalBackend() {
+    try {
+      return typeof chrome !== 'undefined'
+        && !!chrome.runtime?.getManifest
+        && !('update_url' in chrome.runtime.getManifest());
+    } catch {
+      return false;
+    }
+  }
+
   function normalizeBackendMode(value) {
+    if (value === BACKEND_MODES.LOCAL && !canUseLocalBackend()) return BACKEND_MODES.LIVE;
     return isKnownBackendKey(value) ? value : BACKEND_MODES.AUTO;
   }
 
   function getBackendInfo(key) {
-    return BACKENDS[isKnownBackendKey(key) ? key : BACKEND_MODES.LIVE];
+    const resolvedKey = key === BACKEND_MODES.LOCAL && !canUseLocalBackend()
+      ? BACKEND_MODES.LIVE
+      : key;
+    return BACKENDS[isKnownBackendKey(resolvedKey) ? resolvedKey : BACKEND_MODES.LIVE];
   }
 
   function resolveBackendKey(mode, activeKey) {
     const normalizedMode = normalizeBackendMode(mode);
     if (normalizedMode === BACKEND_MODES.LOCAL || normalizedMode === BACKEND_MODES.LIVE) return normalizedMode;
+    if (activeKey === BACKEND_MODES.LOCAL && !canUseLocalBackend()) return BACKEND_MODES.LIVE;
     return isKnownBackendKey(activeKey) ? activeKey : BACKEND_MODES.LIVE;
   }
 
@@ -130,6 +145,7 @@ const WPConstants = (() => {
     BOOTSTRAP_ROOM_INTENT: 'wpBootstrapRoomIntent',
     DEFERRED_LEAVE_ROOM: 'wpDeferredLeaveRoom',
     CONTROLLER_TAB: 'wpControllerTab', // controller-tab lease { leaseId, tabId, sessionId, claimedAt }
+    CONTROLLER_FENCE: 'wpControllerFence', // durable monotonic fence, including across browser restarts
     ACTIVE_VIDEO_TAB: 'wpActiveVideoTab', // active video-tab lease { leaseId, tabId, sessionId, claimedAt }
     // Dynamic key helpers for per-room access and chat encryption keys.
     roomAccessKey(roomId) { return `wpRoomAccessKey:${roomId}`; },
@@ -146,6 +162,7 @@ const WPConstants = (() => {
       STORAGE.USERNAME,
       STORAGE.SESSION_ID,
       STORAGE.SESSION_TOKEN,
+      STORAGE.CONTROLLER_FENCE,
       STORAGE.ACCENT_COLOR,
       STORAGE.COMPACT_CHAT,
       STORAGE.REACTION_SOUND,
@@ -341,6 +358,7 @@ const WPConstants = (() => {
     LOCAL: BACKENDS[BACKEND_MODES.LOCAL],
     LIVE: BACKENDS[BACKEND_MODES.LIVE],
     isKnownKey: isKnownBackendKey,
+    canUseLocal: canUseLocalBackend,
     normalizeMode: normalizeBackendMode,
     getInfo: getBackendInfo,
     resolveKey: resolveBackendKey,

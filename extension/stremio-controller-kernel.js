@@ -5,6 +5,17 @@
 const WPControllerKernel = (() => {
   'use strict';
 
+  // A reply to an older claim cannot revive a tab after a release, another
+  // claim, or a newer storage notification elected another controller.
+  function createLeaseResponseGuard() {
+    let revision = 0;
+    return {
+      begin: () => ++revision,
+      invalidate: () => { revision += 1; },
+      isCurrent: (requestRevision) => requestRevision === revision,
+    };
+  }
+
   function cloneRoomSnapshot(room) {
     if (!room) return null;
     return {
@@ -193,6 +204,7 @@ const WPControllerKernel = (() => {
   }
 
   return {
+    createLeaseResponseGuard,
     cloneRoomSnapshot,
     createInitialRuntimeState,
     buildRuntimeSnapshot,

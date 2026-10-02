@@ -22,11 +22,17 @@ const WPProtocol = (() => {
     ROOM_OWNERSHIP_TRANSFER: 'room.ownership.transfer',
     ROOM_READY_CHECK_UPDATE: 'room.readyCheck.update',
     ROOM_PLAYBACK_PUBLISH: 'room.playback.publish',
+    ROOM_PLAYBACK_REQUEST: 'room.playback.request',
     ROOM_CONTENT_UPDATE: 'room.content.update',
     ROOM_MEMBER_PRESENCE_PUBLISH: 'room.member.presence.publish',
     ROOM_MEMBER_PLAYBACK_STATUS_PUBLISH: 'room.member.playbackStatus.publish',
     SESSION_CLOCK_PING: 'session.clock.ping',
     ROOM_TYPING_SEND: 'room.typing.send',
+  });
+
+  const CAPABILITY = Object.freeze({
+    PLAYBACK_TIMELINE_V1: 'playback-timeline-v1',
+    MEMBERSHIP_REQUEST_ID_V1: 'membership-request-id-v1',
   });
 
   const EVENT = Object.freeze({
@@ -78,5 +84,5 @@ const WPProtocol = (() => {
     BOOKMARK_LABEL_MAX: 100,
   });
 
-  return { COMMAND, EVENT, ERROR_CODE, PROTOCOL_VERSION, DEFAULT_PLAYER, LIMITS };
+  return { COMMAND, CAPABILITY, EVENT, ERROR_CODE, PROTOCOL_VERSION, DEFAULT_PLAYER, LIMITS };
 })();

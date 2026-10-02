@@ -256,6 +256,10 @@ function updateLobbyPrivacyState() {
 function renderBackendControls() {
   const selectedMode = WPConstants.BACKEND.normalizeMode(currentBackendMode);
   document.querySelectorAll('#backend-toggle .backend-btn').forEach((btn) => {
+    const localUnavailable = btn.dataset.mode === WPConstants.BACKEND.MODES.LOCAL
+      && !WPConstants.BACKEND.canUseLocal();
+    btn.hidden = localUnavailable;
+    btn.disabled = localUnavailable;
     btn.classList.toggle('active', btn.dataset.mode === selectedMode);
   });
 
@@ -485,7 +489,7 @@ setWsStatus(false);
 // --- Views ---
 
 function showLobbyView() {
-  $('view-lobby').classList.add('hidden');
+  $('view-lobby').classList.remove('hidden');
   $('view-room').classList.add('hidden');
   currentRenderedRoom = null;
   resetRoomContentLinks();
@@ -500,7 +504,7 @@ function showLobbyView() {
 function showRoomView(room, myUserId) {
   if (room?.id && suppressedRoomId && room.id === suppressedRoomId) return;
   $('view-lobby').classList.add('hidden');
-  $('view-room').classList.add('hidden');
+  $('view-room').classList.remove('hidden');
 
   if (myUserId) currentUserId = myUserId;
   loadIdentity((resolvedUserId, resolvedSessionId) => {

@@ -6,7 +6,6 @@ const WPModals = (() => {
   'use strict';
 
   const TOAST_DURATION_MS = 3000;
-  let localCountdownTimer = null;
 
   // --- Toast notification (uses Popover API for top-layer rendering) ---
   function showToast(message, durationMs = TOAST_DURATION_MS) {
@@ -31,14 +30,13 @@ const WPModals = (() => {
   function showReadyCheck(action, confirmed, total, myUserId, dispatchAction = null) {
     let modal = document.getElementById('wp-ready-modal');
     if (action === 'cancelled' || action === 'completed') {
-      if (localCountdownTimer) { clearInterval(localCountdownTimer); localCountdownTimer = null; }
       if (modal) { try { modal.hidePopover(); } catch {} modal.remove(); }
+      document.getElementById('wp-countdown')?.remove();
       return;
     }
     if (action === 'started') {
       if (modal) { try { modal.hidePopover(); } catch {} modal.remove(); }
-      const video = document.querySelector('video');
-      if (video && !video.paused) video.pause();
+      document.getElementById('wp-countdown')?.remove();
       modal = document.createElement('div');
       modal.id = 'wp-ready-modal';
       modal.setAttribute('role', 'dialog');
@@ -55,30 +53,23 @@ const WPModals = (() => {
       `;
       document.getElementById('wp-overlay')?.appendChild(modal);
       modal.showPopover();
-      document.getElementById('wp-ready-confirm').addEventListener('click', (event) => {
-        const accepted = typeof dispatchAction === 'function'
-          ? dispatchAction(WPConstants.ACTION.ROOM_READY_CHECK_UPDATE, { readyAction: 'confirm' }, event)
-          : false;
-        if (!accepted) return;
-        document.getElementById('wp-ready-confirm').disabled = true;
-        document.getElementById('wp-ready-confirm').textContent = 'Waiting...';
-        const countEl = document.getElementById('wp-ready-count');
-        if (countEl) {
-          const parts = countEl.textContent.split('/').map(s => parseInt(s.trim()));
-          const newConfirmed = (parts[0] || 0) + 1;
-          const total = parts[1] || 1;
-          countEl.textContent = `${newConfirmed} / ${total}`;
-          if (newConfirmed >= total) {
-            document.getElementById('wp-ready-modal')?.remove();
-            if (localCountdownTimer) clearInterval(localCountdownTimer);
-            let count = 3;
-            localCountdownTimer = setInterval(() => {
-              showCountdown(count);
-              count--;
-              if (count < 0) { clearInterval(localCountdownTimer); localCountdownTimer = null; showCountdown(0); }
-            }, 1000);
-          }
-        }
+      const confirmButton = document.getElementById('wp-ready-confirm');
+      confirmButton.addEventListener('click', async (event) => {
+        if (confirmButton.disabled) return;
+        confirmButton.disabled = true;
+        confirmButton.textContent = 'Sending...';
+        let accepted = false;
+        try {
+          const result = typeof dispatchAction === 'function'
+            ? await dispatchAction(WPConstants.ACTION.ROOM_READY_CHECK_UPDATE, { readyAction: 'confirm' }, event)
+            : false;
+          accepted = !!result && result.handled !== false && result.ok !== false;
+        } catch { /* Keep the confirmation retryable when disconnected. */ }
+        if (document.getElementById('wp-ready-modal') !== modal) return;
+        confirmButton.disabled = accepted;
+        confirmButton.textContent = accepted ? 'Waiting...' : "I'm Ready!";
+        // Counts, countdowns, and playback come only from the server. A queued
+        // local confirmation is not proof that every participant is ready.
       });
       document.getElementById('wp-ready-dismiss').addEventListener('click', () => {
         try { modal.hidePopover(); } catch {} modal.remove();
@@ -102,8 +93,6 @@ const WPModals = (() => {
     let el = document.getElementById('wp-countdown');
     if (seconds <= 0) {
       if (el) el.remove();
-      const video = document.querySelector('video');
-      if (video && video.paused) video.play().catch(() => {});
       return;
     }
     if (!el) {

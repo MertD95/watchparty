@@ -11,8 +11,10 @@
   let currentSessionId = null;
   let currentRoomState = null;
   let currentWsConnected = false;
+  let coordinatorRevision = 0;
   let renderedRoomId = null;
   const renderedBookmarkKeys = new Set();
+  const renderedMessageIds = new Set();
   const typingUsers = new Map();
   const localPreferences = {
     accentColor: '#6366f1',
@@ -20,6 +22,39 @@
   };
   let typingIdleTimer = null;
   let typingSent = false;
+  let pendingChat = null;
+  let chatCooldownUntil = 0;
+  let chatCooldownTimer = null;
+
+  function updateChatAvailability() {
+    const button = document.getElementById('chat-send');
+    if (button instanceof HTMLButtonElement) button.disabled = !!pendingChat || !currentRoomState?.id || !currentWsConnected || Date.now() < chatCooldownUntil;
+  }
+
+  function finishChat(entry, accepted, error = '') {
+    if (!entry || entry !== pendingChat) return;
+    clearTimeout(entry.timer);
+    pendingChat = null;
+    const input = inputById('chat-input');
+    if (accepted && currentRoomState?.id === entry.roomId && input && input.value === entry.draft) input.value = '';
+    if (accepted) stopTypingSignal();
+    if (error) showToast(error);
+    updateChatAvailability();
+  }
+
+  function clearRoomChat() {
+    finishChat(pendingChat, false);
+    clearTimeout(chatCooldownTimer);
+    chatCooldownUntil = 0;
+    renderedMessageIds.clear();
+    for (const entry of typingUsers.values()) clearTimeout(entry.timeoutId);
+    typingUsers.clear();
+    clearTimeout(typingIdleTimer);
+    typingIdleTimer = null;
+    typingSent = false;
+    const input = inputById('chat-input');
+    if (input) input.value = '';
+  }
 
   function inputById(id) {
     const el = document.getElementById(id);
@@ -365,14 +400,29 @@
   }
 
   /** @param {Event | null} [event] */
-  function sendChat(event = null) {
+  async function sendChat(event = null) {
     const input = inputById('chat-input');
     const content = input?.value.trim();
-    if (!content) return;
-    if (!sendAction({ action: WPConstants.ACTION.ROOM_CHAT_SEND, content }, event)) return;
-    appendChat(currentSessionId || currentUserId, 'You', content);
-    if (input) input.value = '';
-    stopTypingSignal();
+    if (!input || !content || !isTrustedUserEvent(event) || pendingChat || !currentRoomState?.id || !currentWsConnected || Date.now() < chatCooldownUntil) return;
+    if (content.length > 300) { showToast('Messages can contain up to 300 characters.'); return; }
+    if (!WPActionContract.isAllowedSource(WPConstants.ACTION.ROOM_CHAT_SEND, 'sidepanel')) return;
+    const entry = { roomId: currentRoomState.id, clientMessageId: crypto.randomUUID(), draft: input.value, timer: /** @type {number | null} */ (null) };
+    pendingChat = entry;
+    updateChatAvailability();
+    entry.timer = setTimeout(() => finishChat(entry, false, 'Delivery was not confirmed. Your draft is still here.'), 10000);
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: 'watchparty-ext', action: WPConstants.ACTION.ROOM_CHAT_SEND,
+        roomId: entry.roomId, clientMessageId: entry.clientMessageId, content,
+      });
+      // The bridge only confirms transport acceptance. Render and clear the
+      // draft exclusively after this request's canonical server echo.
+      if (!response || response.ok !== true || response.handled === false || response.error) {
+        finishChat(entry, false, response?.error || 'Message was not sent. Your draft is still here.');
+      }
+    } catch {
+      finishChat(entry, false, 'Message was not sent. Your draft is still here.');
+    }
   }
 
   function bindChat() {
@@ -388,6 +438,7 @@
   }
 
   function renderEmptyState() {
+    if (renderedRoomId) clearRoomChat();
     renderedRoomId = null;
     renderedBookmarkKeys.clear();
     const status = document.getElementById('status');
@@ -569,6 +620,7 @@
       return;
     }
     if (renderedRoomId !== roomState.id) {
+      clearRoomChat();
       renderedRoomId = roomState.id;
       renderedBookmarkKeys.clear();
       const chatMessages = document.getElementById('chat-messages');
@@ -582,18 +634,22 @@
 
   function applyCoordinatorUpdate(payload) {
     if (!payload || typeof payload !== 'object') return;
+    coordinatorRevision += 1;
     if ('userId' in payload) currentUserId = payload.userId || null;
     if ('sessionId' in payload) currentSessionId = payload.sessionId || null;
     if ('room' in payload) currentRoomState = payload.room || null;
     if ('wsConnected' in payload) currentWsConnected = payload.wsConnected === true;
     render(currentRoomState);
+    if (!currentWsConnected) finishChat(pendingChat, false, 'Disconnected. Your draft is still here.');
+    updateChatAvailability();
   }
 
   function loadCoordinatorState() {
+    const requestedRevision = coordinatorRevision;
     chrome.runtime.sendMessage(
       { type: 'watchparty-ext', action: WPConstants.ACTION.STATUS_GET },
       (response) => {
-        if (!response) return;
+        if (!response || coordinatorRevision !== requestedRevision) return;
         applyCoordinatorUpdate({
           room: response.room || null,
           userId: response.userId || null,
@@ -613,18 +669,39 @@
 
     if (message.action === WPConstants.ACTION.ROOM_CHAT_EVENT && message.payload) {
       const msg = message.payload;
-      const sender = currentRoomState?.users?.find((entry) => entry.id === msg.user);
+      if (!currentRoomState?.id || msg.roomId !== currentRoomState.id || typeof msg.content !== 'string') return false;
+      // Replays and cross-tab relays are idempotent, including our own messages
+      // sent from the main overlay or another companion window.
+      if (!msg.id || renderedMessageIds.has(msg.id)) return false;
+      renderedMessageIds.add(msg.id);
+      if (renderedMessageIds.size > 300) renderedMessageIds.delete(renderedMessageIds.values().next().value);
+      const sender = WPUtils.getMatchingRoomUser(currentRoomState, msg.user, msg.sessionId);
       const name = sender?.name || msg.userName || 'Unknown';
-      if (!isMe(msg.user)) {
-        appendChat(sender?.sessionId || msg.user, name, msg.content);
+      const own = WPUtils.isCurrentSessionUser(sender || { id: msg.user, sessionId: msg.sessionId }, currentUserId, currentSessionId);
+      appendChat(sender?.sessionId || msg.sessionId || msg.user, own ? 'You' : name, msg.content);
+      if (own) {
+        chatCooldownUntil = Date.now() + 3000;
+        clearTimeout(chatCooldownTimer);
+        chatCooldownTimer = setTimeout(updateChatAvailability, 3000);
+        if (pendingChat?.roomId === msg.roomId && pendingChat.clientMessageId === msg.clientMessageId) finishChat(pendingChat, true);
+        updateChatAvailability();
+      }
+    }
+
+    if (message.action === WPConstants.ACTION.ROOM_ERROR_EVENT && message.payload) {
+      const error = message.payload;
+      if (pendingChat && error.roomId === pendingChat.roomId && error.clientMessageId === pendingChat.clientMessageId) {
+        finishChat(pendingChat, false, error.message || 'Message was not sent. Your draft is still here.');
       }
     }
 
     if (message.action === WPConstants.ACTION.ROOM_BOOKMARK_EVENT && message.payload) {
+      if (!currentRoomState?.id || (message.payload.roomId && message.payload.roomId !== currentRoomState.id)) return false;
       appendBookmark(message.payload);
     }
 
     if (message.action === WPConstants.ACTION.ROOM_TYPING_EVENT && message.payload) {
+      if (!currentRoomState?.id || (message.payload.roomId && message.payload.roomId !== currentRoomState.id)) return false;
       handleTypingUpdate(message.payload.user, message.payload.typing, message.payload.userName);
     }
 
