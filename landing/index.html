@@ -34,6 +34,7 @@
             <button class="btn btn-secondary" id="hero-private-btn" type="button">Join with an invite</button>
           </div>
           <p class="hero-footnote">Free and open source. Built for watching together.</p>
+          <p id="website-action-status" class="website-action-status" role="status" aria-live="polite"></p>
         </div>
         <aside class="how-it-works" id="how-it-works" aria-labelledby="how-title">
           <h2 id="how-title">Your next movie night, in three steps.</h2>
@@ -42,6 +43,7 @@
             <li><span class="step-number" aria-hidden="true">2</span><div><h3>Open Stremio Web</h3><p>Use the WatchParty sidebar to create a room.</p></div></li>
             <li><span class="step-number" aria-hidden="true">3</span><div><h3>Invite your friends</h3><p>Share the room link and watch together.</p></div></li>
           </ol>
+          <p class="how-note">Everyone needs the extension and their own playable source in Stremio. WatchParty keeps you together; it doesn't provide video.</p>
         </aside>
       </section>
       <section class="hero-room-card hidden" id="hero-room-card" aria-label="Your current room">
@@ -72,6 +74,7 @@
           <span class="hero-status-title" id="hero-extension-pill">Checking extension</span>
           <span class="hero-profile-note" id="hero-profile-note">Install WatchParty to join a room.</span>
         </div>
+        <p id="rooms-action-status" class="website-action-status" role="status" aria-live="polite"></p>
         <div class="rooms-feedback">
           <p id="rooms-status" role="status" aria-live="polite"></p>
           <button class="btn btn-secondary hidden" id="rooms-refresh-btn" type="button">Try again</button>
@@ -118,6 +121,7 @@
       <p id="uuid-description">Paste the link your friend sent you, or enter a room ID.</p>
       <label class="hero-field-label" for="uuid-input">Invite link or room ID</label>
       <input type="text" id="uuid-input" placeholder="Paste your invite link" autocomplete="off" spellcheck="false" aria-describedby="uuid-description uuid-error" />
+      <p id="uuid-status" role="status" aria-live="polite"></p>
       <div class="modal-error" id="uuid-error" role="alert" style="display:none"></div>
       <div class="modal-actions">
         <button class="btn-cancel" id="uuid-cancel-btn" type="button">Cancel</button>
