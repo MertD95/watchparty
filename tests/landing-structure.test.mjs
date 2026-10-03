@@ -35,6 +35,27 @@ test('every website document declares an existing root-relative favicon', () => 
   }
 });
 
+test('privacy page offers a keyboard-visible root home link on either canonical path', () => {
+  const privacy = fs.readFileSync(path.join(landingRoot, 'privacy.html'), 'utf8');
+  const back = openingTags(privacy).find(tag => tag.tag === 'a' && tag.attributes.get('class') === 'back');
+  assert.ok(back);
+  assert.equal(back.attributes.get('href'), '/');
+  for (const route of ['/privacy', '/privacy.html']) {
+    assert.equal(new URL(back.attributes.get('href'), `https://watchparty.mertd.me${route}`).pathname, '/');
+  }
+  assert.match(privacy, /a:focus-visible\s*\{[^}]*outline:\s*2px solid/);
+});
+
+test('public privacy disclosures distinguish chat keys from authentication storage and encryption scope', () => {
+  const privacy = fs.readFileSync(path.join(landingRoot, 'privacy.html'), 'utf8').replace(/\s+/g, ' ');
+  assert.match(privacy, /Private-room chat keys are kept in memory-backed session storage/);
+  assert.match(privacy, /authentication key is retained only in the service worker's memory, not in persistent or session extension storage/);
+  assert.match(privacy, /Public-room chat is not end-to-end encrypted/);
+  assert.match(privacy, /chat key is carried in the invite link's fragment and is not sent to the room service/);
+  assert.match(privacy, /separate room access key is sent to the service to authorize access/);
+  assert.match(privacy, /Room metadata, membership, reactions and playback events are not end-to-end encrypted/);
+});
+
 test('landing assets are external root-relative files that also work under room invite routes', () => {
   const scripts = tags.filter(tag => tag.tag === 'script');
   assert.equal(scripts.length, 1);

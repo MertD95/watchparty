@@ -56,6 +56,8 @@
     }
     ul { padding-left: 20px; }
     a { color: #aab0ff; }
+    a:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+    .back { display: inline-block; margin-bottom: 24px; }
     .kicker {
       color: var(--accent);
       text-transform: uppercase;
@@ -73,6 +75,7 @@
 </head>
 <body>
   <main>
+    <a class="back" href="/">← WatchParty home</a>
     <div class="card">
       <div class="kicker">WatchParty for Stremio</div>
       <h1>Privacy Policy</h1>
@@ -81,7 +84,7 @@
         <a href="https://watchparty.mertd.me">watchparty.mertd.me</a>
         and the WatchParty for Stremio browser extension.
       </p>
-      <p class="meta">Last updated: 2026-04-23</p>
+      <p class="meta">Last updated: 2026-10-03</p>
 
       <h2>What WatchParty does</h2>
       <p>
@@ -123,14 +126,23 @@
       <h2>Local storage</h2>
       <p>
         The extension stores room state, private-room access keys, display name, and user preferences in Chrome extension
-        storage so it can recover sessions and keep extension surfaces in sync. End-to-end chat keys and sensitive Stremio
-        auth state are kept in memory-backed session storage and are not persisted across browser restarts.
+        storage so it can recover sessions and keep extension surfaces in sync. Private-room chat keys are kept in
+        memory-backed session storage and are not persisted across browser restarts. Within the extension, the Stremio
+        authentication key is retained only in the service worker's memory, not in persistent or session extension storage.
       </p>
 
       <h2>Security</h2>
       <p>
         Private-room access keys are attached to invite links and used by the extension for private-room access. Local development
         and operational endpoints are restricted separately from the public production room flow.
+      </p>
+      <p>
+        Public-room chat is not end-to-end encrypted. Private-room chat is encrypted in participants' browsers. Its chat
+        key is carried in the invite link's fragment and is not sent to the room service; the separate room access key
+        is sent to the service to authorize access. Room metadata, membership, reactions and playback events are not
+        end-to-end encrypted. Anyone with the full private invite has the keys needed to join and read that room's chat,
+        so share it only with intended participants. Shared playback links may contain provider-specific access
+        information; share only sources you are authorized to share.
       </p>
 
       <h2>Limited Use</h2>
