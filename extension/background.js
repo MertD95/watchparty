@@ -684,7 +684,9 @@ async function forgetClosedSurfaceTab(tabId) {
     await chrome.tabs.get(tabId);
   } catch {
     await forgetSurfaceTab(tabId);
+    return true;
   }
+  return false;
 }
 
 async function resolveKnownTabs(tabIds) {
@@ -860,30 +862,26 @@ async function cachePrivateRoomKeys(roomId, keys = {}) {
 }
 
 async function focusTab(tab) {
-  if (!tab?.id) return null;
-  try {
-    await chrome.tabs.update(tab.id, { active: true });
-  } catch { /* tab may have closed */ }
+  if (!tab?.id) throw new Error('The Stremio tab is no longer available. Please open Stremio again.');
+  const updated = await chrome.tabs.update(tab.id, { active: true });
   if (typeof tab.windowId === 'number') {
-    try {
-      await chrome.windows.update(tab.windowId, { focused: true });
-    } catch { /* window may have closed */ }
+    await chrome.windows.update(tab.windowId, { focused: true });
   }
-  return tab;
+  return updated || tab;
 }
 
 async function openSidebarOnTab(tab, panel) {
   if (!tab?.id) return false;
-  await focusTab(tab);
   try {
-    await chrome.tabs.sendMessage(tab.id, {
+    await focusTab(tab);
+    const response = await chrome.tabs.sendMessage(tab.id, {
       type: 'watchparty-ext',
       action: WPConstants.ACTION.OPEN_SIDEBAR,
       panel,
     });
-    return true;
+    return response?.handled === true && response.ok !== false;
   } catch {
-    forgetSurfaceTab(tab.id);
+    await forgetClosedSurfaceTab(tab.id);
     return false;
   }
 }
@@ -923,23 +921,25 @@ async function openOrFocusStremio(url) {
   const requestedUrl = typeof url === 'string' && url.trim() && urlMatchesOrigins(url.trim(), STREMIO_WEB_ORIGINS)
     ? url.trim()
     : null;
+  if (url !== undefined && !requestedUrl) throw new Error('This Stremio link is invalid. Open Stremio Web and try again.');
   const tabs = await getStremioTabs();
-  if (tabs.length > 0) {
-    const tab = tabs[0];
-    if (requestedUrl && shouldNavigateExistingStremioTab(requestedUrl) && tab.id != null && tab.url !== requestedUrl) {
-      try {
+  for (const tab of tabs) {
+    try {
+      if (requestedUrl && shouldNavigateExistingStremioTab(requestedUrl) && tab.id != null && tab.url !== requestedUrl) {
         const updated = await chrome.tabs.update(tab.id, { active: true, url: requestedUrl });
         if (typeof tab.windowId === 'number') {
-          await chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
+          await chrome.windows.update(tab.windowId, { focused: true });
         }
         rememberSurfaceTab('stremio', updated?.id ?? tab.id);
         return { opened: false, tab: updated || tab, navigated: true };
-      } catch {
-        forgetSurfaceTab(tab.id);
       }
+      const focused = await focusTab(tab);
+      return { opened: false, tab: focused };
+    } catch (error) {
+      // Only retry a confirmed closed tab. Navigation/focus failures in a live
+      // tab must be reported, not silently downgraded to a successful launch.
+      if (!await forgetClosedSurfaceTab(tab.id)) throw error;
     }
-    await focusTab(tab);
-    return { opened: false, tab };
   }
   const targetUrl = requestedUrl || 'https://web.stremio.com';
   const created = await chrome.tabs.create({ url: targetUrl });
@@ -1016,12 +1016,23 @@ async function resumeRoomInStremio(expectedRoomId) {
     return { ok: false, openedStremio: false, error: 'The room changed. Refresh the room controls before returning to Stremio.' };
   }
   const hasResumeTarget = !!room || !!currentRoomId || !!bootstrapIntent;
-  if (!hasResumeTarget) return { ok: false, openedStremio: false };
+  if (!hasResumeTarget) return { ok: false, openedStremio: false, error: 'There is no saved room to resume. Join a room first.' };
 
-  if (stremioTabs.length > 0) {
-    if (room) await openSidebarOnTab(stremioTabs[0]);
-    else await focusTab(stremioTabs[0]);
-    return { ok: true, openedStremio: false };
+  const orderedTabs = [...stremioTabs].sort((a, b) => Number(b.id === coordinatorState.controllerTabId) - Number(a.id === coordinatorState.controllerTabId));
+  for (const tab of orderedTabs) {
+    if (room) {
+      if (await openSidebarOnTab(tab)) return { ok: true, openedStremio: false };
+      if (!await forgetClosedSurfaceTab(tab.id)) {
+        return { ok: false, openedStremio: false, error: 'Stremio did not open the room controls. Refresh the Stremio tab and try again.' };
+      }
+    } else {
+      try {
+        await focusTab(tab);
+        return { ok: true, openedStremio: false };
+      } catch (error) {
+        if (!await forgetClosedSurfaceTab(tab.id)) throw error;
+      }
+    }
   }
 
   const opened = await openOrFocusStremio('https://web.stremio.com');
@@ -1276,6 +1287,7 @@ const messageHandlers = {
   [WPConstants.ACTION.ROOM_ERROR_EVENT]: (m) => {
     setExtensionState({ [WPConstants.STORAGE.LAST_ROOM_ERROR]: m.payload || null }).catch(() => {});
     relayToPanel(WPConstants.ACTION.ROOM_ERROR_EVENT, m.payload);
+    broadcastToWatchParty({ action: WPConstants.ACTION.STATUS_UPDATED, payload: { lastRoomError: m.payload || null } });
   },
   [WPConstants.ACTION.ROOM_CREATE]: (m, _s, sr) => respondAsync(sr, async () => {
     const stremioTabs = await getStremioTabs();
@@ -1284,7 +1296,9 @@ const messageHandlers = {
       await setExtensionState({ [WPConstants.STORAGE.USERNAME]: m.username });
     }
     await removeExtensionState(WPConstants.STORAGE.LAST_ROOM_ERROR);
-    if (await forwardToStremioTabWithRetry(m)) {
+    const response = await forwardToStremioTabWithRetry(m);
+    if (response) {
+      if (response.handled !== true || response.ok === false) return { ...response, ok: false };
       await clearBootstrapRoomIntent();
       return { ok: true, openedStremio: false, hasStremioTab };
     }
@@ -1298,6 +1312,9 @@ const messageHandlers = {
     return { ok: true, openedStremio: false, staged: true, needsStremio: true, hasStremioTab };
   }),
   [WPConstants.ACTION.ROOM_JOIN]: (m, _s, sr) => respondAsync(sr, async () => {
+    if (m.e2eKey != null && m.e2eKey !== '' && (typeof m.e2eKey !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(m.e2eKey))) {
+      return { ok: false, error: 'This encryption key is invalid. Paste the full invite link from the host.' };
+    }
     const stremioTabs = await getStremioTabs();
     const hasStremioTab = stremioTabs.length > 0;
     if (m.accessKey || m.e2eKey) {
@@ -1306,11 +1323,13 @@ const messageHandlers = {
         e2eKey: m.e2eKey,
       });
     }
-    await setExtensionState({
-      [WPConstants.STORAGE.USERNAME]: m.username,
-    });
+    if (typeof m.username === 'string' && m.username.trim()) {
+      await setExtensionState({ [WPConstants.STORAGE.USERNAME]: m.username.trim() });
+    }
     await removeExtensionState(WPConstants.STORAGE.LAST_ROOM_ERROR);
-    if (await forwardToStremioTabWithRetry(m)) {
+    const response = await forwardToStremioTabWithRetry(m);
+    if (response) {
+      if (response.handled !== true || response.ok === false) return { ...response, ok: false };
       await clearBootstrapRoomIntent();
       return { ok: true, openedStremio: false, hasStremioTab };
     }
@@ -1324,7 +1343,8 @@ const messageHandlers = {
     return { ok: true, openedStremio: false, staged: true, needsStremio: true, hasStremioTab };
   }),
   [WPConstants.ACTION.ROOM_LEAVE]: (m, _s, sr) => respondAsync(sr, async () => {
-    if (!await forwardToStremioTabWithRetry(m)) {
+    const response = await forwardToStremioTabWithRetry(m);
+    if (!response) {
       await removeStorageKeys([
         WPConstants.STORAGE.CURRENT_ROOM,
         WPConstants.STORAGE.ROOM_STATE,
@@ -1333,7 +1353,7 @@ const messageHandlers = {
       ]);
       return { ok: true };
     }
-    return { ok: true };
+    return { ...response, ok: response.handled === true && response.ok !== false };
   }),
   [WPConstants.ACTION.ROOM_VISIBILITY_UPDATE]: (m, _s, sr) => respondAsync(sr, async () => {
     return relayLiveRoomAction(m);

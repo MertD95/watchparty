@@ -7,6 +7,7 @@ import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const flush = async () => { for (let i = 0; i < 20; i += 1) await Promise.resolve(); };
 
 // Event-focused DOM adapter, not a visual browser substitute. It supports real
 // parentage, attributes, multiple listeners and bubbling so tab/input tests run
@@ -57,7 +58,7 @@ function overlayRuntime() {
       if (key === 'id') this.id = value;
       else if (key === 'class') this.className = value;
       else if (key.startsWith('data-')) this.dataset[camelCase(key.slice(5))] = value;
-      else if (['disabled', 'checked', 'hidden', 'open'].includes(key)) this[key] = true;
+      else if (['disabled', 'checked', 'hidden', 'open', 'inert'].includes(key)) this[key] = true;
       else if (key === 'tabindex') this.tabIndex = Number(value);
       else if (key === 'type') this.type = value;
     }
@@ -155,8 +156,10 @@ function overlayRuntime() {
     for (const listener of storageListeners) listener(changes, 'local');
     return Promise.resolve();
   }
+  let storageWriter = save;
   const context = vm.createContext({
     document, Element, HTMLElement: Element, crypto: webcrypto, URLSearchParams, URL, AbortSignal, console,
+    CSS: { escape: value => String(value) },
     fetch: async () => ({ ok: true, json: async () => ({ rooms: [] }) }),
     WPWS: { getActiveBackend: () => 'live' },
     AudioContext: class { state = 'running'; },
@@ -167,7 +170,7 @@ function overlayRuntime() {
     clearTimeout: id => timers.delete(id), setInterval: () => 0, clearInterval() {},
     chrome: {
       runtime: { getURL: (file) => file },
-      storage: { local: { get: (_keys, callback) => callback(storage) }, onChanged: { addListener: (listener) => storageListeners.push(listener) } },
+      storage: { local: { get: (_keys, callback) => callback(storage), set: values => storageWriter(values) }, onChanged: { addListener: (listener) => storageListeners.push(listener) } },
     },
     WPUtils: {
       getUserColor: () => '#6366f1', escapeHtml: (value) => String(value), getDirectJoinUrl: () => '',
@@ -182,7 +185,7 @@ function overlayRuntime() {
     WPTheme: { startListening() {} },
     WPModals: { showToast: message => notices.push(message), showReadyCheck() {} },
     WPRuntimeState: { get: async () => storage, set: save },
-    WPRoomKeys: { getAccessKey: (...args) => keyReader(...args), appendToInviteUrl: (...args) => inviteBuilder(...args) },
+    WPRoomKeys: { getAccessKey: (...args) => keyReader(...args), getE2eKey: async () => null, appendToInviteUrl: (...args) => inviteBuilder(...args) },
   });
   for (const file of ['wp-actions.js', 'constants.js', 'wp-protocol.js', 'runtime-clock.js', 'stremio-sync.js', 'stremio-overlay-shells.js', 'stremio-overlay.js']) {
     vm.runInContext(fs.readFileSync(path.join(root, 'extension', file), 'utf8'), context, { filename: file });
@@ -196,6 +199,7 @@ function overlayRuntime() {
   const room = { id: 'test-room', public: false, listed: false, settings: {}, users: [] };
   return {
     api, nodes: ids, document, constants, saved, actions, room, notices, copied, timers,
+    storageWriter: writer => { storageWriter = writer; }, save,
     keyReader: reader => { keyReader = reader; }, inviteBuilder: builder => { inviteBuilder = builder; },
     inRoom: (isHost = false, changes = {}, state = {}) => api.updateState({ inRoom: true, isHost, roomState: { ...room, ...changes }, hasVideo: false, wsConnected: true, ...state }),
     selected: (name) => ids.get(`wp-tab-${name}`).getAttribute('aria-selected') === 'true',
@@ -216,6 +220,43 @@ test('personal settings are available before joining, with room-only tabs hidden
   compact.checked = true;
   compact.dispatch('change');
   assert.deepEqual(ui.saved.at(-1), { [ui.constants.STORAGE.COMPACT_CHAT]: true });
+});
+
+test('closed sidebar starts inert and hidden from accessibility, opening restores its controls', () => {
+  const ui = overlayRuntime(); const sidebar = ui.nodes.get('wp-sidebar');
+  const launcher = ui.nodes.get('wp-toggle-host')._wpShadowBtn;
+  assert.equal(sidebar.inert, true);
+  assert.equal(sidebar.getAttribute('aria-hidden'), 'true');
+  assert.equal(launcher.getAttribute('aria-expanded'), 'false');
+  ui.api.openSidebar('prefs');
+  assert.equal(sidebar.inert, false);
+  assert.equal(sidebar.getAttribute('aria-hidden'), 'false');
+  assert.equal(launcher.getAttribute('aria-expanded'), 'true');
+});
+
+test('closing from inside restores focus to the actual shadow launcher and keeps later refreshes inert', () => {
+  const ui = overlayRuntime(); const sidebar = ui.nodes.get('wp-sidebar');
+  const launcher = ui.nodes.get('wp-toggle-host')._wpShadowBtn;
+  ui.api.openSidebar('prefs'); ui.nodes.get('wp-settings-username').focus();
+  ui.nodes.get('wp-close-sidebar').click();
+  assert.equal(ui.document.activeElement, launcher, 'the focus target is the button, not its unfocusable wrapper');
+  assert.equal(sidebar.inert, true);
+  assert.equal(sidebar.getAttribute('aria-hidden'), 'true');
+  assert.equal(launcher.getAttribute('aria-expanded'), 'false');
+  ui.inRoom(false);
+  assert.equal(sidebar.inert, true, 'room snapshots must not reopen closed controls');
+  launcher.click();
+  assert.equal(sidebar.inert, false);
+  assert.equal(sidebar.getAttribute('aria-hidden'), 'false');
+});
+
+test('closing a sidebar does not steal focus from the Stremio page', () => {
+  const ui = overlayRuntime();
+  const outside = ui.document.body.appendChild(ui.document.createElement('button'));
+  ui.api.openSidebar('prefs'); outside.focus();
+  ui.nodes.get('wp-close-sidebar').click();
+  assert.equal(ui.document.activeElement, outside);
+  assert.equal(ui.nodes.get('wp-sidebar').inert, true);
 });
 
 test('room setting rejection restores controls and canonical values, including synchronous dispatcher exceptions', async () => {
@@ -411,10 +452,11 @@ test('a name saved in preferences is used when returning to create a room', asyn
   input.focus();
   input.value = 'Sam';
   input.dispatch('keydown', { key: 'Enter' });
+  await flush();
   ui.nodes.get('wp-tab-room').click();
   assert.equal(ui.nodes.get('wp-lobby-username').value, 'Sam');
   ui.nodes.get('wp-lobby-create-btn').click();
-  await Promise.resolve();
+  await flush();
   const request = ui.actions.find((action) => action.action === ui.constants.ACTION.ROOM_CREATE);
   assert.equal(request.username, 'Sam');
 });
@@ -547,4 +589,285 @@ test('becoming host or leaving immediately clears a guest sync indicator', () =>
   assert.equal(ui.hidden('wp-sync-indicator'), true);
   ui.api.updateSyncIndicator(false, 0);
   assert.equal(ui.hidden('wp-sync-indicator'), true);
+});
+
+test('catch-up waits for dispatch acceptance and failed requests remain usable', async () => {
+  const ui = overlayRuntime(); ui.inRoom(false, {}, { hasVideo: true });
+  let finish; const sent = [];
+  ui.api.setActionDispatcher(action => { sent.push(action); return new Promise(resolve => { finish = resolve; }); });
+  ui.api.showCatchUpButton(-12);
+  const button = ui.nodes.get('wp-catchup-btn');
+  assert.match(button.textContent, /12s ahead/);
+  button.click(); button.click();
+  assert.equal(button.isConnected, true);
+  assert.equal(button.disabled, true);
+  assert.equal(button.getAttribute('aria-busy'), 'true');
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].roomId, 'test-room');
+  ui.inRoom(false, {}, { hasVideo: true }); ui.api.showCatchUpButton(13);
+  assert.equal(button.disabled, true, 'status refresh cannot release an in-flight request');
+  finish({ handled: false, error: 'Sync request failed' }); await flush();
+  assert.equal(button.disabled, false);
+  assert.equal(button.isConnected, true);
+  assert.match(ui.notices.at(-1), /Sync request failed/);
+  button.click(); finish({ handled: true }); await flush();
+  assert.equal(ui.nodes.has('wp-catchup-btn'), false);
+});
+
+test('catch-up timeout is retryable and late results cannot alter another room', async () => {
+  const ui = overlayRuntime(); ui.inRoom(false, {}, { hasVideo: true });
+  let finish;
+  ui.api.setActionDispatcher(() => new Promise(resolve => { finish = resolve; }));
+  ui.api.showCatchUpButton(12); ui.nodes.get('wp-catchup-btn').click();
+  [...ui.timers.values()].find(timer => timer.ms === 8000).callback(); await flush();
+  assert.equal(ui.nodes.get('wp-catchup-btn').disabled, false);
+  assert.match(ui.notices.at(-1), /No response/);
+  ui.nodes.get('wp-catchup-btn').click();
+  ui.inRoom(false, { id: 'second-room' }, { hasVideo: true }); ui.api.showCatchUpButton(15);
+  const replacement = ui.nodes.get('wp-catchup-btn'); const notices = ui.notices.length;
+  finish({ handled: false, error: 'Old room failure' }); await flush();
+  assert.equal(replacement.disabled, false);
+  assert.equal(replacement.isConnected, true);
+  assert.equal(ui.notices.length, notices);
+  for (const drift of [NaN, Infinity, 2]) {
+    ui.api.showCatchUpButton(drift); assert.equal(ui.nodes.has('wp-catchup-btn'), false);
+  }
+  for (const state of [{ hasVideo: false }, { hasVideo: true, wsConnected: false }, { hasVideo: true, mediaMismatch: true }]) {
+    ui.inRoom(false, {}, state); ui.api.showCatchUpButton(15);
+    assert.equal(ui.nodes.has('wp-catchup-btn'), false);
+  }
+  ui.inRoom(true, {}, { hasVideo: true }); ui.api.showCatchUpButton(15);
+  assert.equal(ui.nodes.has('wp-catchup-btn'), false);
+});
+
+test('personal checkbox storage failures restore confirmed values and report errors', async () => {
+  for (const id of ['wp-settings-compact', 'wp-settings-sound', 'wp-settings-floating']) {
+    const ui = overlayRuntime();
+    ui.storageWriter(() => Promise.reject(new Error('Storage unavailable')));
+    const checkbox = ui.nodes.get(id); const original = checkbox.checked;
+    checkbox.checked = !original; checkbox.dispatch('change');
+    assert.equal(checkbox.disabled, true);
+    await flush();
+    assert.equal(checkbox.checked, original, id);
+    assert.equal(checkbox.disabled, false);
+    assert.match(ui.notices.at(-1), /Could not confirm.*saved/);
+  }
+});
+
+test('pending personal saves survive refresh, deduplicate attempts, and time out visibly', async () => {
+  const ui = overlayRuntime(); let writes = 0;
+  ui.storageWriter(() => { writes += 1; return new Promise(() => {}); });
+  const checkbox = ui.nodes.get('wp-settings-compact'); checkbox.checked = true;
+  checkbox.dispatch('change'); checkbox.dispatch('change');
+  ui.api.updateState({ inRoom: false });
+  assert.equal(checkbox.checked, true);
+  assert.equal(checkbox.disabled, true);
+  assert.equal(writes, 1);
+  [...ui.timers.values()].find(timer => timer.ms === 8000).callback(); await flush();
+  assert.equal(checkbox.checked, false);
+  assert.equal(checkbox.disabled, false);
+  assert.match(ui.notices.at(-1), /Could not confirm.*saved/);
+});
+
+test('accent failures do not pretend the requested color was saved', async () => {
+  const ui = overlayRuntime(); let finish;
+  ui.storageWriter(() => new Promise((_, reject) => { finish = reject; }));
+  const swatches = ui.document.querySelectorAll('.wp-color-btn');
+  const active = swatches.find(button => button.getAttribute('aria-pressed') === 'true');
+  swatches[2].click();
+  assert.equal(swatches.every(button => button.disabled), true);
+  assert.equal(swatches[2].getAttribute('aria-pressed'), 'false');
+  finish(new Error('No storage')); await flush();
+  assert.equal(active.getAttribute('aria-pressed'), 'true');
+  assert.equal(swatches.every(button => !button.disabled), true);
+  assert.match(ui.notices.at(-1), /Could not confirm.*saved/);
+});
+
+test('failed name saves retain drafts and do not dispatch room-name changes', async () => {
+  const ui = overlayRuntime(); ui.inRoom();
+  ui.storageWriter(() => Promise.reject(new Error('No storage')));
+  const name = ui.nodes.get('wp-settings-username'); name.value = 'Unsaved name'; name.dispatch('input');
+  name.dispatch('keydown', { key: 'Enter' }); await flush();
+  ui.inRoom();
+  assert.equal(name.value, 'Unsaved name');
+  assert.equal(ui.nodes.get('wp-settings-save-name').disabled, false);
+  assert.equal(ui.actions.some(action => action.action === ui.constants.ACTION.SESSION_USERNAME_UPDATE), false);
+  assert.match(ui.notices.at(-1), /Could not confirm.*saved/);
+});
+
+test('saved local names distinguish rejected live-room updates and never retarget after a room change', async () => {
+  const ui = overlayRuntime(); ui.inRoom(); const sent = [];
+  ui.api.setActionDispatcher(action => { sent.push(action); return { handled: false }; });
+  const name = ui.nodes.get('wp-settings-username'); name.value = 'Saved locally';
+  name.dispatch('keydown', { key: 'Enter' }); await flush();
+  assert.equal(sent[0].roomId, 'test-room');
+  assert.equal(ui.saved.at(-1)[ui.constants.STORAGE.USERNAME], 'Saved locally');
+  assert.match(ui.notices.at(-1), /saved for this browser.*room update failed/);
+  let finish; ui.storageWriter(() => new Promise(resolve => { finish = resolve; }));
+  name.value = 'Second name'; name.dispatch('keydown', { key: 'Enter' });
+  ui.inRoom(false, { id: 'new-room' }); finish(); await flush();
+  assert.equal(sent.length, 1, 'storage completion cannot issue a name mutation in a later room');
+});
+
+test('lobby name save failures block create and join, preserve drafts, and never claim success', async () => {
+  for (const buttonId of ['wp-lobby-create-btn', 'wp-lobby-join-btn']) {
+    const ui = overlayRuntime();
+    ui.storageWriter(() => Promise.reject(new Error('No storage')));
+    const name = ui.nodes.get('wp-lobby-username'); name.value = 'Unsaved lobby name'; name.dispatch('input');
+    ui.nodes.get('wp-lobby-join-input').value = 'test-room-id';
+    ui.nodes.get(buttonId).click(); await flush(); ui.api.updateState({ inRoom: false });
+    assert.equal(name.value, 'Unsaved lobby name');
+    assert.equal(ui.actions.some(action => [ui.constants.ACTION.ROOM_JOIN, ui.constants.ACTION.ROOM_CREATE].includes(action.action)), false);
+    assert.match(ui.nodes.get('wp-lobby-create-feedback').textContent, /Could not save/);
+    assert.equal(ui.notices.includes('Display name saved.'), false);
+  }
+});
+
+function reactionControl(ui) {
+  ui.inRoom(false, { public: true }, { userId: 'me' });
+  ui.api.appendChatMessage({ id: 'message-1', user: 'peer', content: 'hello' }, { ...ui.room, public: true }, 'me');
+  const trigger = ui.document.querySelector('.wp-msg-react-trigger');
+  const pills = ui.document.querySelector('.wp-msg-pills');
+  return { pills, send() { trigger.click(); ui.document.dispatch('wp-emoji-selected', { detail: '👍' }); } };
+}
+
+test('reaction rejection is visible, retryable, room-scoped, and never adds a false reaction', async () => {
+  const ui = overlayRuntime(); const reaction = reactionControl(ui); let finish; const sent = [];
+  ui.api.setActionDispatcher(action => { sent.push(action); return new Promise(resolve => { finish = resolve; }); });
+  reaction.send(); reaction.send();
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].roomId, 'test-room');
+  assert.equal(reaction.pills.childElementCount, 0);
+  finish({ handled: false, error: 'Reaction not sent' }); await flush();
+  assert.match(ui.notices.at(-1), /Reaction not sent/);
+  reaction.send(); assert.equal(sent.length, 2);
+  finish({ handled: true }); await flush();
+  assert.equal(reaction.pills.childElementCount, 0, 'only an actual server event may add a reaction count');
+});
+
+test('reaction exceptions and timeouts report failure, but stale results do not affect another room', async () => {
+  const ui = overlayRuntime(); const reaction = reactionControl(ui);
+  ui.api.setActionDispatcher(() => { throw new Error('Disconnected'); });
+  reaction.send(); await flush(); assert.match(ui.notices.at(-1), /Could not send reaction/);
+  let finish; ui.api.setActionDispatcher(() => new Promise(resolve => { finish = resolve; }));
+  reaction.send(); [...ui.timers.values()].find(timer => timer.ms === 8000).callback(); await flush();
+  assert.match(ui.notices.at(-1), /No response/);
+  reaction.send(); const notices = ui.notices.length;
+  ui.inRoom(false, { id: 'another-room' }); finish({ handled: false, error: 'Stale error' }); await flush();
+  assert.equal(ui.notices.length, notices);
+});
+
+test('Make Host stays disabled through pending refresh and surfaces failed scoped requests', async () => {
+  const ui = overlayRuntime(); const room = { owner: 'me', users: [{ id: 'me', name: 'Me' }, { id: 'peer', name: 'Peer' }] };
+  ui.inRoom(true, room, { userId: 'me' }); let finish; const sent = [];
+  ui.api.setActionDispatcher(action => { sent.push(action); return new Promise(resolve => { finish = resolve; }); });
+  const button = ui.document.querySelector('.wp-transfer-btn'); button.click(); button.click();
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].roomId, 'test-room'); assert.equal(sent[0].targetUserId, 'peer');
+  assert.equal(button.disabled, true);
+  ui.inRoom(true, { ...room, users: room.users.map(user => ({ ...user, playbackTime: 10 })) }, { userId: 'me' });
+  assert.equal(ui.document.querySelector('.wp-transfer-btn').disabled, true);
+  finish({ handled: false, error: 'Transfer rejected' }); await flush();
+  assert.equal(ui.document.querySelector('.wp-transfer-btn').disabled, false);
+  assert.match(ui.notices.at(-1), /Transfer rejected/);
+  ui.document.querySelector('.wp-transfer-btn').click(); finish({ handled: true }); await flush();
+  assert.equal(ui.notices.at(-1), 'Host transfer requested.');
+});
+
+test('Make Host handles timeout and disconnect without affecting replacement memberships', async () => {
+  const ui = overlayRuntime(); const room = { owner: 'me', users: [{ id: 'peer', name: 'Peer' }] };
+  ui.inRoom(true, room, { userId: 'me' }); let finish;
+  ui.api.setActionDispatcher(() => new Promise(resolve => { finish = resolve; }));
+  ui.document.querySelector('.wp-transfer-btn').click();
+  [...ui.timers.values()].find(timer => timer.ms === 8000).callback(); await flush();
+  assert.equal(ui.document.querySelector('.wp-transfer-btn').disabled, false);
+  assert.match(ui.notices.at(-1), /No response/);
+  ui.document.querySelector('.wp-transfer-btn').click(); const notices = ui.notices.length;
+  ui.inRoom(true, { ...room, id: 'replacement-room' }, { userId: 'me' });
+  finish({ handled: false, error: 'Old room rejected' }); await flush();
+  assert.equal(ui.notices.length, notices);
+  assert.equal(ui.document.querySelector('.wp-transfer-btn').disabled, false);
+  ui.inRoom(true, { ...room, id: 'replacement-room' }, { userId: 'me', wsConnected: false });
+  assert.equal(ui.document.querySelector('.wp-transfer-btn').disabled, true);
+});
+
+test('lobby create and join handle dispatcher refusal, exception and rejection without losing drafts', async () => {
+  for (const mode of ['create', 'join']) for (const failure of ['refused', 'thrown', 'rejected']) {
+    const ui = overlayRuntime();
+    const input = ui.nodes.get('wp-lobby-join-input'); input.value = 'private-room#accessKey=preserved-key&e2eKey=preserved-cipher';
+    ui.api.setActionDispatcher(() => {
+      if (failure === 'thrown') throw new Error('No transport');
+      if (failure === 'rejected') return Promise.reject(new Error('No transport'));
+      return { handled: false, error: 'Controller unavailable' };
+    });
+    ui.nodes.get(`wp-lobby-${mode}-btn`).click(); await flush();
+    assert.equal(ui.nodes.get('wp-lobby-create-btn').disabled, false);
+    assert.equal(ui.nodes.get('wp-lobby-join-btn').disabled, false);
+    assert.match(ui.nodes.get(`wp-lobby-${mode}-feedback`).textContent, /Controller unavailable|Could not send room request/);
+    assert.equal(input.value, 'private-room#accessKey=preserved-key&e2eKey=preserved-cipher');
+  }
+});
+
+test('pending lobby requests suppress cross-action duplicates and become retryable on transport timeout', async () => {
+  const ui = overlayRuntime(); const sent = [];
+  ui.api.setActionDispatcher(action => { sent.push(action); return new Promise(() => {}); });
+  ui.nodes.get('wp-lobby-create-btn').click();
+  ui.nodes.get('wp-lobby-join-input').value = 'other-room'; ui.nodes.get('wp-lobby-join-btn').click();
+  await flush(); ui.api.updateState({ inRoom: false });
+  assert.equal(sent.length, 1);
+  assert.equal(ui.nodes.get('wp-lobby-create-btn').disabled, true);
+  assert.equal(ui.nodes.get('wp-lobby-join-btn').disabled, true);
+  [...ui.timers.values()].find(timer => timer.ms === 8000).callback(); await flush();
+  assert.equal(ui.nodes.get('wp-lobby-create-btn').disabled, false);
+  assert.match(ui.nodes.get('wp-lobby-create-feedback').textContent, /No response/);
+});
+
+test('accepted lobby dispatch waits for membership and missing confirmation offers explicit retry', async () => {
+  for (const mode of ['create', 'join']) {
+    const ui = overlayRuntime(); ui.nodes.get('wp-lobby-join-input').value = 'target-room';
+    ui.nodes.get(`wp-lobby-${mode}-btn`).click(); await flush();
+    assert.equal(ui.nodes.get(`wp-lobby-${mode}-btn`).disabled, true);
+    const timeout = [...ui.timers.values()].find(timer => timer.ms === 15000);
+    timeout.callback(); await flush();
+    assert.equal(ui.nodes.get(`wp-lobby-${mode}-btn`).disabled, false);
+    assert.match(ui.nodes.get(`wp-lobby-${mode}-feedback`).textContent, /membership was not confirmed/);
+    const action = mode === 'create' ? ui.constants.ACTION.ROOM_CREATE : ui.constants.ACTION.ROOM_JOIN;
+    assert.equal(ui.actions.filter(message => message.action === action).length, 1, 'no automatic mutation retry');
+  }
+});
+
+test('lobby server rejection and connected room replacement invalidate late dispatch and timers', async () => {
+  const ui = overlayRuntime(); let finish;
+  ui.api.setActionDispatcher(() => new Promise(resolve => { finish = resolve; }));
+  ui.nodes.get('wp-lobby-join-input').value = 'target-room';
+  ui.nodes.get('wp-lobby-join-btn').click(); await flush();
+  ui.api.showRoomError({ code: 'INVALID_ROOM_KEY' });
+  assert.equal(ui.nodes.get('wp-lobby-join-btn').disabled, false);
+  finish({ handled: true }); await flush();
+  assert.match(ui.nodes.get('wp-lobby-join-feedback').textContent, /fresh full invite/);
+  ui.nodes.get('wp-lobby-join-btn').click(); await flush();
+  const timeout = [...ui.timers.values()].find(timer => timer.ms === 15000);
+  ui.inRoom(false, { id: 'target-room' });
+  finish({ handled: false, error: 'Old dispatch failure' }); timeout.callback(); await flush();
+  assert.equal(ui.notices.includes('Old dispatch failure'), false);
+  ui.api.updateState({ inRoom: false });
+  assert.equal(ui.nodes.get('wp-lobby-join-btn').disabled, false);
+});
+
+test('lobby storage completion cannot issue an old request after joining another room', async () => {
+  const ui = overlayRuntime(); let finish;
+  ui.storageWriter(() => new Promise(resolve => { finish = resolve; }));
+  ui.nodes.get('wp-lobby-create-btn').click();
+  ui.inRoom(false, { id: 'joined-elsewhere' }); finish(); await flush();
+  assert.equal(ui.actions.some(action => action.action === ui.constants.ACTION.ROOM_CREATE), false);
+});
+
+test('an incomplete private lobby invite remains intact for correction instead of dropping its access key', async () => {
+  const ui = overlayRuntime(); const input = ui.nodes.get('wp-lobby-join-input');
+  input.value = 'private-room#accessKey=preserved-key';
+  ui.nodes.get('wp-lobby-join-btn').click(); await flush();
+  assert.equal(input.value, 'private-room#accessKey=preserved-key');
+  assert.equal(ui.nodes.get('wp-lobby-join-btn').disabled, false);
+  assert.match(ui.nodes.get('wp-lobby-join-feedback').textContent, /full invite link.*e2eKey/);
+  assert.equal(ui.actions.some(action => action.action === ui.constants.ACTION.ROOM_JOIN), false);
 });

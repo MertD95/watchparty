@@ -74,14 +74,44 @@ npm run gen:icons
 - Scripts under `manual:*` prepare, perturb, inspect, or provide live realtime users only. They should not be treated as proof that the product works.
 - Run regression tests, syntax, typecheck, and generated action/protocol/domain checks locally before pushing. Isolated installed-extension browser checks complement these deterministic tests. GitHub Actions does not run test suites on pushes or pull requests; release jobs only package, validate, and optionally submit the ZIP for Google review.
 
+## Supported runtime contract
+
+The website, extension and backend target the current contract together. Old
+website fire-and-forget actions, uncorrelated membership requests and raw
+playback-publish payloads are not supported. Website mutations require a
+correlated extension acknowledgement; actual connected room membership is
+confirmed separately before private invite data is cleared.
+
+Treat protocol-breaking changes as a coordinated release: finish local paired
+testing and obtain Chrome Web Store approval before switching production to a
+backend/website that requires the new extension. The current website shows
+update/refresh guidance when its installed bridge lacks correlated action
+results. Already-open old pages and extensions cannot be relied on to show that
+new guidance; users must update the extension and refresh both the website and
+Stremio tabs. Store approval does not update every installed client immediately.
+
+Both production paths currently deploy from `main` (Cloudflare Git integration
+and the backend deployment workflow). Do not push a protocol-breaking cutover
+to either production branch before the coordinated release is ready. Package
+the new extension under a new version/tag; do not reuse an already released tag.
+
+Current recovery paths (MV3 worker restart, reconnects, tab leases and pending
+membership cancellation) are still required and are not deprecated compatibility
+code. Likewise, the configured Google publishing OAuth flow is active CI
+authentication, not an obsolete fallback.
+
 ## Notes
+
+- `store-listing.json` is the current Chrome Web Store description, permission justification, privacy-disclosure and screenshot brief. `store-assets/chrome-web-store/` contains copy-ready dashboard instructions, text and correctly sized images. Update the signed-in developer dashboard before submitting a release; the package publishing API does not update these listing fields. Never advertise that no user data is handled or that all room data is end-to-end encrypted.
+- The local Stremio network rules are scoped to HTTP port 11470 and supported Stremio initiator domains. They do not relax CORS for the local WatchParty backend, other local applications or arbitrary websites. Extension-worker service checks use the existing local-service host permission without those page-specific rules.
+- DNR header changes require explicit host permission for both the local service and supported initiating Stremio pages; content-script matches alone are insufficient. Chrome's `initiatorDomains` filters include descendant subdomains, but the three Stremio host-permission patterns are exact, without subdomain wildcards.
 
 - `extension/wp-protocol.js` is generated from `../watchparty-server/tools/gen-protocol.js`
 - The extension and landing page both depend on `watchparty-server` for live room flows
 - The default manifest no longer ships localhost landing-page access; unpacked dev installs can opt into localhost landing access from the options page when needed
 - `localhost:11470` is the Stremio local service, not just a development host
 - The Stremio auth key is forwarded to the background worker and kept in memory only; it is not persisted in extension storage
-- The website auto-deploys through Cloudflare Workers Builds Git integration. Once Chrome publishing is configured and enabled, publishing a stable `v<manifest version>` GitHub release automatically packages that exact tag and submits it for Google review. A normal push does not publish the extension, and Google still controls approval.
+- The website auto-deploys through Cloudflare Workers Builds Git integration. Once Chrome publishing is configured and enabled, publishing a stable `v<manifest version>` GitHub release automatically packages that exact tag and uploads it as a Chrome Web Store draft. Save listing/privacy changes in the dashboard, then explicitly submit the tested tag for staged Google review. A normal push does not publish the extension, and Google approval does not activate a staged release.
 - `npm run build:store-package` creates a Chrome Web Store bundle under `dist/chrome-web-store/` and strips dev-only localhost backend and landing origins from the packaged manifest; the release workflow uses this same package builder
-- Deployment and one-time Google authentication setup live in `SECURITY.md`. **Extension Release** can be dispatched from `main` with `mode=status` for a read-only credential check, `mode=package` to package an existing `release_tag`, or `mode=submit` to submit that tag (for example `v2.0.2`). These jobs do not install dependencies or run tests.
-- Replacing a pending review is a separate, explicitly authorized operation: dispatch `mode=cancel-review` with its exact `expected_pending_version`, confirm cancellation, then submit the tested replacement normally. Release/submit jobs never automatically cancel another review. See the safeguards in `SECURITY.md`.
+- Deployment and one-time Google authentication setup live in `SECURITY.md`. **Extension Release** can be dispatched from `main` with `mode=status` for a read-only credential check, `mode=package` to package an existing `release_tag`, `mode=upload` to prepare its dashboard draft, or `mode=submit` to re-upload that exact tag and submit it for staged review (for example `v2.1.0`). These jobs do not install dependencies or run tests.
+- Replacing a pending review or activating an approved staged release are separate, explicit operations: dispatch `mode=cancel-review` or `mode=publish-staged` with its exact `expected_version`. Release/upload/submit jobs never automatically cancel another review or activate a staged release. See the safeguards in `SECURITY.md`.

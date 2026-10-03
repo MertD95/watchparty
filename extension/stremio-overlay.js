@@ -23,6 +23,13 @@ const WPOverlay = (() => {
   let roomControlsPending = null;
   let accessKeySavePending = null;
   let roomCodeCopyTimer = null;
+  let catchUpRequest = null;
+  let hostTransferRequest = null;
+  const pendingReactions = new Set();
+  const pendingPreferenceWrites = new Map();
+  let displayNameDraft = null;
+  let lobbyNameDraft = null;
+  let lobbyActionRequest = null;
   let syncIndicatorAvailable = false;
   let cachedMediaMismatch = false;
   let activePanel = 'room';
@@ -159,13 +166,28 @@ const WPOverlay = (() => {
     pillsContainer.appendChild(pill);
   }
 
-  function toggleReaction(pillsContainer, emoji, event = null, messageId = null) {
-    if (!isTrustedUserEvent(event)) return;
+  async function toggleReaction(pillsContainer, emoji, event = null, messageId = null) {
+    if (!isTrustedUserEvent(event) || !cachedRoomState?.id) return;
     const existing = pillsContainer.querySelector(`[data-emoji="${CSS.escape(emoji)}"]`);
     if (existing && existing.classList.contains('wp-pill-mine')) {
       return;
     }
-    dispatchAction(WPConstants.ACTION.ROOM_REACTION_SEND, { emoji, messageId }, event);
+    const generation = roomUiGeneration;
+    const roomId = cachedRoomState.id;
+    const requestKey = `${generation}:${messageId || ''}:${emoji}`;
+    if (pendingReactions.has(requestKey)) return;
+    pendingReactions.add(requestKey);
+    const showFailure = message => {
+      const received = pillsContainer.querySelector(`[data-emoji="${CSS.escape(emoji)}"]`);
+      if (generation === roomUiGeneration && pillsContainer.isConnected && !received?.classList.contains('wp-pill-mine')) {
+        showToast(message || 'Could not send reaction. Please try again.', 2500);
+      }
+    };
+    try {
+      const result = await requestAction(WPConstants.ACTION.ROOM_REACTION_SEND, { roomId, emoji, messageId }, event);
+      if (!isActionAccepted(result)) showFailure(result?.error);
+    } catch { showFailure(); }
+    finally { pendingReactions.delete(requestKey); }
   }
 
 
@@ -268,6 +290,7 @@ const WPOverlay = (() => {
   }
 
   function removeCatchUpButton() {
+    catchUpRequest = null;
     document.getElementById('wp-catchup-btn')?.remove();
     renderCache.lastCatchUpLabel = '';
     renderCache.catchUpVisible = false;
@@ -369,17 +392,83 @@ const WPOverlay = (() => {
     renderRoomControls(container, cachedRoomState, cachedIsHost);
   }
 
-  function persistDisplayName(nextUsername, event = null) {
+  function refreshPreferenceBusyState() {
+    const controls = [
+      [WPConstants.STORAGE.USERNAME, ['wp-settings-save-name', 'wp-lobby-save-name']],
+      [WPConstants.STORAGE.COMPACT_CHAT, ['wp-settings-compact']],
+      [WPConstants.STORAGE.REACTION_SOUND, ['wp-settings-sound']],
+      [WPConstants.STORAGE.FLOATING_REACTIONS, ['wp-settings-floating']],
+    ];
+    for (const [key, ids] of controls) {
+      for (const id of ids) {
+        const control = document.getElementById(id);
+        if (!control) continue;
+        control.disabled = pendingPreferenceWrites.has(key);
+        control.setAttribute('aria-busy', String(control.disabled));
+      }
+    }
+    for (const button of document.getElementById('wp-local-settings')?.querySelectorAll('.wp-color-btn') || []) {
+      button.disabled = pendingPreferenceWrites.has(WPConstants.STORAGE.ACCENT_COLOR);
+      button.setAttribute('aria-busy', String(button.disabled));
+    }
+  }
+
+  async function saveLocalPreference(key, value) {
+    if (pendingPreferenceWrites.has(key)) return false;
+    const entry = { value };
+    pendingPreferenceWrites.set(key, entry);
+    refreshPreferenceBusyState();
+    let timer;
+    try {
+      // These keys are durable local preferences. WPRuntimeState.set deliberately
+      // suppresses failures, so use the acknowledged storage API for user saves.
+      await Promise.race([
+        chrome.storage.local.set({ [key]: value }),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Save confirmation timed out.')), 8000); }),
+      ]);
+      const field = {
+        [WPConstants.STORAGE.USERNAME]: 'username',
+        [WPConstants.STORAGE.ACCENT_COLOR]: 'accentColor',
+        [WPConstants.STORAGE.COMPACT_CHAT]: 'compactChat',
+        [WPConstants.STORAGE.REACTION_SOUND]: 'reactionSound',
+        [WPConstants.STORAGE.FLOATING_REACTIONS]: 'floatingReactions',
+      }[key];
+      if (field) localPreferences[field] = value;
+      return true;
+    } catch {
+      showToast('Could not confirm that your setting was saved. Please try again.', 3500);
+      return false;
+    } finally {
+      clearTimeout(timer);
+      if (pendingPreferenceWrites.get(key) === entry) pendingPreferenceWrites.delete(key);
+      refreshLocalSettingsCard();
+      refreshPreferenceBusyState();
+    }
+  }
+
+  async function persistDisplayName(nextUsername, event = null) {
     if (!isTrustedUserEvent(event)) return false;
     const username = normalizeUsernameInput(nextUsername);
     if (!username) {
       showToast('Add a display name first.', 1800);
       return false;
     }
-    localPreferences.username = username;
+    displayNameDraft = nextUsername;
+    const generation = roomUiGeneration;
+    const roomId = cachedRoomState?.id;
+    if (!await saveLocalPreference(WPConstants.STORAGE.USERNAME, username)) return false;
     cachedUsername = username;
-    WPRuntimeState.set({ [WPConstants.STORAGE.USERNAME]: username }).catch(() => {});
-    dispatchAction(WPConstants.ACTION.SESSION_USERNAME_UPDATE, { username }, event);
+    if (displayNameDraft === nextUsername) displayNameDraft = null;
+    if (roomId && generation === roomUiGeneration) {
+      try {
+        const result = await requestAction(WPConstants.ACTION.SESSION_USERNAME_UPDATE, { username, roomId }, event);
+        if (generation === roomUiGeneration && !isActionAccepted(result)) {
+          showToast('Name saved for this browser, but the room update failed. Please try again.', 3500);
+        }
+      } catch {
+        if (generation === roomUiGeneration) showToast('Name saved for this browser, but the room update failed. Please try again.', 3500);
+      }
+    }
     refreshLocalSettingsCard();
     return true;
   }
@@ -404,6 +493,7 @@ const WPOverlay = (() => {
     for (const id of ['wp-lobby-create-feedback', 'wp-lobby-join-feedback']) {
       if (document.getElementById(id)?.dataset.pending === 'true') setLobbyFeedback(id, message, 'warn');
     }
+    finishLobbyAction(lobbyActionRequest);
   }
 
   function getLobbyUsername() {
@@ -411,7 +501,7 @@ const WPOverlay = (() => {
     return normalizeUsernameInput(input?.value || getPreferredUsername());
   }
 
-  function saveLobbyUsername(event = null, options = {}) {
+  async function saveLobbyUsername(event = null, options = {}) {
     if (!isTrustedUserEvent(event)) return false;
     const username = getLobbyUsername();
     if (!username) {
@@ -420,9 +510,15 @@ const WPOverlay = (() => {
       setLobbyFeedback('wp-lobby-join-feedback', 'Add a display name first.', 'warn');
       return false;
     }
-    localPreferences.username = username;
+    const draft = document.getElementById('wp-lobby-username')?.value || username;
+    lobbyNameDraft = draft;
+    if (!await saveLocalPreference(WPConstants.STORAGE.USERNAME, username)) {
+      setLobbyFeedback('wp-lobby-create-feedback', 'Could not save your display name. Please try again.', 'warn');
+      setLobbyFeedback('wp-lobby-join-feedback', 'Could not save your display name. Please try again.', 'warn');
+      return false;
+    }
     cachedUsername = username;
-    WPRuntimeState.set({ [WPConstants.STORAGE.USERNAME]: username }).catch(() => {});
+    if (lobbyNameDraft === draft) lobbyNameDraft = null;
     if (options.silent !== true) showToast('Display name saved.', 1400);
     return true;
   }
@@ -534,6 +630,7 @@ const WPOverlay = (() => {
       };
     }
     renderLobbyDirectory();
+    refreshLobbyActionButtons();
   }
 
   function startLobbyRoomsRefresh() {
@@ -565,6 +662,7 @@ const WPOverlay = (() => {
   }
 
   function bindLobbyInputGuards() {
+    document.getElementById('wp-lobby-username')?.addEventListener('input', (event) => { lobbyNameDraft = event.target.value; });
     bindInputFieldGuards(document.getElementById('wp-lobby-username'), {
       allowEnterSubmit: true,
       onEnter(event) { saveLobbyUsername(event); },
@@ -589,7 +687,8 @@ const WPOverlay = (() => {
       bindLobbyInputGuards();
     }
     const usernameInput = document.getElementById('wp-lobby-username');
-    if (usernameInput && document.activeElement !== usernameInput) {
+    if (usernameInput && lobbyNameDraft === null && !pendingPreferenceWrites.has(WPConstants.STORAGE.USERNAME)
+      && document.activeElement !== usernameInput) {
       usernameInput.value = getPreferredUsername();
     }
     setLobbyMode(lobbyMode);
@@ -641,10 +740,68 @@ const WPOverlay = (() => {
       `;
       list.appendChild(card);
     }
+    refreshLobbyActionButtons();
+  }
+
+  function refreshLobbyActionButtons() {
+    const controls = [document.getElementById('wp-lobby-create-btn'), document.getElementById('wp-lobby-join-btn'),
+      ...document.querySelectorAll('[data-lobby-room-action]')];
+    for (const button of controls) {
+      if (!button) continue;
+      button.disabled = !!lobbyActionRequest;
+      button.setAttribute('aria-busy', String(!!lobbyActionRequest));
+    }
+  }
+
+  function finishLobbyAction(entry) {
+    if (!entry || lobbyActionRequest !== entry) return;
+    clearTimeout(entry.timer);
+    lobbyActionRequest = null;
+    refreshLobbyActionButtons();
+  }
+
+  async function requestLobbyAction(action, detail, event) {
+    if (!isTrustedUserEvent(event) || lobbyActionRequest) return;
+    const feedbackId = action === WPConstants.ACTION.ROOM_CREATE ? 'wp-lobby-create-feedback' : 'wp-lobby-join-feedback';
+    const entry = { generation: roomUiGeneration, timer: null };
+    lobbyActionRequest = entry;
+    refreshLobbyActionButtons();
+    const isCurrent = () => lobbyActionRequest === entry && entry.generation === roomUiGeneration;
+    entry.timer = setTimeout(() => {
+      if (!isCurrent()) return;
+      setLobbyFeedback(feedbackId, 'Room membership was not confirmed. Check Stremio before trying again.', 'warn');
+      finishLobbyAction(entry);
+    }, 15000);
+    try {
+      if (!await saveLobbyUsername(event, { silent: true })) { finishLobbyAction(entry); return; }
+      if (!isCurrent()) return;
+      if (detail.accessKey && !await hasLobbyE2eKey(detail)) {
+        if (!isCurrent()) return;
+        setLobbyMode('join');
+        document.getElementById('wp-lobby-join-input')?.focus();
+        setLobbyFeedback(feedbackId, 'Paste the full invite link. Private rooms need the e2eKey in the link so chat stays encrypted.', 'warn');
+        finishLobbyAction(entry);
+        return;
+      }
+      if (!isCurrent()) return;
+      setLobbyFeedback(feedbackId, action === WPConstants.ACTION.ROOM_CREATE ? 'Creating room...' : 'Joining room...', 'pending');
+      const sent = await requestAction(action, { ...detail, username: getPreferredUsername() }, event);
+      if (!isCurrent()) return;
+      if (!isActionAccepted(sent)) {
+        setLobbyFeedback(feedbackId, sent?.error || 'Could not send room request. Please try again.', 'warn');
+        finishLobbyAction(entry);
+      }
+      // Dispatch acceptance is not membership. Keep explicit retry bounded by
+      // the timer until a room snapshot or a real room error settles this intent.
+    } catch {
+      if (!isCurrent()) return;
+      setLobbyFeedback(feedbackId, 'Could not send room request. Please try again.', 'warn');
+      finishLobbyAction(entry);
+    }
   }
 
   async function handleLobbyCreate(event = null) {
-    if (!saveLobbyUsername(event, { silent: true })) return;
+    if (!isTrustedUserEvent(event) || lobbyActionRequest) return;
     const roomName = sanitizeLobbyRoomName(document.getElementById('wp-lobby-room-name')?.value);
     if (roomName && roomName.length < 3) {
       setLobbyFeedback('wp-lobby-create-feedback', 'Room name must be at least 3 characters.', 'warn');
@@ -653,22 +810,17 @@ const WPOverlay = (() => {
     }
     const isPrivate = document.getElementById('wp-lobby-private')?.checked !== false;
     const listed = document.getElementById('wp-lobby-listed')?.checked !== false;
-    setLobbyFeedback('wp-lobby-create-feedback', 'Creating room...', 'pending');
-    const sent = await dispatchAction(WPConstants.ACTION.ROOM_CREATE, {
-      username: getLobbyUsername(),
+    return requestLobbyAction(WPConstants.ACTION.ROOM_CREATE, {
       meta: { id: 'pending', type: 'movie', name: 'WatchParty Session' },
       stream: { url: 'https://watchparty.mertd.me/sync' },
       public: !isPrivate,
       listed,
       roomName: roomName || undefined,
     }, event);
-    if (!isActionAccepted(sent) && document.getElementById('wp-lobby-create-feedback')?.dataset.pending === 'true') {
-      setLobbyFeedback('wp-lobby-create-feedback', 'Could not send create request.', 'warn');
-    }
   }
 
   async function handleLobbyJoin(event = null, options = {}) {
-    if (!saveLobbyUsername(event, { silent: true })) return;
+    if (!isTrustedUserEvent(event) || lobbyActionRequest) return;
     const parsed = options.roomId
       ? { roomId: options.roomId, accessKey: options.accessKey || '', e2eKey: options.e2eKey || '' }
       : parseLobbyJoinInput(document.getElementById('wp-lobby-join-input')?.value);
@@ -688,27 +840,12 @@ const WPOverlay = (() => {
       setLobbyFeedback('wp-lobby-join-feedback', 'Paste the full invite link for this private room.', 'warn');
       return;
     }
-    if (parsed.accessKey && !await hasLobbyE2eKey(parsed)) {
-      setLobbyMode('join');
-      const input = document.getElementById('wp-lobby-join-input');
-      if (input) {
-        input.value = parsed.roomId;
-        input.focus();
-      }
-      setLobbyFeedback('wp-lobby-join-feedback', 'Paste the full invite link. Private rooms need the e2eKey in the link so chat stays encrypted.', 'warn');
-      return;
-    }
-    setLobbyFeedback('wp-lobby-join-feedback', 'Joining room...', 'pending');
-    const sent = await dispatchAction(WPConstants.ACTION.ROOM_JOIN, {
-      username: getLobbyUsername(),
+    return requestLobbyAction(WPConstants.ACTION.ROOM_JOIN, {
       roomId: parsed.roomId,
       accessKey: parsed.accessKey || undefined,
       e2eKey: parsed.e2eKey || undefined,
       preferDirectJoin: options.preferDirectJoin === true,
     }, event);
-    if (!isActionAccepted(sent) && document.getElementById('wp-lobby-join-feedback')?.dataset.pending === 'true') {
-      setLobbyFeedback('wp-lobby-join-feedback', 'Could not send join request.', 'warn');
-    }
   }
 
   function normalizeAccessKeyInput(value) {
@@ -934,6 +1071,7 @@ const WPOverlay = (() => {
       ? 'Hide WatchParty'
       : (inRoom ? 'Open WatchParty sidebar' : 'Open WatchParty');
     launcherButton.setAttribute('aria-label', launcherButton.title);
+    launcherButton.setAttribute('aria-expanded', String(open));
   }
 
   function updateChatTabBadge() {
@@ -971,7 +1109,8 @@ const WPOverlay = (() => {
     // name when returning so creating a room cannot restore the previous name.
     if (activePanel === 'room' && !nextInRoom) {
       const usernameInput = document.getElementById('wp-lobby-username');
-      if (usernameInput && document.activeElement !== usernameInput) {
+      if (usernameInput && lobbyNameDraft === null && !pendingPreferenceWrites.has(WPConstants.STORAGE.USERNAME)
+        && document.activeElement !== usernameInput) {
         usernameInput.value = getPreferredUsername();
       }
     }
@@ -1010,6 +1149,11 @@ const WPOverlay = (() => {
   function closeSidebar() {
     const sidebar = document.getElementById('wp-sidebar');
     if (!sidebar) return;
+    // Move focus before hiding the subtree so neither keyboard focus nor the
+    // accessibility tree can remain inside an off-screen drawer.
+    if (sidebar.contains(document.activeElement)) launcherButton?.focus({ preventScroll: true });
+    sidebar.inert = true;
+    sidebar.setAttribute('aria-hidden', 'true');
     sidebar.classList.add('wp-sidebar-hidden');
     updateContentMargin(false);
     closeFloatingPanels();
@@ -1019,6 +1163,8 @@ const WPOverlay = (() => {
   function openSidebar(panel = activePanel || getDefaultPanel()) {
     const sidebar = document.getElementById('wp-sidebar');
     if (!sidebar) return;
+    sidebar.inert = false;
+    sidebar.setAttribute('aria-hidden', 'false');
     sidebar.classList.remove('wp-sidebar-hidden');
     updateContentMargin(true);
     setActivePanel(panel, { clearUnread: panel === 'chat' });
@@ -1269,7 +1415,7 @@ const WPOverlay = (() => {
     overlay = document.createElement('div');
     overlay.id = 'wp-overlay';
     overlay.innerHTML = `
-      <div id="wp-sidebar" class="wp-sidebar-hidden">
+      <div id="wp-sidebar" class="wp-sidebar-hidden" inert aria-hidden="true">
         <div id="wp-header">
           <div id="wp-header-main">
             <span id="wp-title">WatchParty</span>
@@ -1608,7 +1754,10 @@ const WPOverlay = (() => {
     if (accepted) {
       lastSendTime = entry.started;
       if (entry.input && entry.input.value === entry.draft) entry.input.value = '';
-      dispatchAction(WPConstants.ACTION.ROOM_TYPING_SEND, { typing: false });
+      // Typing is transient best effort; its transport must not interrupt an
+      // already-confirmed chat message or create an unhandled rejection.
+      try { Promise.resolve(dispatchAction(WPConstants.ACTION.ROOM_TYPING_SEND, { typing: false })).catch(() => {}); }
+      catch { /* the next typing expiry already clears this ephemeral hint */ }
       resetTypingInputState();
       const remaining = Math.max(0, 3000 - (Date.now() - lastSendTime));
       setSendButtonDisabled(remaining > 0);
@@ -1665,6 +1814,10 @@ const WPOverlay = (() => {
     const previousRoomId = cachedRoomState?.id;
     if (previousRoomId !== roomState?.id) {
       roomUiGeneration += 1;
+      finishLobbyAction(lobbyActionRequest);
+      removeCatchUpButton();
+      hostTransferRequest = null;
+      pendingReactions.clear();
       roomControlsPending = null;
       accessKeySavePending = null;
       clearTimeout(roomCodeCopyTimer);
@@ -1929,6 +2082,7 @@ const WPOverlay = (() => {
       container.dataset.shellReady = 'true';
 
       const saveName = (event) => persistDisplayName(container.querySelector('#wp-settings-username')?.value || '', event);
+      container.querySelector('#wp-settings-username')?.addEventListener('input', event => { displayNameDraft = event.target.value; });
       container.querySelector('#wp-settings-save-name')?.addEventListener('click', saveName);
       bindInputFieldGuards(container.querySelector('#wp-settings-username'), {
         allowEnterSubmit: true,
@@ -1936,43 +2090,47 @@ const WPOverlay = (() => {
       });
       container.querySelector('#wp-settings-compact')?.addEventListener('change', (event) => {
         if (!isTrustedUserEvent(event)) return;
-        WPRuntimeState.set({ [WPConstants.STORAGE.COMPACT_CHAT]: !!event.target.checked }).catch(() => {});
+        void saveLocalPreference(WPConstants.STORAGE.COMPACT_CHAT, !!event.target.checked);
       });
       container.querySelector('#wp-settings-sound')?.addEventListener('change', (event) => {
         if (!isTrustedUserEvent(event)) return;
-        WPRuntimeState.set({ [WPConstants.STORAGE.REACTION_SOUND]: !!event.target.checked }).catch(() => {});
+        void saveLocalPreference(WPConstants.STORAGE.REACTION_SOUND, !!event.target.checked);
       });
       container.querySelector('#wp-settings-floating')?.addEventListener('change', (event) => {
         if (!isTrustedUserEvent(event)) return;
-        WPRuntimeState.set({ [WPConstants.STORAGE.FLOATING_REACTIONS]: !!event.target.checked }).catch(() => {});
+        void saveLocalPreference(WPConstants.STORAGE.FLOATING_REACTIONS, !!event.target.checked);
       });
       container.querySelectorAll('.wp-color-btn').forEach((button) => {
         button.addEventListener('click', (event) => {
           if (!isTrustedUserEvent(event)) return;
-          WPRuntimeState.set({ [WPConstants.STORAGE.ACCENT_COLOR]: button.dataset.color || '#6366f1' }).catch(() => {});
+          void saveLocalPreference(WPConstants.STORAGE.ACCENT_COLOR, button.dataset.color || '#6366f1');
         });
       });
     }
 
     const displayName = getPreferredUsername();
     const usernameInput = container.querySelector('#wp-settings-username');
-    if (usernameInput && document.activeElement !== usernameInput && usernameInput.value !== displayName) {
+    if (usernameInput && displayNameDraft === null && !pendingPreferenceWrites.has(WPConstants.STORAGE.USERNAME)
+        && document.activeElement !== usernameInput && usernameInput.value !== displayName) {
       usernameInput.value = displayName;
     }
 
     const compactToggle = container.querySelector('#wp-settings-compact');
-    if (compactToggle && compactToggle.checked !== !!localPreferences.compactChat) {
-      compactToggle.checked = !!localPreferences.compactChat;
+    const compactValue = pendingPreferenceWrites.get(WPConstants.STORAGE.COMPACT_CHAT)?.value ?? localPreferences.compactChat;
+    if (compactToggle && compactToggle.checked !== !!compactValue) {
+      compactToggle.checked = !!compactValue;
     }
 
     const soundToggle = container.querySelector('#wp-settings-sound');
-    if (soundToggle && soundToggle.checked !== !!localPreferences.reactionSound) {
-      soundToggle.checked = !!localPreferences.reactionSound;
+    const soundValue = pendingPreferenceWrites.get(WPConstants.STORAGE.REACTION_SOUND)?.value ?? localPreferences.reactionSound;
+    if (soundToggle && soundToggle.checked !== !!soundValue) {
+      soundToggle.checked = !!soundValue;
     }
 
     const floatingToggle = container.querySelector('#wp-settings-floating');
-    if (floatingToggle && floatingToggle.checked !== !!localPreferences.floatingReactions) {
-      floatingToggle.checked = !!localPreferences.floatingReactions;
+    const floatingValue = pendingPreferenceWrites.get(WPConstants.STORAGE.FLOATING_REACTIONS)?.value ?? localPreferences.floatingReactions;
+    if (floatingToggle && floatingToggle.checked !== !!floatingValue) {
+      floatingToggle.checked = !!floatingValue;
     }
 
     container.querySelectorAll('.wp-color-btn').forEach((button) => {
@@ -1980,6 +2138,7 @@ const WPOverlay = (() => {
       button.classList.toggle('is-active', isActive);
       button.setAttribute('aria-pressed', isActive ? 'true' : 'false');
     });
+    refreshPreferenceBusyState();
   }
 
   function getDirectStreamUrl(roomState) {
@@ -2050,7 +2209,15 @@ const WPOverlay = (() => {
     return { label, title };
   }
 
+  function refreshHostTransferButtons() {
+    for (const button of document.getElementById('wp-users')?.querySelectorAll('.wp-transfer-btn') || []) {
+      button.disabled = !!hostTransferRequest || !cachedIsHost || !cachedWsConnected;
+      button.setAttribute('aria-busy', String(!!hostTransferRequest));
+    }
+  }
+
   function renderUsersList(usersDiv, roomState, userId, isHost) {
+    refreshHostTransferButtons();
     const usersKey = roomState.users.map(u => `${u.id}:${u.name || ''}:${u.status}:${u.playbackStatus}:${u.playbackTime ?? ''}:${u.sessionId ?? ''}`).join(',') + `:${roomState.owner}:${roomState.ownerSessionId ?? ''}:${isHost}`;
     if (renderCache.lastUsersKey === usersKey) return;
     renderCache.lastUsersKey = usersKey;
@@ -2109,10 +2276,30 @@ const WPOverlay = (() => {
       }
       usersDiv.appendChild(row);
     }
-    usersDiv.onclick = (e) => {
-      if (!isTrustedUserEvent(e)) return;
+    refreshHostTransferButtons();
+    usersDiv.onclick = async (e) => {
+      if (!isTrustedUserEvent(e) || !cachedIsHost || !cachedWsConnected || hostTransferRequest) return;
       const btn = e.target.closest('.wp-transfer-btn');
-      if (btn?.dataset.uid) dispatchAction(WPConstants.ACTION.ROOM_OWNERSHIP_TRANSFER, { targetUserId: btn.dataset.uid }, e);
+      if (!btn?.dataset.uid || !cachedRoomState?.users?.some(user => user.id === btn.dataset.uid)) return;
+      const entry = { generation: roomUiGeneration, roomId: cachedRoomState.id, targetUserId: btn.dataset.uid };
+      hostTransferRequest = entry;
+      refreshHostTransferButtons();
+      const isCurrent = () => hostTransferRequest === entry && entry.generation === roomUiGeneration;
+      try {
+        const result = await requestAction(WPConstants.ACTION.ROOM_OWNERSHIP_TRANSFER, {
+          roomId: entry.roomId, targetUserId: entry.targetUserId,
+        }, e);
+        if (isCurrent() && cachedIsHost) {
+          showToast(isActionAccepted(result) ? 'Host transfer requested.' : (result?.error || 'Could not transfer host. Please try again.'), 3000);
+        }
+      } catch {
+        if (isCurrent() && cachedIsHost) showToast('Could not transfer host. Please try again.', 3000);
+      } finally {
+        if (isCurrent()) {
+          hostTransferRequest = null;
+          refreshHostTransferButtons();
+        }
+      }
     };
   }
 
@@ -2509,7 +2696,7 @@ const WPOverlay = (() => {
 
   // --- Catch-up button (shown when user is behind host) ---
   function showCatchUpButton(drift) {
-    if (Math.abs(drift) < 5) {
+    if (!syncIndicatorAvailable || cachedIsHost || !Number.isFinite(drift) || Math.abs(drift) < 5) {
       if (renderCache.catchUpVisible) removeCatchUpButton();
       return;
     }
@@ -2517,19 +2704,36 @@ const WPOverlay = (() => {
     if (!btn) {
       btn = document.createElement('button');
       btn.id = 'wp-catchup-btn';
-      btn.addEventListener('click', (event) => {
-        if (!isTrustedUserEvent(event)) return;
-        dispatchAction(WPConstants.ACTION.ROOM_PLAYBACK_REQUEST_SYNC, {}, event);
-        removeCatchUpButton();
+      btn.addEventListener('click', async (event) => {
+        if (!isTrustedUserEvent(event) || catchUpRequest || !syncIndicatorAvailable || cachedIsHost) return;
+        const entry = { roomId: cachedRoomState?.id, generation: roomUiGeneration, button: btn };
+        catchUpRequest = entry;
+        btn.disabled = true;
+        btn.setAttribute('aria-busy', 'true');
+        const isCurrent = () => catchUpRequest === entry && entry.generation === roomUiGeneration && btn.isConnected;
+        try {
+          const result = await requestAction(WPConstants.ACTION.ROOM_PLAYBACK_REQUEST_SYNC, { roomId: entry.roomId }, event);
+          if (!isCurrent()) return;
+          if (isActionAccepted(result)) removeCatchUpButton();
+          else showToast(result?.error || 'Could not request playback sync. Please try again.', 3000);
+        } catch {
+          if (isCurrent()) showToast('Could not request playback sync. Please try again.', 3000);
+        } finally {
+          if (isCurrent()) {
+            catchUpRequest = null;
+            btn.disabled = false;
+            btn.setAttribute('aria-busy', 'false');
+          }
+        }
       });
       document.getElementById('wp-overlay')?.appendChild(btn);
     }
     const secs = Math.abs(drift).toFixed(0);
-    const label = `⚡ Catch up (${secs}s behind)`;
+    const label = `⚡ Catch up (${secs}s ${drift < 0 ? 'ahead' : 'behind'})`;
     renderCache.catchUpVisible = true;
     if (renderCache.lastCatchUpLabel === label) return;
     renderCache.lastCatchUpLabel = label;
-    btn.textContent = `⚡ Catch up (${secs}s behind)`;
+    btn.textContent = label;
   }
 
 
@@ -2540,6 +2744,8 @@ const WPOverlay = (() => {
     cachedUserId = null;
     cachedSessionId = null;
     localPreferences.username = '';
+    displayNameDraft = null;
+    lobbyNameDraft = null;
     pendingActions.length = 0;
     clearUnread();
     for (const id of ['wp-lobby-username', 'wp-settings-username']) {

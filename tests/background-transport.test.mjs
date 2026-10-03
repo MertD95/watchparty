@@ -27,11 +27,14 @@ function loadBackground({ realTimers = false } = {}) {
     storage: { local: area(local), session: area(session) },
     tabs: {
       async get(tabId) { if (!tabs.has(tabId)) throw new Error('No such tab'); return tabs.get(tabId); },
+      async update(tabId, values) { if (!tabs.has(tabId)) throw new Error('No such tab'); Object.assign(tabs.get(tabId), values); return tabs.get(tabId); },
+      async create(values) { const tab = { id: 1 + Math.max(0, ...tabs.keys()), ...values }; tabs.set(tab.id, tab); return tab; },
       async query() { return [...tabs.values()]; },
       async sendMessage(tabId, message) { calls.push({ tabId, message }); return { handled: true }; },
       onRemoved: { addListener(handler) { listeners.removed = handler; } },
     },
     action: { setBadgeBackgroundColor() {}, setBadgeText() {}, onClicked: { addListener() {} } },
+    windows: { async update() {} },
   };
   const context = vm.createContext({ chrome, console: { warn() {} }, URL, structuredClone, crypto: { randomUUID: () => 'id' },
     setTimeout: realTimers ? setTimeout : (callback) => { queueMicrotask(callback); return 1; }, clearTimeout });
@@ -329,4 +332,189 @@ test('clipboard timeout covers an offscreen document that never acknowledges cop
   const result = await vm.runInContext("copyToClipboard('diagnostics')", context);
   assert.equal(result.ok, false);
   assert.match(result.error, /Clipboard did not respond/);
+});
+
+async function runBackgroundAction(env, action, fields = {}) {
+  env.context.websiteCommand = { action: env.constants.ACTION[action], ...fields };
+  return vm.runInContext('new Promise(resolve => messageHandlers[websiteCommand.action](websiteCommand, {}, resolve))', env.context);
+}
+
+for (const action of ['ROOM_CREATE', 'ROOM_JOIN']) {
+  for (const rejection of [{ handled: false, error: 'The room changed.' }, { handled: true, ok: false, error: 'Request refused.' }]) {
+    test(`${action} preserves controller rejection and never clears or replaces the pending intent`, async () => {
+      const env = loadBackground();
+      const pending = env.constants.BOOTSTRAP_ROOM_INTENT.buildJoin({ roomId: 'earlier-room', username: 'Alice' });
+      env.session.wpBootstrapRoomIntent = pending;
+      env.session.currentRoom = 'earlier-room';
+      env.chrome.tabs.sendMessage = async () => rejection;
+      const result = await runBackgroundAction(env, action, { roomId: 'new-room', username: 'Alice' });
+      assert.equal(result.ok, false);
+      assert.equal(result.error, rejection.error);
+      assert.equal(env.session.wpBootstrapRoomIntent.roomId, 'earlier-room');
+      assert.equal(env.session.currentRoom, 'earlier-room');
+    });
+  }
+  test(`${action} without a Stremio tab stages one accepted intent without pretending membership`, async () => {
+    const env = loadBackground();
+    env.tabs.clear();
+    vm.runInContext('knownStremioTabIds.clear()', env.context);
+    const result = await runBackgroundAction(env, action, { roomId: 'queued-room', username: 'Alice', public: true });
+    assert.equal(result.ok, true);
+    assert.equal(result.staged, true);
+    assert.equal(result.needsStremio, true);
+    assert.equal(result.hasStremioTab, false);
+    assert.equal(env.session.wpBootstrapRoomIntent.action, env.constants.ACTION[action]);
+    assert.equal(env.session.currentRoom ?? null, null);
+    assert.equal(env.session.wpRoomState ?? null, null);
+  });
+}
+
+test('a nameless website invite does not erase the existing extension display name', async () => {
+  const env = loadBackground();
+  env.local.wpUsername = 'Saved Alice';
+  const result = await runBackgroundAction(env, 'ROOM_JOIN', { roomId: 'invite-room', username: '' });
+  assert.equal(result.ok, true);
+  assert.equal(env.local.wpUsername, 'Saved Alice');
+});
+
+test('malformed encryption keys are rejected before background storage or controller dispatch', async () => {
+  const env = loadBackground();
+  const result = await runBackgroundAction(env, 'ROOM_JOIN', { roomId: 'private-room', e2eKey: 'A'.repeat(16) });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /encryption key is invalid/);
+  assert.equal(env.session['wpRoomE2eKey:private-room'], undefined);
+  assert.equal(env.calls.length, 0);
+});
+
+test('private direct joins preserve their keys and preference when handed off or staged', async () => {
+  for (const staged of [false, true]) {
+    const env = loadBackground();
+    if (staged) { env.tabs.clear(); vm.runInContext('knownStremioTabIds.clear()', env.context); }
+    const fields = { roomId: 'private-room', username: 'Alice', accessKey: 'A'.repeat(32), e2eKey: 'B'.repeat(43), preferDirectJoin: true };
+    const result = await runBackgroundAction(env, 'ROOM_JOIN', fields);
+    assert.equal(result.ok, true);
+    const command = staged ? env.session.wpBootstrapRoomIntent : env.calls[0].message;
+    assert.equal(command.roomId, fields.roomId);
+    assert.equal(command.preferDirectJoin, true);
+    assert.equal(env.local['wpRoomAccessKey:private-room'].value, fields.accessKey);
+    assert.equal(env.session['wpRoomE2eKey:private-room'], fields.e2eKey);
+    assert.equal(JSON.stringify(result).includes(fields.accessKey), false);
+  }
+});
+
+test('website settings action returns a visible runtime failure rather than claiming the page opened', async () => {
+  const env = loadBackground();
+  env.chrome.runtime.openOptionsPage = async () => { throw new Error('Settings unavailable'); };
+  const result = await runBackgroundAction(env, 'APP_OPTIONS_OPEN');
+  assert.equal(result.ok, false);
+  assert.match(result.error, /Settings unavailable/);
+});
+
+test('launching Stremio navigates an existing tab to the requested catalog route', async () => {
+  const env = loadBackground();
+  const url = 'https://web.stremio.com/#/detail/movie/tt12345';
+  const result = await runBackgroundAction(env, 'APP_STREMIO_OPEN', { url });
+  assert.equal(result.ok, true);
+  assert.equal(result.openedStremio, false);
+  assert.equal(env.tabs.get(1).url, url);
+  assert.equal(env.tabs.get(1).active, true);
+});
+
+test('launching Stremio without tabs opens one tab and untrusted routes are refused', async () => {
+  const env = loadBackground();
+  env.tabs.clear();
+  vm.runInContext('knownStremioTabIds.clear()', env.context);
+  assert.equal((await runBackgroundAction(env, 'APP_STREMIO_OPEN', { url: 'https://example.org/' })).ok, false);
+  assert.equal(env.tabs.size, 0);
+  const result = await runBackgroundAction(env, 'APP_STREMIO_OPEN');
+  assert.equal(result.ok, true);
+  assert.equal(result.openedStremio, true);
+  assert.equal(env.tabs.size, 1);
+  assert.equal([...env.tabs.values()][0].url, 'https://web.stremio.com');
+});
+
+test('a live tab focus or navigation rejection is reported and does not revoke its controller lease', async () => {
+  for (const navigate of [false, true]) {
+    const env = loadBackground();
+    env.session.wpControllerTab = env.constants.CONTROLLER_TAB_LEASE.build({ leaseId: 'live-controller', tabId: 1 });
+    env.chrome.tabs.update = async () => { throw new Error('Tab update denied'); };
+    const result = await runBackgroundAction(env, 'APP_STREMIO_OPEN', navigate ? { url: 'https://web.stremio.com/#/detail/movie/tt12345' } : {});
+    assert.equal(result.ok, false);
+    assert.match(result.error, /Tab update denied/);
+    assert.equal(env.session.wpControllerTab?.leaseId, 'live-controller');
+    assert.equal(env.tabs.size, 2);
+  }
+});
+
+test('a tab closed during launch safely falls through to an existing Stremio tab', async () => {
+  const env = loadBackground();
+  const originalUpdate = env.chrome.tabs.update;
+  env.chrome.tabs.update = async (tabId, values) => {
+    if (tabId === 1) { env.tabs.delete(1); throw new Error('No such tab'); }
+    return originalUpdate(tabId, values);
+  };
+  const result = await runBackgroundAction(env, 'APP_STREMIO_OPEN');
+  assert.equal(result.ok, true);
+  assert.equal(result.openedStremio, false);
+  assert.equal(env.tabs.get(2).active, true);
+});
+
+test('resume focuses the persisted controller, not a passive tab', async () => {
+  const env = loadBackground();
+  env.session.wpControllerTab = env.constants.CONTROLLER_TAB_LEASE.build({ leaseId: 'controller-two', tabId: 2 });
+  env.session.wpRoomState = { id: 'live-room' };
+  env.session.currentRoom = 'live-room';
+  const result = await runBackgroundAction(env, 'ROOM_RESUME', { roomId: 'live-room' });
+  assert.equal(result.ok, true);
+  assert.equal(env.calls[0].tabId, 2);
+  assert.equal(env.calls[0].message.action, env.constants.ACTION.OPEN_SIDEBAR);
+});
+
+test('resume does not claim success without room controls acknowledging and keeps a live replacement lease', async () => {
+  for (const response of [undefined, { handled: false }, { handled: true, ok: false }]) {
+    const env = loadBackground();
+    env.session.wpControllerTab = env.constants.CONTROLLER_TAB_LEASE.build({ leaseId: 'controller', tabId: 1 });
+    env.session.wpRoomState = { id: 'live-room' };
+    env.session.currentRoom = 'live-room';
+    env.chrome.tabs.sendMessage = async () => response;
+    const result = await runBackgroundAction(env, 'ROOM_RESUME', { roomId: 'live-room' });
+    assert.equal(result.ok, false);
+    assert.match(result.error, /Refresh the Stremio tab/);
+    assert.equal(env.session.wpControllerTab?.leaseId, 'controller');
+  }
+});
+
+test('resume gives an actionable error when no room remains', async () => {
+  const env = loadBackground();
+  const result = await runBackgroundAction(env, 'ROOM_RESUME');
+  assert.equal(result.ok, false);
+  assert.match(result.error, /Join a room first/);
+  assert.equal(env.calls.length, 0);
+});
+
+test('server join errors reach website tabs with their room and command correlation intact', async () => {
+  const env = loadBackground();
+  env.tabs.set(3, { id: 3, url: 'https://watchparty.mertd.me' });
+  vm.runInContext("rememberSurfaceTab('watchparty', 3)", env.context);
+  env.context.roomError = { code: 'ROOM_NOT_FOUND', roomId: 'missing-room', command: 'room.join', clientRequestId: 'server-correlation' };
+  vm.runInContext('messageHandlers[WPConstants.ACTION.ROOM_ERROR_EVENT]({ payload: roomError })', env.context);
+  for (let i = 0; i < 30; i++) await Promise.resolve();
+  const delivery = env.calls.find(call => call.tabId === 3 && call.message.action === env.constants.ACTION.STATUS_UPDATED);
+  assert.deepEqual(delivery.message.payload.lastRoomError, env.context.roomError);
+});
+
+test('leave refusal is never reported as success and preserves the live room and pending target', async () => {
+  for (const response of [{ handled: false, error: 'The room changed.' }, { handled: true, ok: false, error: 'Leave denied.' }]) {
+    const env = loadBackground();
+    env.session.wpRoomState = { id: 'new-room' };
+    env.session.currentRoom = 'new-room';
+    env.session.wpBootstrapRoomIntent = env.constants.BOOTSTRAP_ROOM_INTENT.buildJoin({ roomId: 'pending-room' });
+    env.chrome.tabs.sendMessage = async () => response;
+    const result = await runBackgroundAction(env, 'ROOM_LEAVE', { roomId: 'old-room' });
+    assert.equal(result.ok, false);
+    assert.equal(result.error, response.error);
+    assert.equal(env.session.currentRoom, 'new-room');
+    assert.equal(env.session.wpRoomState.id, 'new-room');
+    assert.equal(env.session.wpBootstrapRoomIntent.roomId, 'pending-room');
+  }
 });

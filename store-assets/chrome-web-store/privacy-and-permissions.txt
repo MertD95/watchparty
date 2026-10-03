@@ -1,0 +1,67 @@
+WATCHPARTY 2.1.0 — COPY-READY PRIVACY FIELDS
+
+SINGLE PURPOSE
+Let people watch together on supported Stremio Web pages through shared rooms with synchronized playback and in-room communication.
+
+PERMISSIONS
+declarativeNetRequestWithHostAccess
+Apply packaged request/response header rules only to HTTP requests to the local Stremio service on localhost or 127.0.0.1 port 11470, initiated by supported Stremio Web domains. Chrome's initiator-domain filter includes subdomains, but explicit page host access is restricted to the three exact supported Stremio hosts. This allows local playback and service requests. The rules do not read request bodies, affect arbitrary websites or ports, block advertising, or redirect browsing.
+
+offscreen
+Create an offscreen document only when needed to copy a room invite or content link after a user chooses a copy action. The service worker has no document or clipboard surface of its own.
+
+storage
+Keep the user's display name, preferences, room/session recovery state and private-room access keys available across extension surfaces. Private chat keys use memory-backed session storage rather than persistent local storage; Stremio authentication state remains in service-worker memory.
+
+scripting
+Restore packaged WatchParty controls in already-open supported tabs after installation or an update when possible; a page refresh may still be required. No remotely hosted executable code is injected. Unpacked development builds also use this API for explicitly granted local website access, which is removed from the store manifest.
+
+sidePanel
+Provide the WatchParty room and chat companion in Chrome's side panel when the user opens the extension.
+
+hostPermissions
+The production package retains localhost:11470 and 127.0.0.1:11470 host patterns for the Stremio service, including availability and compatibility checks, plus exact HTTPS host access to web.stremio.com, web.strem.io and app.strem.io so local-service header rules and packaged-script recovery can operate on those supported pages. Packaged content scripts run on these Stremio hosts and watchparty.mertd.me to provide the sidebar and website-to-extension joining. Development backend/website permissions are excluded from the store package. The extension does not request all-sites or browser-history API access.
+
+REMOTE CODE
+Does this extension use remotely hosted code? No.
+Executable extension code, styles and emoji-picker code/data are bundled in the extension. Remote room messages, title metadata and user-shared image URLs are data, not downloaded executable code.
+
+DATA TYPES USED BY THE EXTENSION/SERVICE
+Retain/check these seven categories; use the explanations below if asked.
+These categories describe data used to provide the product, not all data
+being sent to one server. The privacy policy explains storage and recipients.
+
+Personally Identifiable Information
+User-chosen display name and persistent WatchParty session identifiers used for participation and recovery. No separate WatchParty email/password account is required.
+
+Authentication Information
+Private-room access keys, session ownership tokens and browser-memory chat encryption keys. Stremio authentication information is read from the supported Stremio page, retained only in worker memory and used with Stremio's API for the user's addon context; it is not sent to the WatchParty room backend.
+
+Personal Communications
+Room chat, reactions and GIF image links. Public-room chat is plaintext to the room service; private-room chat is client-encrypted. Room membership and playback events are not end-to-end encrypted.
+
+Location
+Connection IP addresses are processed by hosting and the room service for connectivity, security and rate limiting. The extension does not request GPS or device geolocation.
+
+Web History
+Only supported Stremio page/player routes and URLs needed to identify and share the active title or compatible playback source; not general browsing history.
+
+User Activity
+In-room playback controls, timestamps, ready checks and connection/presence events needed for synchronization and recovery; not unrelated browsing or advertising analytics.
+
+Website Content
+Current Stremio title/player metadata, relevant page storage and addon/runtime context, plus user-shared links and bookmarks needed for the visible room features.
+
+Not collected for product features:
+Health information; Financial and payment information.
+
+LIMITED USE / FINAL DECLARATIONS
+Data is used for WatchParty's stated room/synchronization features and security. It is not sold, used for advertising or transferred for creditworthiness or lending decisions. Apply the dashboard's final declarations against the submitted code and deployed service, not a blanket 'no user data' claim.
+
+Read Google's actual declarations before checking them. The current code
+supports statements that data is not sold to third parties, is not used or
+transferred for purposes unrelated to the stated single purpose, and is not
+used or transferred for creditworthiness or lending. Do not certify unseen
+or inaccurate claims.
+
+Save these as draft changes; do not submit review or publish.

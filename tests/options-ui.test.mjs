@@ -67,7 +67,7 @@ function optionsRuntime({ installed = true, packaged = false, initialStatus = nu
         sendMessage: async message => { messages.push(message); return message.action === 'status.get' ? initialStatus : { ok: true }; },
       },
       storage: { onChanged: { addListener() {} } },
-      tabs: { create() {} },
+      tabs: { async create() { return { id: 1 }; } },
     },
     WPRuntimeState: { get: preferenceRead, set: async () => {}, remove: async keys => { removed.push(...keys); } },
     WPRoomKeys: { clearAll: async () => { keysCleared += 1; return { count: 2 }; } },
@@ -241,4 +241,60 @@ test('late saved preference read does not replace a newer live room snapshot', a
   assert.equal(ui.visible('session-card'), true);
   assert.equal(ui.nodes.get('session-title').textContent, 'Live room');
   assert.equal(ui.visible('btn-resume-room'), true);
+});
+
+test('options resume carries the displayed room and surfaces background refusal', async () => {
+  const ui = optionsRuntime();
+  ui.render({ room: { id: 'old-room' }, currentRoomId: 'old-room' });
+  ui.run("chrome.runtime.sendMessage = async message => { fixture = message; return { ok: false, error: 'The room changed.' }; }");
+  await ui.run('resumeRoom()');
+  assert.equal(ui.run('fixture.roomId'), 'old-room');
+  assert.match(ui.nodes.get('launcher-feedback').textContent, /room changed/);
+  assert.equal(ui.nodes.get('btn-resume-room').disabled, false);
+});
+
+test('options launcher failures and missing replies are visible without opening duplicate fallback tabs', async () => {
+  for (const handler of ["async () => undefined", "async () => ({ ok: false, error: 'Launch denied' })", "() => { throw new Error('Launch denied'); }"]) {
+    const ui = optionsRuntime();
+    ui.run(`chrome.runtime.sendMessage = ${handler}; chrome.tabs.create = () => { throw new Error('Must not retry launch'); };`);
+    await ui.run('openStremio()');
+    assert.match(ui.nodes.get('launcher-feedback').textContent, /Launch denied|Could not open/);
+    assert.equal(ui.nodes.get('btn-open-stremio').disabled, false);
+  }
+});
+
+test('options browse reports tab creation failure and successful launches are acknowledged', async () => {
+  const ui = optionsRuntime();
+  await ui.run('openWatchParty()');
+  assert.equal(ui.nodes.get('launcher-feedback').textContent, 'Opened.');
+  ui.run("chrome.tabs.create = async () => { throw new Error('Tab creation blocked'); }");
+  await ui.run('openWatchParty()');
+  assert.match(ui.nodes.get('launcher-feedback').textContent, /Tab creation blocked/);
+});
+
+test('options pending resume cannot double dispatch and a late response cannot claim success for a newer room', async () => {
+  const ui = optionsRuntime();
+  ui.render({ room: { id: 'old-room' } });
+  ui.run('let finishLaunch; let launchCount = 0; chrome.runtime.sendMessage = () => { launchCount++; return new Promise(resolve => { finishLaunch = resolve; }); };');
+  const work = ui.run('resumeRoom()');
+  await flush();
+  await ui.run('resumeRoom()');
+  assert.equal(ui.run('launchCount'), 1);
+  ui.render({ room: { id: 'new-room' } });
+  assert.equal(ui.nodes.get('btn-resume-room').disabled, true);
+  ui.run('finishLaunch({ ok: true })');
+  await work;
+  assert.match(ui.nodes.get('launcher-feedback').textContent, /room changed/);
+  assert.equal(ui.nodes.get('btn-resume-room').disabled, false);
+});
+
+test('options unresponsive launch times out and restores controls', async () => {
+  const ui = optionsRuntime();
+  ui.run('let timeoutLaunch; setTimeout = callback => { timeoutLaunch = callback; return 1; }; chrome.runtime.sendMessage = () => new Promise(() => {});');
+  const work = ui.run('openStremio()');
+  await flush();
+  ui.run('timeoutLaunch()');
+  await work;
+  assert.match(ui.nodes.get('launcher-feedback').textContent, /Check Stremio before retrying/);
+  assert.equal(ui.nodes.get('btn-open-stremio').disabled, false);
 });

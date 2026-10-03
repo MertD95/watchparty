@@ -7,7 +7,8 @@ const html = fs.readFileSync(new URL('../landing/index.html', import.meta.url), 
 const source = fs.readFileSync(new URL('../landing/landing.js', import.meta.url), 'utf8');
 const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
 
-function landing({ installed = true, pathname = '/', hash = '', fetchResult, fetchError, fetchHandler, storageBlocked = false } = {}) {
+function landing({ installed = true, pathname = '/', hash = '', fetchResult, fetchError, fetchHandler, storageBlocked = false,
+  actionResults = true, acknowledgeActions = true, actionHandler } = {}) {
   const nodes = new Map();
   const sent = [];
   const navigated = [];
@@ -77,6 +78,7 @@ function landing({ installed = true, pathname = '/', hash = '', fetchResult, fet
   const skipLinks = [...html.matchAll(/<a\b[^>]*class="skip-link"[^>]*>/g)].map(match => new Element('a', match[0]));
   const root = new Element('html');
   if (installed) root.setAttribute('data-watchparty-ext', '1');
+  if (actionResults) root.setAttribute('data-watchparty-action-results', '1');
   nodes.get('rooms-list').appendChild(nodes.get('rooms-empty'));
   for (const id of ['uuid-input', 'uuid-cancel-btn', 'uuid-submit-btn']) nodes.get('uuid-modal').appendChild(nodes.get(id));
   document = {
@@ -99,7 +101,17 @@ function landing({ installed = true, pathname = '/', hash = '', fetchResult, fet
       windowListeners.get(type).add(handler);
     },
     removeEventListener(type, handler) { windowListeners.get(type)?.delete(handler); },
-    postMessage: (message, origin) => sent.push({ ...message, targetOrigin: origin }),
+    postMessage: (message, origin) => {
+      sent.push({ ...message, targetOrigin: origin });
+      if (acknowledgeActions && message.requestId && message.type !== 'watchparty-ext-request') {
+        Promise.resolve().then(async () => {
+          const result = actionHandler ? await actionHandler(message) : { ok: true };
+          if (!result) return;
+          for (const listener of [...(windowListeners.get('message') || [])]) listener({ source: window, origin,
+            data: { type: 'watchparty-ext-action-result', requestId: message.requestId, action: message.type, ...result } });
+        });
+      }
+    },
     __watchpartyCaptureNavigation: url => navigated.push(url),
     __watchpartyCaptureAlert: message => alerts.push(message),
   };
@@ -128,6 +140,9 @@ function landing({ installed = true, pathname = '/', hash = '', fetchResult, fet
     status: value => context.updateLandingPresence(value),
     snapshot: value => context.applyRoomsSnapshot(value),
     message: (data, overrides = {}) => emit(windowListeners, 'message', { source: window, origin: location.origin, data, ...overrides }),
+    confirmMembership: roomId => emit(windowListeners, 'message', { source: window, origin: location.origin,
+      data: { type: 'watchparty-ext-status', data: { room: { id: roomId, users: [{ id: 'member', sessionId: 'session' }] },
+        userId: 'member', sessionId: 'session', wsConnected: true, bootstrapPending: false } } }),
     windowEvent: (type, event = {}) => emit(windowListeners, type, event),
     documentEvent: (type, event = {}) => emit(documentListeners, type, event),
     timers: delay => {
@@ -153,12 +168,14 @@ test('typing spaces and later extension status cannot overwrite a local display-
   assert.equal(input.value, 'New Person');
 });
 
-test('both invite entry buttons open the same dialog, and a public room ID needs no key', () => {
+test('both invite entry buttons open the same dialog, and a public room ID needs no key', async () => {
   const ui = landing();
   ui.nodes.get('hero-private-btn').focus(); ui.nodes.get('hero-private-btn').click();
   assert.equal(ui.nodes.get('uuid-modal').style.display, 'flex');
   ui.nodes.get('uuid-input').value = 'public-night';
   ui.nodes.get('uuid-submit-btn').click();
+  await flush();
+  ui.confirmMembership('public-night');
   const join = ui.sent.find(message => message.type === 'watchparty-join-room');
   assert.equal(join.roomId, 'public-night'); assert.equal(join.accessKey, undefined);
   assert.equal(ui.document.activeElement, ui.nodes.get('hero-private-btn'));
@@ -176,7 +193,7 @@ test('clearing a local name does not silently reuse an older extension identity'
   assert.match(ui.nodes.get('hero-profile-note').textContent, /display name/);
 });
 
-test('private joins reject another room invite or malformed URL, and preserve matching encryption keys', () => {
+test('private joins reject another room invite or malformed URL, and preserve matching encryption keys', async () => {
   const ui = landing();
   ui.context.openPrivateJoinModal({ roomId: 'private-night', metaId: 'tt123', metaType: 'movie' });
   const input = ui.nodes.get('uuid-input');
@@ -185,6 +202,8 @@ test('private joins reject another room invite or malformed URL, and preserve ma
   input.value = 'https://example.com/not-an-invite'; ui.context.submitUuid();
   assert.equal(ui.sent.filter(message => message.type === 'watchparty-join-room').length, 0);
   input.value = 'https://watchparty.mertd.me/r/private-night#accessKey=secret&e2eKey=cipher'; ui.context.submitUuid();
+  await flush();
+  ui.confirmMembership('private-night');
   const join = ui.sent.find(message => message.type === 'watchparty-join-room');
   assert.equal(join.roomId, 'private-night'); assert.equal(join.accessKey, 'secret'); assert.equal(join.e2eKey, 'cipher');
   assert.equal(input.value, '', 'close removes the pasted secret from the field');
@@ -267,7 +286,7 @@ test('a paginated HTTP snapshot cannot truncate an equal-revision full SSE list'
   assert.equal(ui.nodes.get('rooms-list').children.length, 3);
 });
 
-test('redirect validates origin/source and joins only once across duplicate readiness events', () => {
+test('redirect validates origin/source and joins only once across duplicate readiness events', async () => {
   const ui = landing({ installed: false, pathname: '/r/movie-night', hash: '#accessKey=secret&e2eKey=cipher' });
   assert.equal(ui.location.hash, '#accessKey=secret&e2eKey=cipher');
   ui.document.documentElement.setAttribute('data-watchparty-ext', '1');
@@ -276,6 +295,8 @@ test('redirect validates origin/source and joins only once across duplicate read
   assert.equal(ui.sent.filter(message => message.type === 'watchparty-join-room').length, 0);
   ui.documentEvent('watchparty-ext-ready');
   ui.message({ type: 'watchparty-ext-ready' }); ui.message({ type: 'watchparty-ext-profile' });
+  await flush();
+  ui.confirmMembership('movie-night');
   ui.timers(500);
   const joins = ui.sent.filter(message => message.type === 'watchparty-join-room');
   assert.equal(joins.length, 1); assert.equal(joins[0].accessKey, 'secret'); assert.equal(joins[0].e2eKey, 'cipher');
@@ -294,12 +315,14 @@ test('install help points to the store and explicit retry preserves invite keys 
   assert.equal(ui.storage.size, 1, 'invite keys never enter local storage');
 });
 
-test('normal refresh before installation preserves an invite and the eventual handoff scrubs it', () => {
+test('normal refresh before installation preserves an invite and the eventual handoff scrubs it', async () => {
   const original = landing({ installed: false, pathname: '/r/movie-night', hash: '#accessKey=secret&e2eKey=cipher' });
   original.timers(1200);
   assert.equal(original.sent.filter(message => message.type === 'watchparty-join-room').length, 0);
   assert.equal(original.storage.size, 1);
   const refreshed = landing({ pathname: '/r/movie-night', hash: original.location.hash });
+  await flush();
+  refreshed.confirmMembership('movie-night');
   const join = refreshed.sent.find(message => message.type === 'watchparty-join-room');
   assert.equal(join.accessKey, 'secret'); assert.equal(join.e2eKey, 'cipher');
   assert.equal(refreshed.location.hash, '');
@@ -318,14 +341,18 @@ test('skip navigation focuses the route content without replacing a pending invi
   }
 });
 
-test('an updated same-route invite starts a fresh handoff, without intercepting normal section anchors', () => {
+test('an updated same-route invite starts a fresh handoff, without intercepting normal section anchors', async () => {
   const ui = landing({ pathname: '/r/movie-night', hash: '#accessKey=old&e2eKey=old-cipher' });
+  await flush();
+  ui.confirmMembership('movie-night');
   assert.equal(ui.location.hash, '');
   ui.location.hash = '#rooms'; ui.windowEvent('hashchange');
   assert.equal(ui.navigated.includes('reload'), false);
   ui.location.hash = '#accessKey=new&e2eKey=new-cipher'; ui.windowEvent('hashchange');
   assert.equal(ui.navigated.at(-1), 'reload');
   const refreshed = landing({ pathname: '/r/movie-night', hash: ui.location.hash });
+  await flush();
+  refreshed.confirmMembership('movie-night');
   const join = refreshed.sent.find(message => message.type === 'watchparty-join-room');
   assert.equal(join.accessKey, 'new'); assert.equal(join.e2eKey, 'new-cipher');
   assert.equal(refreshed.location.hash, '');
@@ -380,6 +407,7 @@ test('late extension responses cannot restore an old room after a pushed leave u
 
 test('primary, settings and resume controls use the extension bridge with safe install fallbacks', () => {
   const installed = landing();
+  installed.status({ room: room('visible-room') });
   installed.nodes.get('hero-primary-btn').click();
   installed.nodes.get('hero-settings-btn').click();
   installed.nodes.get('hero-resume-btn').click();
@@ -395,13 +423,14 @@ test('primary, settings and resume controls use the extension bridge with safe i
   }
 });
 
-test('public room actions distinguish choosing a title from watching the host stream', () => {
+test('public room actions distinguish choosing a title from watching the host stream', async () => {
   for (const direct of [false, true]) {
     const ui = landing();
     ui.snapshot({ revision: 1, rooms: [room('watch-night', { hasDirectJoin: true, directJoinType: 'web-url',
       meta: { id: 'title/id', type: 'movie', name: 'Movie' } })] });
     const card = ui.nodes.get('rooms-list').children[1];
     card.__elements[direct ? 'directBtn' : 'joinBtn'].click();
+    await flush();
     const join = ui.sent.find(message => message.type === 'watchparty-join-room');
     assert.equal(join.roomId, 'watch-night'); assert.equal(join.preferDirectJoin, direct);
     assert.equal(ui.sent.find(message => message.type === 'watchparty-open-stremio').url,
@@ -448,7 +477,367 @@ test('blocked browser storage does not break controls, name entry or invite hand
   await ui.context.joinRoom('public-night', '', '');
   assert.equal(ui.sent.find(message => message.type === 'watchparty-join-room').username, 'New name');
   const redirect = landing({ storageBlocked: true, pathname: '/r/private-night', hash: '#accessKey=access&e2eKey=cipher' });
+  await flush();
+  redirect.confirmMembership('private-night');
   const join = redirect.sent.find(message => message.type === 'watchparty-join-room');
   assert.equal(join.accessKey, 'access'); assert.equal(join.e2eKey, 'cipher');
   assert.equal(redirect.location.hash, '');
+});
+
+test('extension actions require matching request, action, source and origin before accepting a reply', async () => {
+  const ui = landing({ acknowledgeActions: false });
+  const pending = ui.context.requestExtensionAction('watchparty-open-options');
+  const request = ui.sent.at(-1);
+  let settled = false; pending.then(() => { settled = true; });
+  const reply = { type: 'watchparty-ext-action-result', action: request.type, requestId: request.requestId, ok: true };
+  ui.message(reply, { origin: 'https://evil.example' }); ui.message(reply, { source: {} });
+  ui.message({ ...reply, requestId: 'wrong-request' }); ui.message({ ...reply, action: 'watchparty-join-room' });
+  await flush(); assert.equal(settled, false);
+  ui.message(reply); assert.equal((await pending).ok, true);
+});
+
+test('primary and settings buttons suppress duplicate clicks and surface rejection or missing acknowledgments', async () => {
+  for (const id of ['hero-primary-btn', 'hero-settings-btn']) {
+    const ui = landing({ acknowledgeActions: false });
+    const button = ui.nodes.get(id); button.click(); button.click();
+    const requests = ui.sent.filter(message => message.type !== 'watchparty-ext-request');
+    assert.equal(requests.length, 1);
+    assert.equal(button.disabled, true);
+    assert.equal(button.getAttribute('aria-busy'), 'true');
+    ui.message({ type: 'watchparty-ext-action-result', action: requests[0].type, requestId: requests[0].requestId,
+      ok: false, error: 'Stremio could not be opened.' });
+    await flush(); assert.equal(button.disabled, false);
+    assert.match(ui.nodes.get('website-action-status').textContent, /could not be opened/);
+    button.click(); ui.timers(9000); await flush();
+    assert.equal(button.disabled, false);
+    assert.match(ui.nodes.get('website-action-status').textContent, /No reply.*Check Stremio/);
+  }
+});
+
+test('return to room captures the displayed room and cannot invoke an unscoped resume', async () => {
+  const ui = landing(); ui.nodes.get('hero-resume-btn').click();
+  assert.equal(ui.sent.some(message => message.type === 'watchparty-resume-room'), false);
+  ui.status({ room: room('displayed-room'), wsConnected: false });
+  assert.match(ui.nodes.get('hero-room-pill').textContent, /Reconnecting/);
+  ui.nodes.get('hero-resume-btn').click();
+  const request = ui.sent.find(message => message.type === 'watchparty-resume-room');
+  assert.equal(request.roomId, 'displayed-room');
+  await flush();
+});
+
+test('public join rejection or timeout never opens Stremio and concurrent joins cannot replace its target', async () => {
+  const ui = landing({ acknowledgeActions: false });
+  const joining = ui.context.joinRoom('first-room', 'tt1', 'movie');
+  await ui.context.joinRoom('second-room', 'tt2', 'movie');
+  assert.equal(ui.sent.filter(message => message.type === 'watchparty-join-room').length, 1);
+  const request = ui.sent.find(message => message.type === 'watchparty-join-room');
+  ui.message({ type: 'watchparty-ext-action-result', action: request.type, requestId: request.requestId, ok: false, error: 'Room request rejected.' });
+  assert.equal(await joining, false);
+  assert.match(ui.nodes.get('rooms-action-status').textContent, /rejected/);
+  assert.equal(ui.sent.some(message => message.type === 'watchparty-open-stremio'), false);
+  const retrying = ui.context.joinRoom('first-room', '', ''); ui.timers(9000);
+  assert.equal(await retrying, false);
+  assert.equal(ui.sent.some(message => message.type === 'watchparty-open-stremio'), false);
+});
+
+test('private invite dispatch failure retains its keys and re-enables editing and explicit retry', async () => {
+  let reject = true;
+  const ui = landing({ actionHandler: message => message.type === 'watchparty-join-room' && reject
+    ? { ok: false, error: 'Could not contact the extension controller.' } : { ok: true } });
+  ui.nodes.get('hero-private-btn').click();
+  const input = ui.nodes.get('uuid-input');
+  input.value = 'https://watchparty.mertd.me/r/private-room#accessKey=key&e2eKey=cipher';
+  ui.nodes.get('uuid-submit-btn').click();
+  assert.equal(input.disabled, true); await flush();
+  assert.match(input.value, /accessKey=key/);
+  assert.equal(input.disabled, false); assert.equal(ui.nodes.get('uuid-submit-btn').disabled, false);
+  assert.equal(ui.nodes.get('uuid-modal').style.display, 'flex');
+  assert.match(ui.nodes.get('uuid-error').textContent, /controller/);
+  assert.equal(ui.sent.some(message => message.type === 'watchparty-open-stremio'), false);
+  reject = false; ui.nodes.get('uuid-submit-btn').click(); await flush();
+  ui.confirmMembership('private-room');
+  assert.equal(input.value, ''); assert.equal(ui.nodes.get('uuid-modal').style.display, 'none');
+});
+
+test('closing an in-flight invite prevents a late acknowledgment from navigating or changing a later dialog', async () => {
+  const ui = landing({ acknowledgeActions: false });
+  ui.nodes.get('hero-private-btn').click(); ui.nodes.get('uuid-input').value = 'first-room';
+  ui.nodes.get('uuid-submit-btn').click();
+  const request = ui.sent.find(message => message.type === 'watchparty-join-room');
+  ui.nodes.get('uuid-cancel-btn').click();
+  ui.message({ type: 'watchparty-ext-action-result', action: request.type, requestId: request.requestId, ok: true });
+  await flush();
+  assert.equal(ui.sent.some(message => message.type === 'watchparty-open-stremio'), false);
+  ui.nodes.get('rooms-private-btn').click();
+  assert.equal(ui.nodes.get('uuid-modal').style.display, 'flex');
+  assert.equal(ui.nodes.get('uuid-input').disabled, false);
+});
+
+test('redirect failures preserve fragment keys and retry only after an explicit user action', async () => {
+  let reject = true;
+  const ui = landing({ pathname: '/r/private-room', hash: '#accessKey=key&e2eKey=cipher',
+    actionHandler: message => message.type === 'watchparty-join-room' && reject ? { ok: false, error: 'No available controller.' } : { ok: true } });
+  await flush();
+  assert.equal(ui.location.hash, '#accessKey=key&e2eKey=cipher');
+  assert.match(ui.nodes.get('redirect-status').textContent, /No available controller/);
+  assert.equal(ui.nodes.get('redirect-retry-btn').hidden, false);
+  ui.message({ type: 'watchparty-ext-ready' }); ui.documentEvent('watchparty-ext-ready');
+  await flush(); assert.equal(ui.sent.filter(message => message.type === 'watchparty-join-room').length, 1);
+  reject = false; ui.nodes.get('redirect-retry-btn').click(); await flush();
+  ui.confirmMembership('private-room');
+  assert.equal(ui.sent.filter(message => message.type === 'watchparty-join-room').length, 2);
+  assert.equal(ui.location.hash, '');
+  assert.equal(ui.sent.filter(message => message.type === 'watchparty-open-stremio').length, 1);
+});
+
+test('redirect open failure offers a repeatable open control without repeating its accepted join', async () => {
+  const ui = landing({ pathname: '/r/movie-night', actionHandler: message => message.type === 'watchparty-open-stremio'
+    ? { ok: false, error: 'Opening Stremio failed.' } : { ok: true } });
+  await flush(); assert.match(ui.nodes.get('redirect-status').textContent, /Opening Stremio failed/);
+  ui.nodes.get('redirect-btn').click(); await flush();
+  assert.equal(ui.sent.filter(message => message.type === 'watchparty-join-room').length, 1);
+  assert.equal(ui.sent.filter(message => message.type === 'watchparty-open-stremio').length, 2);
+});
+
+test('missing action-result contract blocks all redirect mutations and preserves the invite for an update', async () => {
+  const ui = landing({ actionResults: false, pathname: '/r/private-room', hash: '#accessKey=key&e2eKey=cipher' });
+  await flush();
+  assert.equal(ui.location.hash, '#accessKey=key&e2eKey=cipher');
+  assert.equal(ui.sent.some(message => message.type === 'watchparty-join-room'), false);
+  assert.equal(ui.sent.some(message => message.type === 'watchparty-open-stremio'), false);
+  assert.match(ui.nodes.get('redirect-status').textContent, /Update WatchParty.*refresh this page/);
+  assert.equal(ui.nodes.get('redirect-retry-btn').textContent, 'Refresh this page');
+  ui.message({ type: 'watchparty-ext-ready' }); await flush();
+  assert.equal(ui.sent.some(message => message.type === 'watchparty-join-room'), false);
+  ui.nodes.get('redirect-retry-btn').click();
+  assert.equal(ui.navigated.at(-1), 'reload');
+  assert.match(ui.location.hash, /accessKey=key/);
+});
+
+test('the homepage requires current action acknowledgments for opening, settings, resume and joins', async () => {
+  const ui = landing({ actionResults: false });
+  ui.status({ room: room('existing-room'), wsConnected: true });
+  assert.equal(ui.nodes.get('hero-extension-pill').textContent, 'Extension update needed');
+  assert.match(ui.nodes.get('hero-profile-note').textContent, /Update WatchParty/);
+  for (const id of ['hero-primary-btn', 'hero-settings-btn', 'hero-resume-btn']) {
+    ui.nodes.get(id).click(); await flush();
+    assert.equal(ui.nodes.get(id).disabled, false);
+    assert.match(ui.nodes.get('website-action-status').textContent, /Update WatchParty.*refresh/);
+  }
+  assert.equal(await ui.context.joinRoom('target-room', '', ''), false);
+  assert.match(ui.nodes.get('rooms-action-status').textContent, /Update WatchParty/);
+  ui.nodes.get('hero-private-btn').click();
+  const input = ui.nodes.get('uuid-input'); input.value = 'https://watchparty.mertd.me/r/private-room#accessKey=key&e2eKey=cipher';
+  ui.nodes.get('uuid-submit-btn').click(); await flush();
+  assert.match(ui.nodes.get('uuid-error').textContent, /Update WatchParty/);
+  assert.equal(input.disabled, false); assert.match(input.value, /accessKey=key/);
+  assert.equal(ui.sent.some(message => message.type !== 'watchparty-ext-request'), false);
+  assert.equal(ui.navigated.length, 0, 'an installed incompatible extension is not sent to installation or Stremio');
+});
+
+test('invalidated extension contexts require refreshing and never misdirect an installed user to the store', async () => {
+  for (const pathname of ['/', '/r/movie-night']) {
+    const ui = landing({ pathname }); await flush();
+    ui.document.documentElement.removeAttribute('data-watchparty-ext');
+    ui.document.documentElement.removeAttribute('data-watchparty-action-results');
+    ui.message({ type: 'watchparty-ext-unavailable', error: 'Extension context invalidated.' });
+    if (pathname === '/') {
+      ui.nodes.get('hero-primary-btn').click();
+      assert.match(ui.nodes.get('website-action-status').textContent, /Refresh this page/);
+      assert.equal(ui.navigated.length, 0);
+    } else {
+      assert.match(ui.nodes.get('redirect-status').textContent, /Refresh this page/);
+      ui.nodes.get('redirect-retry-btn').click();
+      assert.equal(ui.navigated.at(-1), 'reload');
+    }
+  }
+});
+
+test('correcting invite validation clears stale invalid state, and foreign-site invite URLs are rejected', () => {
+  const ui = landing(); ui.nodes.get('hero-private-btn').click();
+  const input = ui.nodes.get('uuid-input'); input.value = 'https://evil.example/r/movie-night#accessKey=secret';
+  ui.nodes.get('uuid-submit-btn').click();
+  assert.equal(input.getAttribute('aria-invalid'), 'true');
+  input.value = 'movie-night'; input.listeners.get('input')({ target: input });
+  assert.equal(input.hasAttribute('aria-invalid'), false);
+  assert.equal(ui.nodes.get('uuid-error').style.display, 'none');
+  assert.equal(ui.sent.some(message => message.type === 'watchparty-join-room'), false);
+});
+
+test('name validation remains described through status refreshes until the user fixes the name', () => {
+  const ui = landing(); const input = ui.nodes.get('profile-name-input');
+  input.value = ''; input.listeners.get('input')({ target: input });
+  ui.nodes.get('hero-private-btn').click(); ui.status({ username: 'Old name' });
+  assert.equal(input.getAttribute('aria-invalid'), 'true');
+  assert.match(ui.nodes.get('hero-profile-note').textContent, /Add a display name/);
+});
+
+test('room posters reject unsafe URLs, omit the page referrer and fall back after image failure', () => {
+  const ui = landing();
+  for (const poster of ['javascript:alert(1)', 'data:image/svg+xml,unsafe', 'http://example.com/poster.jpg', 'https://secret@example.com/poster.jpg']) {
+    ui.snapshot({ rooms: [room('room', { meta: { poster } })] });
+    assert.equal(ui.nodes.get('rooms-list').children[1].__elements.posterSlot.firstElementChild.tagName, 'DIV');
+  }
+  ui.snapshot({ rooms: [room('room', { meta: { poster: 'https://example.com/poster.jpg' } })] });
+  const slot = ui.nodes.get('rooms-list').children[1].__elements.posterSlot;
+  const image = slot.firstElementChild; assert.equal(image.referrerPolicy, 'no-referrer');
+  image.listeners.get('error')(); assert.equal(slot.firstElementChild.tagName, 'DIV');
+});
+
+test('malformed or duplicate streamed rooms cannot partially replace a valid directory', () => {
+  const ui = landing(); ui.snapshot({ revision: 1, rooms: [room('valid')] });
+  for (const rooms of [[room('replacement'), null], [room('repeated'), room('repeated')], [room('invalid/id')]]) {
+    ui.snapshot({ revision: 2, rooms });
+    assert.equal(ui.nodes.get('rooms-list').children[1].dataset.roomId, 'valid');
+    assert.match(ui.nodes.get('rooms-status').textContent, /may be out of date/);
+    assert.equal(ui.nodes.get('rooms-refresh-btn').hidden, false);
+  }
+});
+
+test('pending joins keep every card disabled through live refresh without hiding its direct action', async () => {
+  const ui = landing({ acknowledgeActions: false });
+  ui.snapshot({ revision: 1, rooms: [room('first', { hasDirectJoin: true }), room('second')] });
+  const joining = ui.context.joinRoom('first', '', '');
+  ui.snapshot({ revision: 2, rooms: [room('first', { hasDirectJoin: true }), room('second')] });
+  const first = ui.nodes.get('rooms-list').children[1];
+  assert.equal(first.__elements.joinBtn.disabled, true);
+  assert.equal(first.__elements.directBtn.disabled, true);
+  assert.equal(first.__elements.directBtn.hidden, false);
+  assert.equal(ui.nodes.get('hero-private-btn').disabled, true);
+  ui.timers(9000); await joining;
+  assert.equal(first.__elements.joinBtn.disabled, false);
+  assert.equal(first.__elements.directBtn.disabled, false);
+  assert.equal(ui.nodes.get('hero-private-btn').disabled, false);
+});
+
+test('fresh server join errors are reported only for the last requested room and join command', async () => {
+  const ui = landing(); await ui.context.joinRoom('requested-room', '', '');
+  const status = ui.nodes.get('rooms-action-status'); const accepted = status.textContent;
+  for (const error of [{ roomId: 'other-room', command: 'room.join', message: 'Wrong room error' },
+    { roomId: 'requested-room', command: 'room.chat.send', message: 'Unrelated action error' }]) {
+    ui.message({ type: 'watchparty-ext-status', data: { lastRoomError: error } });
+    assert.equal(status.textContent, accepted);
+  }
+  ui.message({ type: 'watchparty-ext-status', data: { lastRoomError: {
+    roomId: 'requested-room', command: 'room.join', message: 'The private room key was rejected.' } } });
+  assert.match(status.textContent, /Stremio reported: The private room key was rejected/);
+  ui.status({ room: room('requested-room'), username: 'Member' });
+  assert.match(status.textContent, /key was rejected/, 'ordinary status hydration must not silently replace actionable feedback');
+});
+
+test('a disappearing or newly hidden card control returns keyboard focus to a usable join action', () => {
+  const ui = landing(); ui.snapshot({ revision: 1, rooms: [room('first'), room('second', { hasDirectJoin: true })] });
+  ui.nodes.get('rooms-list').children[2].__elements.directBtn.focus();
+  ui.snapshot({ revision: 2, rooms: [room('first'), room('second')] });
+  assert.equal(ui.document.activeElement, ui.nodes.get('rooms-list').children[1].__elements.joinBtn);
+  ui.snapshot({ revision: 3, rooms: [] });
+  assert.equal(ui.document.activeElement, ui.nodes.get('rooms-private-btn'));
+});
+
+test('private debrid choice warns, requires an invite and never asks to play the host stream', async () => {
+  const ui = landing();
+  ui.snapshot({ revision: 1, rooms: [room('private-room', { public: false, hasDirectJoin: true, directJoinType: 'debrid-url' })] });
+  ui.nodes.get('rooms-list').children[1].__elements.directBtn.click();
+  assert.match(ui.alerts[0], /debrid/);
+  ui.nodes.get('uuid-input').value = 'https://watchparty.mertd.me/r/private-room#accessKey=key&e2eKey=cipher';
+  ui.nodes.get('uuid-input').listeners.get('keydown')({ key: 'Enter', preventDefault() {} });
+  await flush();
+  assert.equal(ui.sent.find(message => message.type === 'watchparty-join-room').preferDirectJoin, false);
+  assert.match(ui.sent.find(message => message.type === 'watchparty-open-stremio').url, /#\/detail\/movie\//);
+});
+
+test('an invalidated extension immediately releases pending buttons instead of waiting for timeout', async () => {
+  const ui = landing({ acknowledgeActions: false });
+  ui.nodes.get('hero-settings-btn').click();
+  ui.document.documentElement.removeAttribute('data-watchparty-ext');
+  ui.message({ type: 'watchparty-ext-unavailable' }); await flush();
+  assert.equal(ui.nodes.get('hero-settings-btn').disabled, false);
+  assert.match(ui.nodes.get('website-action-status').textContent, /Refresh this page/);
+});
+
+test('a delayed server join denial keeps redirect invite keys and exposes a real join retry', async () => {
+  const ui = landing({ pathname: '/r/private-room', hash: '#accessKey=key&e2eKey=cipher' });
+  await flush();
+  assert.equal(ui.location.hash, '#accessKey=key&e2eKey=cipher', 'dispatch acknowledgment is not membership');
+  ui.message({ type: 'watchparty-ext-status', data: { lastRoomError: {
+    command: 'room.join', roomId: 'private-room', message: 'Invalid room key.' } } });
+  assert.equal(ui.nodes.get('redirect-retry-btn').hidden, false);
+  ui.nodes.get('redirect-retry-btn').click(); await flush();
+  const joins = ui.sent.filter(message => message.type === 'watchparty-join-room');
+  assert.equal(joins.length, 2);
+  assert.equal(joins[1].accessKey, 'key'); assert.equal(joins[1].e2eKey, 'cipher');
+  assert.equal(ui.location.hash, '#accessKey=key&e2eKey=cipher');
+});
+
+test('private dialog keeps the invite through dispatch acceptance and late server rejection', async () => {
+  const ui = landing(); ui.nodes.get('hero-private-btn').click();
+  const input = ui.nodes.get('uuid-input'); input.value = 'https://watchparty.mertd.me/r/private-room#accessKey=key&e2eKey=cipher';
+  ui.nodes.get('uuid-submit-btn').click(); await flush();
+  assert.equal(ui.nodes.get('uuid-modal').style.display, 'flex');
+  assert.match(input.value, /accessKey=key/);
+  ui.message({ type: 'watchparty-ext-status', data: { lastRoomError: {
+    command: 'room.join', roomId: 'private-room', message: 'Invalid room key.' } } });
+  assert.match(ui.nodes.get('uuid-error').textContent, /Invalid room key/);
+  assert.equal(ui.nodes.get('uuid-submit-btn').disabled, false);
+  assert.equal(input.disabled, false);
+});
+
+test('only fresh connected membership for this session scrubs the redirect fragment', async () => {
+  const ui = landing({ pathname: '/r/private-room', hash: '#accessKey=key&e2eKey=cipher' }); await flush();
+  for (const data of [
+    { room: { id: 'private-room', users: [{ id: 'other-user' }] }, userId: 'me', wsConnected: true },
+    { room: { id: 'private-room', users: [{ id: 'me' }] }, userId: 'me', wsConnected: false },
+    { room: { id: 'private-room', users: [{ id: 'me' }] }, userId: 'me', wsConnected: true, bootstrapPending: true },
+    { wsConnected: true },
+  ]) {
+    ui.message({ type: 'watchparty-ext-status', data });
+    assert.equal(ui.location.hash, '#accessKey=key&e2eKey=cipher');
+  }
+  ui.confirmMembership('private-room');
+  assert.equal(ui.location.hash, '');
+  assert.match(ui.nodes.get('redirect-status').textContent, /connected in Stremio/);
+  ui.timers(15000); assert.equal(ui.nodes.get('redirect-retry-btn').hidden, true);
+});
+
+test('late join dispatch acknowledgments cannot erase an earlier server rejection or open Stremio', async () => {
+  const ui = landing({ pathname: '/r/private-room', hash: '#accessKey=key&e2eKey=cipher', acknowledgeActions: false });
+  const join = ui.sent.find(message => message.type === 'watchparty-join-room');
+  ui.message({ type: 'watchparty-ext-status', data: { lastRoomError: {
+    command: 'room.join', roomId: 'private-room', message: 'Private chat key required.' } } });
+  ui.message({ type: 'watchparty-ext-action-result', action: join.type, requestId: join.requestId, ok: true });
+  await flush();
+  assert.match(ui.nodes.get('redirect-status').textContent, /Private chat key required/);
+  assert.equal(ui.nodes.get('redirect-retry-btn').hidden, false);
+  assert.equal(ui.sent.some(message => message.type === 'watchparty-open-stremio'), false);
+});
+
+test('late Stremio-open acceptance cannot hide a server rejection or its redirect retry', async () => {
+  let finishOpen;
+  const ui = landing({ pathname: '/r/private-room', actionHandler: message => message.type === 'watchparty-open-stremio'
+    ? new Promise(resolve => { finishOpen = resolve; }) : { ok: true } });
+  await flush(); assert.equal(typeof finishOpen, 'function');
+  ui.message({ type: 'watchparty-ext-status', data: { lastRoomError: {
+    command: 'room.join', roomId: 'private-room', message: 'Invalid room key.' } } });
+  finishOpen({ ok: true }); await flush();
+  assert.match(ui.nodes.get('redirect-status').textContent, /Invalid room key/);
+  assert.equal(ui.nodes.get('redirect-retry-btn').hidden, false);
+});
+
+test('unconfirmed membership times out with explicit retry and retains redirect and modal credentials', async () => {
+  const redirect = landing({ pathname: '/r/private-room', hash: '#accessKey=key&e2eKey=cipher' }); await flush();
+  redirect.timers(15000);
+  assert.match(redirect.nodes.get('redirect-status').textContent, /membership was not confirmed/);
+  assert.equal(redirect.nodes.get('redirect-retry-btn').hidden, false);
+  assert.equal(redirect.location.hash, '#accessKey=key&e2eKey=cipher');
+  assert.equal(redirect.sent.filter(message => message.type === 'watchparty-join-room').length, 1);
+  const modal = landing(); modal.nodes.get('hero-private-btn').click();
+  const input = modal.nodes.get('uuid-input'); input.value = 'https://watchparty.mertd.me/r/private-room#accessKey=key&e2eKey=cipher';
+  modal.nodes.get('uuid-submit-btn').click(); await flush();
+  assert.equal(modal.nodes.get('uuid-submit-btn').disabled, true);
+  modal.nodes.get('uuid-submit-btn').click();
+  assert.equal(modal.sent.filter(message => message.type === 'watchparty-join-room').length, 1);
+  modal.timers(15000);
+  assert.match(modal.nodes.get('uuid-error').textContent, /membership was not confirmed/);
+  assert.equal(input.disabled, false); assert.match(input.value, /accessKey=key/);
+  assert.equal(modal.nodes.get('uuid-submit-btn').disabled, false);
 });

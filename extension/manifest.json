@@ -1,17 +1,20 @@
 {
   "manifest_version": 3,
   "name": "WatchParty for Stremio",
-  "version": "2.0.4",
+  "version": "2.1.0",
   "minimum_chrome_version": "116",
-  "description": "Synchronized watching with friends on Stremio Web. Create a room, share the code, watch together.",
+  "description": "Watch Stremio together with synced playback, room chat, and private invite links.",
   "permissions": [
-    "declarativeNetRequest",
+    "declarativeNetRequestWithHostAccess",
     "offscreen",
     "storage",
     "scripting",
     "sidePanel"
   ],
   "host_permissions": [
+    "https://web.stremio.com/*",
+    "https://web.strem.io/*",
+    "https://app.strem.io/*",
     "http://localhost:11470/*",
     "http://127.0.0.1:11470/*",
     "http://localhost:8181/*",

@@ -30,7 +30,7 @@
     .session-meta { margin-top: 3px; color: var(--muted); font-size: 13px; }
     .actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
     .main-actions { margin-top: 20px; }
-    button { min-height: 42px; padding: 9px 15px; border: 1px solid transparent; border-radius: 9px; color: var(--text); background: transparent; cursor: pointer; font-weight: 600; }
+    button { min-height: 44px; padding: 9px 15px; border: 1px solid transparent; border-radius: 9px; color: var(--text); background: transparent; cursor: pointer; font-weight: 600; }
     button:hover { background: #2b2e3e; }
     button:disabled { opacity: 0.55; cursor: not-allowed; }
     button:focus-visible, summary:focus-visible { outline: 2px solid #b7b3ff; outline-offset: 4px; }
@@ -121,11 +121,12 @@
         <button class="btn-primary" id="btn-open-stremio" type="button">Open Stremio</button>
         <button id="btn-open-watchparty" type="button">Browse rooms</button>
       </div>
+      <p class="backend-feedback" id="launcher-feedback" role="status" aria-live="polite"></p>
     </section>
     <p class="preference-note">To change your name, chat or appearance, open <strong>WatchParty → Settings</strong> inside Stremio.</p>
     <h2 class="help-heading">Connection &amp; help</h2>
     <div class="settings-sections">
-      <details class="settings-section" id="connection-section">
+      <details class="settings-section" id="connection-section" name="settings-help">
         <summary><span><span class="summary-title">Connection</span><span class="summary-description">Automatic is recommended.</span></span></summary>
         <div class="section-body">
           <p class="card-copy" id="backend-mode-help">WatchParty chooses the server for you. Change this only for troubleshooting or local development.</p>
@@ -145,7 +146,7 @@
           </div>
         </div>
       </details>
-      <details class="settings-section" id="recovery-section">
+      <details class="settings-section" id="recovery-section" name="settings-help">
         <summary><span><span class="summary-title">Fix a problem</span><span class="summary-description">Get help or reset saved information.</span></span></summary>
         <div class="section-body">
           <p class="card-copy">If something isn't working, copy a report to share when asking for help.</p>
@@ -167,7 +168,7 @@
           <p class="backend-feedback" id="recovery-feedback" role="status"></p>
         </div>
       </details>
-      <details class="settings-section" id="diagnostics-section">
+      <details class="settings-section" id="diagnostics-section" name="settings-help">
         <summary><span><span class="summary-title">Technical details</span><span class="summary-description">Version, connection status and diagnostic checks.</span></span></summary>
         <div class="section-body">
           <div class="section-head">

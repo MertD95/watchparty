@@ -16,6 +16,7 @@ let lastStatus = null;
 let refreshTimer = null;
 let backendMutationInFlight = false;
 let recoveryMutationInFlight = false;
+let launcherInFlight = false;
 let didInit = false;
 
 function setText(id, value) {
@@ -155,7 +156,7 @@ function renderSession(status) {
   }
 
   resumeBtn.textContent = bootstrapPending && !room ? 'Continue in Stremio' : 'Return to room';
-  resumeBtn.disabled = false;
+  resumeBtn.disabled = launcherInFlight;
 
   if (!room) {
     setHidden(roomPill, false);
@@ -612,27 +613,53 @@ async function toggleLocalLandingAccess() {
   }
 }
 
+async function runLauncher(work, { roomId = null } = {}) {
+  if (launcherInFlight) return;
+  launcherInFlight = true;
+  const ids = ['btn-open-watchparty', 'btn-open-stremio', 'btn-resume-room'];
+  ids.forEach(id => { const button = buttonById(id); if (button) button.disabled = true; });
+  setText('launcher-feedback', 'Opening…');
+  let timer;
+  const isCurrent = () => !roomId || (lastStatus?.room?.id || lastStatus?.currentRoomId || null) === roomId;
+  try {
+    const response = await Promise.race([
+      Promise.resolve().then(work),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('No reply from the extension. Check Stremio before retrying.')), 8000); }),
+    ]);
+    if (response?.ok !== true || response.handled === false) throw new Error(response?.error || 'Could not open this page. Please try again.');
+    if (isCurrent()) setText('launcher-feedback', 'Opened.');
+  } catch (error) {
+    if (isCurrent()) setText('launcher-feedback', error instanceof Error ? error.message : 'Could not open this page. Please try again.');
+  } finally {
+    clearTimeout(timer);
+    launcherInFlight = false;
+    ids.forEach(id => { const button = buttonById(id); if (button) button.disabled = false; });
+    renderSession(lastStatus);
+    if (!isCurrent()) setText('launcher-feedback', 'The room changed. Use the current room controls.');
+  }
+}
+
 function openWatchParty() {
   const browseUrl = WPConstants.BACKEND.getBrowseUrl(lastStatus?.backendMode, lastStatus?.activeBackend);
-  chrome.tabs.create({ url: browseUrl });
+  return runLauncher(async () => {
+    const tab = await chrome.tabs.create({ url: browseUrl });
+    return { ok: !!tab?.id };
+  });
 }
 
 function openStremio() {
-  chrome.runtime.sendMessage(
-    { type: 'watchparty-ext', action: WPConstants.ACTION.APP_STREMIO_OPEN, url: 'https://web.stremio.com' },
-    (response) => {
-      if (chrome.runtime.lastError || response?.ok === false) {
-        chrome.tabs.create({ url: 'https://web.stremio.com' });
-      }
-    }
-  );
+  return runLauncher(() => chrome.runtime.sendMessage(
+    { type: 'watchparty-ext', action: WPConstants.ACTION.APP_STREMIO_OPEN, url: 'https://web.stremio.com' }
+  ));
 }
 
-async function resumeRoom() {
-  await chrome.runtime.sendMessage({
+function resumeRoom() {
+  const roomId = lastStatus?.room?.id || lastStatus?.currentRoomId || null;
+  return runLauncher(() => chrome.runtime.sendMessage({
     type: 'watchparty-ext',
     action: WPConstants.ACTION.ROOM_RESUME,
-  });
+    ...(roomId ? { roomId } : {}),
+  }), { roomId });
 }
 
 function bindBackendButtons() {

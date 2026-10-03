@@ -10,6 +10,8 @@ function launcher(options = {}) {
   const nodes = new Map();
   const sent = [];
   const messageListeners = new Set();
+  const tabListeners = {};
+  const statusRequests = [];
   const documentListeners = new Map();
   const copied = [];
   const responses = options.responses || {};
@@ -69,7 +71,10 @@ function launcher(options = {}) {
         getManifest: () => ({ version: '2.0.2', host_permissions: options.development ? ['http://localhost:8181/*'] : [], ...(!options.development && { update_url: 'https://clients2.google.com/service/update2/crx' }) }),
         sendMessage(message, callback) {
           sent.push(message);
-          if (message.action === 'status.get') initialStatus = callback;
+          if (message.action === 'status.get') {
+            initialStatus ||= callback;
+            statusRequests.push(callback);
+          }
           else if (typeof responses[message.action] === 'function') responses[message.action](message, callback);
           else callback?.(Object.hasOwn(responses, message.action) ? responses[message.action] : { ok: true });
         },
@@ -77,7 +82,9 @@ function launcher(options = {}) {
         onMessage: { addListener: fn => messageListeners.add(fn), removeListener: fn => messageListeners.delete(fn) },
       },
       storage: { onChanged: { addListener() {}, removeListener() {} } },
-      tabs: { create: tab => sent.push(tab) },
+      tabs: { create: tab => sent.push(tab),
+        ...Object.fromEntries(['onCreated', 'onUpdated', 'onRemoved'].map(name => [name, { addListener: fn => { tabListeners[name] = fn; } }])),
+      },
     },
   });
   for (const file of ['wp-actions.js', 'constants.js', 'utils.js', 'popup.js']) {
@@ -85,7 +92,7 @@ function launcher(options = {}) {
   }
   vm.runInContext('WPUtils.copyTextDeferred = __copyTextDeferred', context);
   return {
-    nodes, sent, document, copied, responses,
+    nodes, sent, document, copied, responses, tabListeners, statusRequests,
     status: status => initialStatus({ hasStremioTab: true, wsConnected: true, ...status }),
     update: payload => {
       for (const listener of messageListeners) listener({ type: 'watchparty-ext', action: 'status.updated', payload });
@@ -128,6 +135,34 @@ test('active room has a return action and truthful guest label, without setup cl
   ui.nodes.get('btn-resume-room').click(); assert.equal(ui.sent.at(-1).action, 'room.resume');
   ui.update({ wsConnected: false });
   assert.equal(ui.nodes.get('ws-status').textContent, 'Reconnecting…');
+});
+
+test('an open popup refreshes actual Stremio-tab status after tab creation, navigation and removal', async () => {
+  const ui = launcher();
+  ui.status({ hasStremioTab: false, room: null }); await flush();
+  assert.equal(ui.nodes.get('stremio-status').textContent, 'Stremio closed');
+  for (const event of ['onCreated', 'onUpdated']) {
+    assert.equal(typeof ui.tabListeners[event], 'function');
+    ui.tabListeners[event]();
+    ui.statusRequests.at(-1)({ hasStremioTab: true });
+    assert.equal(ui.nodes.get('stremio-status').textContent, 'Stremio open');
+  }
+  ui.tabListeners.onRemoved();
+  ui.statusRequests.at(-1)({ hasStremioTab: false });
+  assert.equal(ui.nodes.get('stremio-status').textContent, 'Stremio closed');
+});
+
+test('an older Stremio-tab lookup cannot overwrite a newer result or clear the current room', async () => {
+  const ui = launcher();
+  ui.status({ hasStremioTab: false, room: { id: 'room-a', users: [] } }); await flush();
+  ui.tabListeners.onCreated();
+  const older = ui.statusRequests.at(-1);
+  ui.tabListeners.onUpdated();
+  ui.statusRequests.at(-1)({ hasStremioTab: true });
+  older({ hasStremioTab: false });
+  assert.equal(ui.nodes.get('stremio-status').textContent, 'Stremio open');
+  assert.equal(ui.nodes.get('room-id-display').textContent, 'room-a');
+  assert.equal(ui.nodes.get('view-room').classList.contains('hidden'), false);
 });
 
 test('a delayed identity lookup cannot resurrect a room after leaving it', async () => {
@@ -179,6 +214,33 @@ test('late leave acknowledgement cannot hide a newer room', async () => {
   reply({ ok: true });
   assert.equal(ui.nodes.get('view-room').classList.contains('hidden'), false);
   assert.equal(ui.nodes.get('room-id-display').textContent, 'room-b');
+});
+
+test('authoritative leave completion permits the same room to be rejoined from another surface', async () => {
+  const ui = launcher();
+  const room = { id: 'room-a', users: [] };
+  ui.status({ room }); await flush();
+  ui.nodes.get('btn-leave').click();
+  ui.update({ room });
+  assert.equal(ui.nodes.get('view-room').classList.contains('hidden'), true, 'pre-clear stale snapshot stays suppressed');
+  ui.update({ room: null });
+  ui.update({ room }); await flush();
+  assert.equal(ui.nodes.get('view-room').classList.contains('hidden'), false);
+  assert.equal(ui.nodes.get('room-id-display').textContent, 'room-a');
+});
+
+test('late leave acknowledgement cannot hide a newer membership in the same room', async () => {
+  let reply;
+  const ui = launcher({ responses: { 'room.leave': (_message, callback) => { reply = callback; } } });
+  const room = { id: 'room-a', users: [] };
+  ui.status({ room }); await flush();
+  ui.nodes.get('btn-leave').click();
+  ui.update({ room: null });
+  ui.update({ room }); await flush();
+  reply({ ok: true });
+  assert.equal(ui.nodes.get('view-room').classList.contains('hidden'), false);
+  assert.equal(ui.nodes.get('room-id-display').textContent, 'room-a');
+  assert.equal(ui.nodes.get('btn-leave').disabled, false);
 });
 
 test('resume and settings failures are visible instead of silently succeeding', async () => {

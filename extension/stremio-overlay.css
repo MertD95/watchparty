@@ -39,7 +39,7 @@
     /* Reset inherited properties to prevent host page CSS from leaking into sidebar.
        @scope isolates selector matching but NOT CSS inheritance — color, font-family,
        line-height etc. still inherit from Stremio's body unless explicitly overridden. */
-    color: #ccc;
+    color: #f1f2f7;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     font-size: 13px;
     line-height: 1.5;
@@ -59,10 +59,10 @@
     top: 0;
     right: 0;
     width: 320px;
-    height: 100vh;
-    max-height: 100vh;
+    height: 100dvh;
+    max-height: 100dvh;
     overflow: hidden;
-    background: #0f0f1e;
+    background: #11131b;
     border-left: 1px solid color-mix(in srgb, var(--wp-accent) 30%, transparent);
     box-shadow: -4px 0 20px rgba(0, 0, 0, 0.5);
     display: flex;
@@ -85,7 +85,7 @@
     gap: 12px;
     padding: 14px 16px 10px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-    background: #141422;
+    background: #1a1d28;
   }
 
   #wp-header-main {
@@ -124,8 +124,8 @@
   }
 
   #wp-close-sidebar {
-    width: 30px;
-    height: 30px;
+    width: 36px;
+    height: 36px;
     border-radius: 999px;
     border: 1px solid rgba(255, 255, 255, 0.08);
     background: rgba(255, 255, 255, 0.04);
@@ -151,7 +151,7 @@
     flex: 1;
     min-height: 0;
     overflow: hidden;
-    background: #11111d;
+    background: #11131b;
   }
 
   #wp-sidebar-credit {
@@ -198,7 +198,7 @@
     gap: 4px;
     width: 100%;
     min-width: 0;
-    min-height: 36px;
+    min-height: 40px;
     padding: 8px 6px;
     border-radius: 10px;
     border: 1px solid transparent;
@@ -627,8 +627,8 @@
   }
 
   .wp-setting-desc {
-    color: #8f98ba;
-    font-size: 11px;
+    color: #adb2c3;
+    font-size: 12px;
     line-height: 1.5;
   }
 
@@ -662,17 +662,19 @@
   .wp-name-input {
     flex: 1;
     min-width: 0;
+    min-height: 40px;
     background: rgba(255, 255, 255, 0.08);
     border: 1px solid rgba(255, 255, 255, 0.15);
     border-radius: 10px;
     padding: 9px 10px;
     color: #fff;
-    font-size: 12px;
+    font-size: 13px;
     outline: none;
   }
 
   .wp-name-input:focus {
     border-color: var(--wp-accent);
+    box-shadow: 0 0 0 2px rgba(var(--wp-accent-rgb), 0.18);
   }
 
   .wp-room-key-input:disabled {
@@ -681,6 +683,7 @@
   }
 
   .wp-name-save {
+    min-width: 48px;
     border: 1px solid rgba(var(--wp-accent-rgb), 0.28);
     background: rgba(var(--wp-accent-rgb), 0.16);
     color: #eef2ff;
@@ -768,7 +771,7 @@
   }
 
   .wp-room-actions .wp-action-btn {
-    min-height: 38px;
+    min-height: 44px;
     justify-content: center;
   }
 
@@ -1707,6 +1710,16 @@
 
   #wp-emoji-picker emoji-picker {
     width: 100%;
+  }
+}
+
+/* Respect reduced-motion preferences without affecting the host site's UI. */
+@media (prefers-reduced-motion: reduce) {
+  #wp-overlay *, #wp-overlay *::before, #wp-overlay *::after,
+  #wp-toast, #wp-ready-modal, #wp-countdown {
+    scroll-behavior: auto !important;
+    transition: none !important;
+    animation: none !important;
   }
 }
 

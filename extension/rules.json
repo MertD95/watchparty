@@ -15,7 +15,9 @@
       ]
     },
     "condition": {
-      "requestDomains": ["localhost"],
+      "urlFilter": "|http://localhost:11470/",
+      "initiatorDomains": ["web.stremio.com", "web.strem.io", "app.strem.io"],
+      "requestMethods": ["get", "post", "options", "head"],
       "resourceTypes": ["xmlhttprequest", "other", "media"]
     }
   },
@@ -35,7 +37,9 @@
       ]
     },
     "condition": {
-      "requestDomains": ["127.0.0.1"],
+      "urlFilter": "|http://127.0.0.1:11470/",
+      "initiatorDomains": ["web.stremio.com", "web.strem.io", "app.strem.io"],
+      "requestMethods": ["get", "post", "options", "head"],
       "resourceTypes": ["xmlhttprequest", "other", "media"]
     }
   }

@@ -1,0 +1,28 @@
+Watch together, without counting down in a group chat.
+
+WatchParty adds a shared room beside Stremio Web, so you can watch with friends, talk about the moment and keep playback together. The redesigned interface puts joining, inviting and chatting first, with room controls and personal settings in their own clear sections.
+
+GET STARTED
+1. Everyone installs WatchParty and opens Stremio Web.
+2. Choose content you can all access, then create a room in the WatchParty sidebar.
+3. Share the invite link. Your friends open it, enter a display name and join.
+4. Keep Stremio Web open while watching. The room follows the host's playback.
+
+MADE FOR WATCHING TOGETHER
+- Synchronized play, pause, seeking and playback speed, with a catch-up control when needed.
+- Room chat, emoji reactions and GIFs shared by direct image link.
+- Ready checks with a countdown before starting together.
+- Shared playback bookmarks to return to a moment.
+- Public or invite-only rooms, separate directory visibility and transferable host controls.
+- A Chrome side panel for room status and chat alongside your Stremio session.
+- Clear connection, joining and recovery messages, plus adjustable appearance and chat preferences.
+
+WHAT YOU NEED
+WatchParty works on supported Stremio Web pages. Keep the local Stremio application/service running when your playback source requires it. Each person needs their own access to the content and a compatible playback source. WatchParty does not supply movies or shows, share subscriptions, or bypass DRM or provider restrictions. Synchronization depends on each participant's connection and player; it is not a guarantee of frame-perfect playback.
+
+PRIVACY, IN PLAIN LANGUAGE
+No separate WatchParty account is required; choose a display name. The service processes room, connection and playback information to operate the room. Public-room chat is not end-to-end encrypted. Invite-only room chat is encrypted in participants' browsers, but room metadata, membership and playback events are not end-to-end encrypted. Keep the complete private invite link private: it contains the keys needed to join and read that room's chat. Shared GIFs load from their image host.
+
+The extension reads relevant Stremio page/player context and local-service availability to provide these features. It does not sell user data or use it for advertising. Full details: https://watchparty.mertd.me/privacy.html
+
+WatchParty is an independent project, not affiliated with or endorsed by Stremio. All participants should use content they are authorized to access.

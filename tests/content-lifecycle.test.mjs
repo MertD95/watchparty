@@ -85,6 +85,7 @@ function runtime() {
     stagePendingRoomJoinCommand, applyLocalLeaveState, handleAction, commitRoomState, applyPlaybackUpdate, attachSync,
     applySharedRuntimeProjection, applyPassiveChatMessage, applyPassiveReadyCheck, nativeMatchesRoomMedia, syncPeerVideoToRoom,
     beginSessionRecovery, completeSessionRecovery, refreshControllerLease, refreshActiveVideoLease,
+    buildPlaybackPublishPayload, requestLatestHostSync,
     getState() { return { room: roomState, inRoom, isHost, resumeRoomPending, recoverySuspended, sessionId, sessionToken, isControllerTab }; },
     setState(value) {
       if ('room' in value) roomState = value.room;
@@ -99,14 +100,15 @@ function runtime() {
   }; })();`);
   vm.runInContext(instrumented, context, { filename: 'stremio-content.js' });
   const api = context.testContent;
-  api.setState({ room: { id: 'room-a', public: false, ownerSessionId: 'session', users: [{ id: 'user', sessionId: 'session', name: 'Alice' }] }, inRoom: true, controller: true, active: true });
+  api.setState({ room: { id: 'room-a', public: false, ownerSessionId: 'session', users: [{ id: 'user', sessionId: 'session', name: 'Alice' }] }, inRoom: true, controller: true, active: true,
+    lease: { leaseId: '00000000-0000-4000-8000-000000000099', fence: 1 } });
   return { api, context, callbacks, socket, crypto, sent, rendered, storage, backgroundMessages, timers,
-    setNow(value) { now = value; } };
+    setNow(value) { now = value; }, reconnect() { connected = true; generation += 1; ready = true; } };
 }
 
 test('socket open and concurrent bootstrap wakeups produce exactly one rejoin', async () => {
   const { api, callbacks, sent, storage, context } = runtime();
-  context.WPRoomKeys.getE2eKey = async () => 'existing-room-key';
+  context.WPRoomKeys.getE2eKey = async () => 'E'.repeat(43);
   storage[vm.runInContext('WPConstants.STORAGE.CURRENT_ROOM', context)] = 'room-a';
   callbacks.connect();
   await Promise.all(Array.from({ length: 12 }, () => api.processPendingActions()));
@@ -175,11 +177,11 @@ test('preparing a private join does not replace the active key before membership
   const originalGeneration = crypto.getGeneration();
   const imported = [];
   crypto.importKey = async (key) => { imported.push(key); };
-  await api.joinRoomFromCommand({ roomId: 'room-b', username: 'Alice', accessKey: 'access-b', e2eKey: 'key-b' });
+  await api.joinRoomFromCommand({ roomId: 'room-b', username: 'Alice', accessKey: 'access-b', e2eKey: 'B'.repeat(43) });
   assert.equal(crypto.getGeneration(), originalGeneration);
   assert.equal(imported.length, 0, 'failed/rejected joins leave room A crypto untouched');
   api.commitRoomState({ id: 'room-b', public: false, users: [] }, { refreshOverlay: false });
-  assert.deepEqual(imported, ['key-b']);
+  assert.deepEqual(imported, ['B'.repeat(43)]);
 });
 
 test('content resolved after route navigation is not published into the room', async () => {
@@ -423,6 +425,8 @@ test('a failed private-room switch with a missing chat key does not clear the st
   const app = runtime();
   app.socket.markApplicationReady();
   let removedKeys = 0;
+  const feedback = [];
+  app.context.WPOverlay.showRoomError = error => feedback.push(error);
   app.context.WPRoomKeys.remove = async () => { removedKeys += 1; };
   const cryptoGeneration = app.crypto.getGeneration();
   await app.api.joinRoomFromCommand({ roomId: 'room-b', accessKey: 'target-access-key' });
@@ -433,6 +437,35 @@ test('a failed private-room switch with a missing chat key does not clear the st
   assert.equal(app.crypto.getGeneration(), cryptoGeneration);
   assert.equal(app.sent.length, 0);
   assert.equal(app.socket.isApplicationReady(), true);
+  assert.equal(feedback.length, 1);
+  assert.equal(feedback[0].code, 'PRIVATE_CHAT_KEY_REQUIRED');
+  assert.equal(feedback[0].roomId, 'room-b');
+  assert.equal(feedback[0].command, 'room.join');
+  assert.equal(typeof feedback[0].clientRequestId, 'string');
+  const pushed = app.backgroundMessages.find(message => message.action === 'room.error');
+  assert.deepEqual(pushed.payload, feedback[0]);
+});
+
+test('malformed supplied or cached encryption keys fail before membership and do not replace active crypto', async () => {
+  for (const cached of [false, true]) {
+    for (const key of ['a'.repeat(16), 'a'.repeat(44), 'not-valid!']) {
+      const app = runtime();
+      app.socket.markApplicationReady();
+      const generation = app.crypto.getGeneration();
+      const storedKeys = [];
+      app.context.WPRoomKeys.setKeys = async (...args) => storedKeys.push(args);
+      if (cached) app.context.WPRoomKeys.getE2eKey = async () => key;
+      await app.api.joinRoomFromCommand({ roomId: 'room-b', accessKey: 'valid-access-key-012345', ...(cached ? {} : { e2eKey: key }) });
+      assert.equal(app.api.getState().room.id, 'room-a');
+      assert.equal(app.crypto.getGeneration(), generation);
+      assert.equal(app.sent.length, 0);
+      assert.equal(storedKeys.length, 0);
+      const failure = app.backgroundMessages.find(message => message.action === 'room.error').payload;
+      assert.equal(failure.code, 'PRIVATE_CHAT_KEY_INVALID');
+      assert.equal(failure.roomId, 'room-b');
+      assert.equal(failure.command, 'room.join');
+    }
+  }
 });
 
 test('late public-room storage cleanup cannot clear the next room crypto context', async () => {
@@ -496,7 +529,8 @@ test('a rejected room switch retains acknowledged membership, key and host despi
   const cryptoGeneration = app.crypto.getGeneration();
   await app.api.joinRoomFromCommand({ roomId: 'missing-room', username: 'Alice' });
   app.callbacks.message({ type: 'room.settings.updated', payload: { settings: { autoPause: true } } });
-  app.callbacks.message({ type: 'room.error', payload: { command: 'room.join', roomId: 'missing-room', code: 'ROOM_NOT_FOUND' } });
+  app.callbacks.message({ type: 'room.error', payload: { command: 'room.join', roomId: 'missing-room', code: 'ROOM_NOT_FOUND',
+    clientRequestId: app.sent.find(message => message.type === 'room.join').payload.clientRequestId } });
   assert.equal(app.api.getState().room.id, 'room-a');
   assert.equal(app.api.getState().inRoom, true);
   assert.equal(app.api.getState().isHost, true);
@@ -509,7 +543,8 @@ test('a rejected cached rejoin clears stale membership rather than retaining an 
   const app = runtime();
   app.api.setState({ room: { id: 'room-a', public: true, users: [], owner: 'user' }, host: true });
   await app.api.joinRoomFromCommand({ roomId: 'room-a', username: 'Alice' }, {}, { replay: true });
-  app.callbacks.message({ type: 'room.error', payload: { command: 'room.rejoin', roomId: 'room-a', code: 'ROOM_NOT_FOUND' } });
+  app.callbacks.message({ type: 'room.error', payload: { command: 'room.rejoin', roomId: 'room-a', code: 'ROOM_NOT_FOUND',
+    clientRequestId: app.sent.find(message => message.type === 'room.rejoin').payload.clientRequestId } });
   assert.equal(app.api.getState().room, null);
   assert.equal(app.api.getState().inRoom, false);
   assert.equal(app.api.getState().isHost, false);
@@ -546,6 +581,42 @@ test('content publication deduplication is scoped to room and controller fence',
   assert.equal(app.sent.length, 3);
   assert.equal(app.sent[1].payload.roomId, 'room-b');
   assert.equal(app.sent[2].payload.publisher.fence, 6);
+});
+
+test('current playback publication always includes a room-scoped fenced envelope without capability fallback', () => {
+  const app = runtime();
+  app.socket.supportsCapability = () => false;
+  const payload = app.api.buildPlaybackPublishPayload({ paused: true, time: 42, speed: 1.5, sampledAtServer: 1200 });
+  assert.equal(payload.roomId, 'room-a');
+  assert.deepEqual({ ...payload.player }, { paused: true, buffering: false, time: 42, speed: 1.5 });
+  assert.equal(payload.sampledAtServer, 1200);
+  assert.deepEqual({ ...payload.publisher }, { id: '00000000-0000-4000-8000-000000000099', fence: 1 });
+  assert.equal('time' in payload, false, 'the removed raw-player protocol is never emitted');
+});
+
+test('playback and content publication require an active valid controller lease', async () => {
+  for (const state of [{ lease: null }, { lease: { leaseId: 'tab-a', fence: -1 } },
+    { lease: { leaseId: 'tab-a', fence: 1.5 } }, { controller: false }]) {
+    const app = contentPublishingRuntime();
+    app.api.setState(state);
+    assert.equal(app.api.buildPlaybackPublishPayload({ time: 1 }), null);
+    await app.api.shareContentLink();
+    assert.equal(app.sent.length, 0, JSON.stringify(state));
+  }
+});
+
+test('guest catch-up always uses the explicit scoped request and reports transport refusal', () => {
+  const app = runtime();
+  app.socket.markApplicationReady();
+  app.socket.supportsCapability = () => false;
+  assert.equal(app.api.requestLatestHostSync(), true);
+  assert.equal(app.sent.length, 1);
+  assert.equal(app.sent[0].type, 'room.playback.request');
+  assert.deepEqual({ ...app.sent[0].payload }, { roomId: 'room-a' });
+  app.socket.send = () => false;
+  assert.equal(app.api.requestLatestHostSync(), false);
+  app.api.setState({ host: true });
+  assert.equal(app.api.requestLatestHostSync(), false);
 });
 
 test('canonical content acknowledgement controls deduplication and subsequent sibling changes are repaired', async () => {
@@ -737,6 +808,32 @@ test('delayed away presence from the old room cannot update a new membership', (
   assert.equal(app.sent.length, 0);
 });
 
+test('visibility reports only acknowledged room membership and always includes its room scope', () => {
+  const app = runtime();
+  app.context.document.visibilityState = 'visible';
+  app.callbacks['document:visibilitychange']();
+  assert.equal(app.sent.length, 0, 'rejoining membership is not acknowledged yet');
+  app.socket.markApplicationReady();
+  app.callbacks['document:visibilitychange']();
+  assert.equal(app.sent.length, 1);
+  assert.equal(app.sent[0].type, 'room.member.presence.publish');
+  assert.deepEqual({ ...app.sent[0].payload }, { roomId: 'room-a', status: 'active' });
+  app.api.setState({ inRoom: false });
+  app.callbacks['document:visibilitychange']();
+  assert.equal(app.sent.length, 1, 'the lobby emits no unscoped presence');
+});
+
+test('leaving acknowledged membership emits only an explicitly scoped leave command', async () => {
+  const app = runtime();
+  app.socket.markApplicationReady();
+  const action = vm.runInContext('WPConstants.ACTION.ROOM_LEAVE', app.context);
+  assert.equal((await app.callbacks.dispatch({ action, roomId: 'room-a' })).handled, true);
+  const leave = app.sent.filter(message => message.type === 'room.leave');
+  assert.equal(leave.length, 1);
+  assert.deepEqual({ ...leave[0].payload }, { roomId: 'room-a' });
+  assert.equal(app.api.getState().room, null);
+});
+
 function membershipRaceRuntime() {
   const app = contentPublishingRuntime();
   const imports = [];
@@ -750,7 +847,7 @@ function membershipRaceRuntime() {
 
 test('overlapping private join then private create adopt only keys belonging to each acknowledged request', async () => {
   const app = membershipRaceRuntime();
-  await app.api.joinRoomFromCommand({ roomId: 'joined-a', username: 'Alice', accessKey: 'access-joined-a', e2eKey: 'e2e-joined-a' });
+  await app.api.joinRoomFromCommand({ roomId: 'joined-a', username: 'Alice', accessKey: 'access-joined-a', e2eKey: 'J'.repeat(43) });
   await app.api.createRoomFromCommand(app.create);
   const join = app.sent.find((message) => message.type === 'room.join');
   const create = app.sent.find((message) => message.type === 'room.create');
@@ -759,7 +856,7 @@ test('overlapping private join then private create adopt only keys belonging to 
   app.callbacks.message({ type: 'room.snapshot', payload: { id: 'joined-a', public: false, owner: 'user', users: [], clientRequestId: join.payload.clientRequestId } });
   assert.equal(app.socket.isApplicationReady(), false, 'a newer membership request is still outstanding');
   app.callbacks.message({ type: 'room.snapshot', payload: { id: 'created-b', public: false, owner: 'user', users: [], clientRequestId: create.payload.clientRequestId } });
-  assert.deepEqual(app.imports, [{ key: 'e2e-joined-a', roomId: 'joined-a' }, { key: 'e2e-created-b', roomId: 'created-b' }]);
+  assert.deepEqual(app.imports, [{ key: 'J'.repeat(43), roomId: 'joined-a' }, { key: 'e2e-created-b', roomId: 'created-b' }]);
   assert.equal(app.cached.some((entry) => entry.roomId === 'joined-a' && entry.e2eKey === 'e2e-created-b'), false);
   assert.equal(app.socket.isApplicationReady(), true);
 });
@@ -790,30 +887,28 @@ test('failed create keeps the acknowledged original room and does not clear its 
 
 test('an accepted intermediate join remains the actual room when the later create is rejected', async () => {
   const app = membershipRaceRuntime();
-  await app.api.joinRoomFromCommand({ roomId: 'joined-a', username: 'Alice', accessKey: 'access-joined-a', e2eKey: 'e2e-joined-a' });
+  await app.api.joinRoomFromCommand({ roomId: 'joined-a', username: 'Alice', accessKey: 'access-joined-a', e2eKey: 'J'.repeat(43) });
   await app.api.createRoomFromCommand(app.create);
   const join = app.sent.find((message) => message.type === 'room.join');
   const create = app.sent.find((message) => message.type === 'room.create');
   app.callbacks.message({ type: 'room.snapshot', payload: { id: 'joined-a', public: false, owner: 'user', users: [], clientRequestId: join.payload.clientRequestId } });
   app.callbacks.message({ type: 'room.error', payload: { command: 'room.create', clientRequestId: create.payload.clientRequestId, code: 'COOLDOWN' } });
   assert.equal(app.api.getState().room.id, 'joined-a');
-  assert.deepEqual(app.imports, [{ key: 'e2e-joined-a', roomId: 'joined-a' }]);
+  assert.deepEqual(app.imports, [{ key: 'J'.repeat(43), roomId: 'joined-a' }]);
   assert.equal(app.socket.isApplicationReady(), true);
 });
 
-test('legacy servers receive one membership command at a time without unsupported request IDs', async () => {
+test('membership commands always carry distinct request IDs even when capability hints are absent', async () => {
   const app = membershipRaceRuntime();
   app.socket.supportsCapability = () => false;
   await app.api.joinRoomFromCommand({ roomId: 'joined-a', username: 'Alice' });
   await app.api.createRoomFromCommand(app.create);
   const membership = () => app.sent.filter((message) => ['room.join', 'room.create'].includes(message.type));
-  assert.equal(membership().length, 1);
-  assert.equal('clientRequestId' in membership()[0].payload, false);
-  app.callbacks.message({ type: 'room.snapshot', payload: { id: 'joined-a', public: true, owner: 'user', users: [] } });
-  await new Promise((resolve) => setImmediate(resolve));
   assert.equal(membership().length, 2);
   assert.equal(membership()[1].type, 'room.create');
-  assert.equal('clientRequestId' in membership()[1].payload, false);
+  assert.equal(typeof membership()[0].payload.clientRequestId, 'string');
+  assert.equal(typeof membership()[1].payload.clientRequestId, 'string');
+  assert.notEqual(membership()[0].payload.clientRequestId, membership()[1].payload.clientRequestId);
 });
 
 test('sanitized nonportable join hints cannot be overridden by a seemingly portable player URL', () => {
@@ -826,28 +921,27 @@ test('sanitized nonportable join hints cannot be overridden by a seemingly porta
   assert.equal(app.context.window.location.hash, '#/player/test');
 });
 
-for (const legacy of [false, true]) {
-  test(`leave cancels a sent join and its late snapshot cannot resurrect membership (${legacy ? 'legacy' : 'correlated'})`, async () => {
+  test('leave closes the socket to cancel pending membership without an unscoped leave', async () => {
     const app = membershipRaceRuntime();
-    if (legacy) app.socket.supportsCapability = () => false;
     await app.api.joinRoomFromCommand({ roomId: 'joined-b', username: 'Alice' });
     const join = app.sent.find((message) => message.type === 'room.join');
     const leave = vm.runInContext('WPConstants.ACTION.ROOM_LEAVE', app.context);
     await app.callbacks.dispatch({ action: leave });
     assert.equal(app.api.getState().inRoom, false);
-    assert.deepEqual(app.sent.filter((message) => ['room.join', 'room.leave'].includes(message.type)).map((message) => message.type), ['room.join', 'room.leave']);
+    assert.deepEqual(app.sent.filter((message) => ['room.join', 'room.leave'].includes(message.type)).map((message) => message.type), ['room.join']);
+    assert.equal(app.socket.isConnected(), false);
     app.callbacks.message({ type: 'room.snapshot', payload: { id: 'joined-b', public: true, owner: 'user', users: [], clientRequestId: join.payload.clientRequestId } });
     assert.equal(app.api.getState().room, null);
     assert.equal(app.api.getState().inRoom, false);
     assert.equal(app.api.getState().isHost, false);
   });
-}
 
 test('ignoring a cancelled join snapshot never sends a second leave that could remove a newer explicit join', async () => {
   const app = membershipRaceRuntime();
   await app.api.joinRoomFromCommand({ roomId: 'cancelled-b', username: 'Alice' });
   const firstJoin = app.sent.find((message) => message.type === 'room.join');
   await app.callbacks.dispatch({ action: vm.runInContext('WPConstants.ACTION.ROOM_LEAVE', app.context) });
+  app.reconnect();
   await app.api.joinRoomFromCommand({ roomId: 'new-c', username: 'Alice' });
   const nextJoin = app.sent.filter((message) => message.type === 'room.join')[1];
   app.callbacks.message({ type: 'room.snapshot', payload: { id: 'cancelled-b', public: true, owner: 'user', users: [], clientRequestId: firstJoin.payload.clientRequestId } });
@@ -855,7 +949,7 @@ test('ignoring a cancelled join snapshot never sends a second leave that could r
   assert.equal(app.socket.isApplicationReady(), false);
   app.callbacks.message({ type: 'room.snapshot', payload: { id: 'new-c', public: true, owner: 'user', users: [], clientRequestId: nextJoin.payload.clientRequestId } });
   assert.equal(app.api.getState().room.id, 'new-c');
-  assert.equal(app.sent.filter((message) => message.type === 'room.leave').length, 1);
+  assert.equal(app.sent.filter((message) => message.type === 'room.leave').length, 0);
 });
 
 test('leave also cancels a pending create with no room ID and never imports its late key', async () => {
@@ -867,7 +961,8 @@ test('leave also cancels a pending create with no room ID and never imports its 
   app.callbacks.message({ type: 'room.snapshot', payload: { id: 'created-b', public: false, owner: 'user', users: [], clientRequestId: create.payload.clientRequestId } });
   assert.equal(app.api.getState().room, null);
   assert.equal(app.imports.length, 0);
-  assert.equal(app.sent.filter((message) => message.type === 'room.leave').length, 1);
+  assert.equal(app.sent.filter((message) => message.type === 'room.leave').length, 0);
+  assert.equal(app.socket.isConnected(), false);
 });
 
 test('a cancelled asynchronous bootstrap cannot rejoin from its stale storage response', async () => {
@@ -882,24 +977,13 @@ test('a cancelled asynchronous bootstrap cannot rejoin from its stale storage re
   assert.equal(app.sent.some((message) => ['room.join', 'room.rejoin'].includes(message.type)), false);
 });
 
-test('legacy staged membership waits for response without a microtask loop, and rejection wakes it', async () => {
+test('uncorrelated membership errors cannot complete a pending transition', async () => {
   const app = membershipRaceRuntime();
   app.socket.supportsCapability = () => false;
-  let reads = 0;
-  app.context.WPRuntimeState.get = async () => {
-    reads += 1;
-    if (reads > 5) app.api.setState({ controller: false }); // keep a regression failure bounded
-    return {};
-  };
   await app.api.joinRoomFromCommand({ roomId: 'missing-b', username: 'Alice' });
-  await app.api.createRoomFromCommand(app.create);
-  await app.api.processPendingActions();
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(reads, 0, 'pending legacy membership must sleep until its acknowledgement/error');
-  app.callbacks.message({ type: 'room.error', payload: { code: 'ROOM_NOT_FOUND' } });
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(app.sent.filter((message) => message.type === 'room.create').length, 1);
-  assert.ok(reads <= 2);
+  app.callbacks.message({ type: 'room.error', payload: { command: 'room.join', roomId: 'missing-b', code: 'ROOM_NOT_FOUND' } });
+  assert.equal(app.socket.isApplicationReady(), false);
+  assert.equal(app.api.getState().room.id, 'room-a');
 });
 
 test('recovery leaves and disconnects the controller, blocks passive projections and prevents lease resurrection', async () => {
@@ -907,6 +991,7 @@ test('recovery leaves and disconnects the controller, blocks passive projections
   const message = { recoveryId: 'recovery-a', kind: 'clear-room' };
   assert.equal((await app.api.beginSessionRecovery(message)).ok, true);
   assert.equal(app.sent.filter(entry => entry.type === 'room.leave').length, 1);
+  assert.equal(app.sent.find(entry => entry.type === 'room.leave').payload.roomId, 'room-a');
   assert.equal(app.socket.isConnected(), false);
   assert.equal(app.api.getState().room, null);
   assert.equal(app.api.getState().isControllerTab, false);

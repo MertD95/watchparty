@@ -125,7 +125,7 @@ export const ACTION_ROUTE = Object.freeze({
     target: 'background',
   },
   ROOM_CREATE: {
-    sources: ['overlay', 'popup', 'watchparty-bridge', 'background'],
+    sources: ['overlay', 'popup', 'background'],
     target: 'controller',
   },
   ROOM_JOIN: {

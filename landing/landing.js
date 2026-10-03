@@ -3,7 +3,15 @@
     const ROOMS_API = IS_DEV ? 'http://localhost:8181/rooms' : 'https://ws.mertd.me/rooms';
     const CHROME_WEB_STORE_URL = 'https://chromewebstore.google.com/detail/watchparty-for-stremio/kfkdlmmjcnndgjkbbckhcafglbmndobk';
     const WEBSITE_USERNAME_KEY = 'watchparty.website.username';
+    const EXTENSION_UPDATE_REQUIRED = 'Update WatchParty, then refresh this page to reconnect safely.';
     let extStatusRequestSeq = 0;
+    let extActionRequestSeq = 0;
+    let extensionUnavailable = false;
+    let pendingWebsiteJoin = null;
+    let lastRequestedRoomId = '';
+    let latestWebsiteJoin = null;
+    let observeRedirectMembership = () => {};
+    let reportRedirectJoinError = () => {};
 
     // --- Routing ---
     const path = location.pathname;
@@ -115,6 +123,7 @@
       const nextStatus = status || (options.preserveExisting ? latestExtensionStatus : null);
       latestExtensionStatus = nextStatus;
       const extensionDetected = document.documentElement.hasAttribute('data-watchparty-ext');
+      const extensionNeedsUpdate = extensionDetected && !extensionSupportsActionResults();
       const primaryBtn = document.getElementById('hero-primary-btn');
       const extensionPill = document.getElementById('hero-extension-pill');
       const extensionStatus = document.getElementById('hero-extension-status');
@@ -141,18 +150,18 @@
 
       if (extensionStatus) {
         extensionStatus.className = 'hero-extension-status';
-        extensionStatus.classList.add(extensionDetected ? 'is-ready' : 'is-warn');
+        extensionStatus.classList.add(extensionDetected && !extensionNeedsUpdate ? 'is-ready' : 'is-warn');
       }
       if (extensionPill) {
-        extensionPill.textContent = extensionDetected ? 'Ready to watch' : 'Extension not detected';
+        extensionPill.textContent = extensionNeedsUpdate ? 'Extension update needed' : extensionDetected ? 'Ready to watch' : 'Extension not detected';
       }
 
       const room = nextStatus?.room || null;
       if (room && roomCard && roomTitle && roomMeta && roomPill) {
         roomCard.classList.remove('hidden');
         roomPill.classList.remove('hidden');
-        roomPill.className = 'hero-status-pill is-ready';
-        roomPill.textContent = 'You’re in a room';
+        roomPill.className = `hero-status-pill ${nextStatus?.wsConnected === false ? 'is-warn' : 'is-ready'}`;
+        roomPill.textContent = nextStatus?.wsConnected === false ? 'Reconnecting to your room' : 'You’re in a room';
         roomTitle.textContent = room.name || room.meta?.name || 'Active room';
         roomMeta.textContent = `${pluralize(room.users?.length || 0, 'person', 'people')} · ${room.public === false ? 'Invite only' : 'Anyone can join'}`;
       } else {
@@ -168,10 +177,16 @@
       }
 
       if (profileNote) {
-        if (!extensionDetected) {
+        if (extensionUnavailable) {
+          profileNote.textContent = 'The extension changed or disconnected. Refresh this page to reconnect.';
+        } else if (extensionNeedsUpdate) {
+          profileNote.textContent = EXTENSION_UPDATE_REQUIRED;
+        } else if (getProfileNameInput()?.getAttribute('aria-invalid') === 'true' && !normalizeUsername(getProfileNameInput()?.value)) {
+          profileNote.textContent = 'Add a display name to join from this page.';
+        } else if (!extensionDetected) {
           profileNote.textContent = 'Install the extension to create or join a room.';
         } else if (room) {
-          profileNote.textContent = 'Your room is open in Stremio.';
+          profileNote.textContent = nextStatus?.wsConnected === false ? 'Your room connection is reconnecting.' : 'Your room is open in Stremio.';
         } else if (nextStatus?.bootstrapPending) {
           profileNote.textContent = 'Open Stremio to finish joining your room.';
         } else if (nextStatus?.hasStremioTab) {
@@ -187,12 +202,17 @@
       const status = await requestExtensionStatus(options.timeoutMs);
       if (requestSeq === landingPresenceRequestSeq) {
         updateLandingPresence(status, { preserveExisting: options.preserveExisting !== false });
+        observeWebsiteMembership(status);
       }
       return status;
     }
 
     function ensureExtensionInstalled() {
       if (document.documentElement.hasAttribute('data-watchparty-ext')) return true;
+      if (extensionUnavailable) {
+        showWebsiteActionStatus('The extension changed or disconnected. Refresh this page to reconnect.');
+        return false;
+      }
       navigateToUrl(CHROME_WEB_STORE_URL);
       return false;
     }
@@ -284,7 +304,8 @@
       try {
         const parsed = new URL(trimmed, location.origin);
         const roomMatch = parsed.pathname.match(/^\/r\/([a-z0-9-]+)$/i);
-        if (roomMatch && ['https:', 'http:'].includes(parsed.protocol)) {
+        const trustedOrigin = parsed.origin === location.origin || parsed.origin === 'https://watchparty.mertd.me';
+        if (roomMatch && trustedOrigin && !parsed.username && !parsed.password && ['https:', 'http:'].includes(parsed.protocol)) {
           const keys = parseInviteKeysFromHash(parsed.hash);
           return {
             roomId: roomMatch[1],
@@ -317,15 +338,87 @@
       window.location.href = url;
     }
 
+    function showWebsiteActionStatus(message, scope = 'site') {
+      const status = document.getElementById(scope === 'rooms' ? 'rooms-action-status' : 'website-action-status');
+      if (status) status.textContent = message || '';
+    }
+
+    function isConnectedRoomMember(status, roomId) {
+      return status?.wsConnected === true && status.bootstrapPending !== true && status.room?.id === roomId
+        && Array.isArray(status.room.users) && status.room.users.some(user =>
+          (status.userId && user.id === status.userId) || (status.sessionId && user.sessionId === status.sessionId));
+    }
+
+    function observeWebsiteMembership(status) {
+      if (latestWebsiteJoin && isConnectedRoomMember(status, latestWebsiteJoin.roomId)) {
+        latestWebsiteJoin.confirmed = true;
+        latestWebsiteJoin.options.onMembershipConfirmed?.();
+      }
+      observeRedirectMembership(status);
+    }
+
+    function extensionSupportsActionResults() {
+      return document.documentElement.getAttribute('data-watchparty-action-results') === '1';
+    }
+
+    function requestExtensionAction(type, detail = {}, timeoutMs = 9000) {
+      if (!document.documentElement.hasAttribute('data-watchparty-ext')) {
+        return Promise.resolve({ ok: false, error: 'The extension is unavailable. Refresh this page to reconnect.' });
+      }
+      if (!extensionSupportsActionResults()) return Promise.resolve({ ok: false, error: EXTENSION_UPDATE_REQUIRED });
+      return new Promise(resolve => {
+        const requestId = `watchparty-action-${Date.now()}-${++extActionRequestSeq}`;
+        let settled = false;
+        const finish = result => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          window.removeEventListener('message', onMessage);
+          resolve(result);
+        };
+        const onMessage = event => {
+          if (event.source !== window || event.origin !== location.origin) return;
+          const data = event.data;
+          if (data?.type === 'watchparty-ext-unavailable') {
+            finish({ ok: false, error: 'The extension changed or disconnected. Refresh this page to reconnect.' });
+            return;
+          }
+          if (data?.type !== 'watchparty-ext-action-result' || data.requestId !== requestId || data.action !== type) return;
+          finish(data.ok === true && data.handled !== false && !data.error ? { ok: true }
+            : { ok: false, error: typeof data.error === 'string' && data.error.trim()
+              ? data.error.slice(0, 300) : 'The extension could not complete this request. Please try again.' });
+        };
+        const timer = setTimeout(() => finish({ ok: false,
+          error: 'No reply from the extension. Check Stremio before trying again, or refresh this page.' }), timeoutMs);
+        window.addEventListener('message', onMessage);
+        try { window.postMessage({ ...detail, type, requestId }, location.origin); }
+        catch { finish({ ok: false, error: 'The extension could not receive this request. Refresh this page.' }); }
+      });
+    }
+
+    async function runWebsiteButton(button, type, detail = {}) {
+      if (!button || button.disabled || !ensureExtensionInstalled()) return;
+      button.disabled = true;
+      button.setAttribute('aria-busy', 'true');
+      showWebsiteActionStatus('Asking the extension…');
+      try {
+        const result = await requestExtensionAction(type, detail);
+        showWebsiteActionStatus(result.ok ? '' : result.error);
+        if (result.ok) scheduleLandingPresenceRefresh();
+        return result;
+      } finally {
+        button.disabled = false;
+        button.removeAttribute('aria-busy');
+      }
+    }
+
     function handoffToStremio(url) {
       if (!document.documentElement.hasAttribute('data-watchparty-ext')) {
-        navigateToUrl(url || 'https://web.stremio.com');
-        return;
+        return Promise.resolve({ ok: false, error: 'The extension is unavailable. Refresh this page before opening your room.' });
       }
-      window.postMessage({
-        type: 'watchparty-open-stremio',
+      return requestExtensionAction('watchparty-open-stremio', {
         url: url || 'https://web.stremio.com',
-      }, location.origin);
+      });
     }
 
     function requestExtensionStatus(timeoutMs = 1200) {
@@ -366,18 +459,41 @@
       if (event.source !== window) return;
       if (event.origin !== location.origin) return;
       if (event.data?.type === 'watchparty-ext-ready' || event.data?.type === 'watchparty-ext-profile') {
+        extensionUnavailable = false;
         void refreshLandingPresence();
+      } else if (event.data?.type === 'watchparty-ext-unavailable') {
+        extensionUnavailable = true;
+        landingPresenceRequestSeq += 1;
+        updateLandingPresence(null);
+        showWebsiteActionStatus('The extension changed or disconnected. Refresh this page to reconnect.');
       } else if (event.data?.type === 'watchparty-ext-status') {
         const pushedStatus = event.data.data && typeof event.data.data === 'object' ? event.data.data : null;
         if (pushedStatus) {
           landingPresenceRequestSeq += 1;
           updateLandingPresence({ ...(latestExtensionStatus || {}), ...pushedStatus }, { preserveExisting: true });
+          observeWebsiteMembership(pushedStatus);
+          const error = pushedStatus.lastRoomError;
+          if (lastRequestedRoomId && error?.roomId === lastRequestedRoomId && error.command === 'room.join') {
+            const message = `Stremio reported: ${typeof error.message === 'string' ? error.message.slice(0, 250) : 'The room could not be joined.'}`;
+            if (roomMatch) reportRedirectJoinError(message);
+            else {
+              showWebsiteActionStatus(message, 'rooms');
+              if (latestWebsiteJoin?.roomId === error.roomId && !latestWebsiteJoin.confirmed) {
+                latestWebsiteJoin.error = message;
+                if (!latestWebsiteJoin.options.isCurrent || latestWebsiteJoin.options.isCurrent()) latestWebsiteJoin.options.onError?.(message);
+              }
+            }
+          }
         }
       }
     });
 
     function syncRoomPoster(slot, room) {
-      const posterUrl = room.meta?.poster || '';
+      let posterUrl = '';
+      try {
+        const candidate = new URL(room.meta?.poster || '');
+        if (candidate.protocol === 'https:' && !candidate.username && !candidate.password) posterUrl = candidate.href;
+      } catch {}
       const current = slot.firstElementChild;
       if (posterUrl) {
         if (current?.tagName === 'IMG') {
@@ -386,8 +502,17 @@
         }
         const img = document.createElement('img');
         img.className = 'room-poster';
-        img.src = posterUrl;
         img.alt = '';
+        img.referrerPolicy = 'no-referrer';
+        img.loading = 'lazy';
+        img.addEventListener('error', () => {
+          if (slot.firstElementChild === img) {
+            const placeholder = document.createElement('div');
+            placeholder.className = 'room-poster';
+            slot.replaceChildren(placeholder);
+          }
+        }, { once: true });
+        img.src = posterUrl;
         slot.replaceChildren(img);
         return;
       }
@@ -513,12 +638,21 @@
         ? `The host connection dropped. Keeping this room visible for about ${graceMinutes} minute${graceMinutes === 1 ? '' : 's'} while WatchParty reconnects.`
         : '';
       directBtn.title = getDirectJoinTitle(room);
-      directBtn.disabled = !(room?.hasDirectJoin === true || directJoinType === 'debrid-url');
-      directBtn.hidden = directBtn.disabled;
+      const directAvailable = room?.hasDirectJoin === true || directJoinType === 'debrid-url';
+      joinBtn.disabled = !!pendingWebsiteJoin;
+      directBtn.disabled = !!pendingWebsiteJoin || !directAvailable;
+      directBtn.hidden = !directAvailable;
       directBtn.textContent = directJoinType === 'debrid-url' ? 'Choose a stream' : 'Watch host stream';
     }
 
     const roomCardNodes = new Map();
+    function updateJoinPendingControls() {
+      for (const card of roomCardNodes.values()) updateRoomCard(card, card.__room);
+      for (const id of ['hero-private-btn', 'rooms-private-btn']) {
+        const button = document.getElementById(id);
+        if (button) button.disabled = !!pendingWebsiteJoin;
+      }
+    }
     let lastRoomsRevision = -1;
     let roomsSnapshotSeq = 0;
     let hasLoadedRooms = false;
@@ -550,6 +684,15 @@
       const empty = document.getElementById('rooms-empty');
       if (!list || !empty) return;
       if (!Array.isArray(data?.rooms)) return;
+      const snapshotIds = new Set();
+      if (data.rooms.some(room => {
+        if (!room || typeof room.id !== 'string' || !/^[a-z0-9-]+$/i.test(room.id) || snapshotIds.has(room.id)) return true;
+        snapshotIds.add(room.id);
+        return false;
+      })) {
+        setRoomsAvailability('error');
+        return;
+      }
       const revision = Number.isFinite(data?.revision) ? Number(data.revision) : null;
       if (revision !== null && revision < lastRoomsRevision) return;
       // HTTP listings are paginated, while the live stream is complete.
@@ -790,9 +933,9 @@
     });
 
     async function joinRoom(roomId, metaId, metaType, options = {}) {
-      if (!ensureExtensionInstalled()) return;
+      if (pendingWebsiteJoin || !ensureExtensionInstalled()) return false;
       const username = ensurePreferredUsername();
-      if (!username) return;
+      if (!username) return false;
       // Only the /r/:roomId route owns keys in its URL. Browsing a different
       // room must never attach keys left in an unrelated fragment.
       const hashKeys = roomMatch?.[1] === roomId
@@ -803,29 +946,47 @@
       const e2eKey = (typeof options.e2eKey === 'string' && options.e2eKey.trim())
         ? options.e2eKey.trim()
         : hashKeys.e2eKey;
-      // Tell the content script to store the room ID plus access/E2E keys in chrome.storage
-      window.postMessage({
-        type: 'watchparty-join-room',
+      const intent = { roomId, options, confirmed: false, error: '' };
+      pendingWebsiteJoin = intent;
+      latestWebsiteJoin = intent;
+      lastRequestedRoomId = roomId;
+      updateJoinPendingControls();
+      showWebsiteActionStatus('Sending your room request…', 'rooms');
+      try {
+      const result = await requestExtensionAction('watchparty-join-room', {
         roomId,
         username,
         accessKey: accessKey || undefined,
         e2eKey: e2eKey || undefined,
         preferDirectJoin: options.preferDirectJoin === true,
-      }, location.origin);
-      clearInviteHashFromAddressBar();
-      scheduleLandingPresenceRefresh();
-      if (options.preferDirectJoin === true) {
-        handoffToStremio('https://web.stremio.com');
-        return;
+      });
+      if (options.isCurrent && !options.isCurrent()) return false;
+      if (intent.error) return false;
+      if (!result.ok) {
+        showWebsiteActionStatus(result.error, 'rooms');
+        options.onError?.(result.error);
+        return false;
       }
-      const fallbackUrl = (metaId && metaId !== 'pending' && metaId !== 'unknown' && metaType)
+      showWebsiteActionStatus('Join request accepted. Check Stremio to finish joining.', 'rooms');
+      scheduleLandingPresenceRefresh();
+      const fallbackUrl = options.preferDirectJoin !== true && (metaId && metaId !== 'pending' && metaId !== 'unknown' && metaType)
         ? `https://web.stremio.com/#/detail/${encodeURIComponent(metaType)}/${encodeURIComponent(metaId)}`
         : 'https://web.stremio.com';
-      handoffToStremio(fallbackUrl);
+      const opened = await handoffToStremio(fallbackUrl);
+      if (intent.error) return false;
+      if ((!options.isCurrent || options.isCurrent()) && !opened.ok) showWebsiteActionStatus(opened.error, 'rooms');
+      return true;
+      } finally {
+        if (pendingWebsiteJoin === intent) {
+          pendingWebsiteJoin = null;
+          updateJoinPendingControls();
+        }
+      }
     }
 
     // --- Private access key / invite modal ---
     function openPrivateJoinModal(options = {}) {
+      if (pendingWebsiteJoin) return;
       if (!ensureExtensionInstalled()) return;
       const username = ensurePreferredUsername();
       if (!username) return;
@@ -853,23 +1014,30 @@
       inputEl.placeholder = hasSpecificRoom ? 'Access key or invite link' : 'Invite link or room ID';
       inputEl.setAttribute('aria-label', hasSpecificRoom ? 'Access key or invite link' : 'Invite link or room ID');
       inputEl.removeAttribute('aria-invalid');
+      document.getElementById('uuid-cancel-btn').textContent = 'Cancel';
+      inputEl.disabled = false;
+      document.getElementById('uuid-submit-btn').disabled = false;
+      document.getElementById('uuid-submit-btn').removeAttribute('aria-busy');
       document.getElementById('uuid-error').style.display = 'none';
+      document.getElementById('uuid-status').textContent = '';
       inputEl.focus();
     }
     function closeUuidModal() {
+      clearTimeout(pendingPrivateJoin?.membershipTimer);
       pendingPrivateJoin = null;
       document.getElementById('uuid-error').style.display = 'none';
       document.getElementById('uuid-modal').style.display = 'none';
       document.getElementById('uuid-input').value = '';
+      document.getElementById('uuid-status').textContent = '';
       document.getElementById('page-landing').inert = false;
       document.getElementById('page-redirect').inert = false;
       if (modalReturnFocus?.isConnected) modalReturnFocus.focus({ preventScroll: true });
       modalReturnFocus = null;
     }
-    function submitUuid() {
+    async function submitUuid() {
       const input = document.getElementById('uuid-input');
       const pendingJoin = pendingPrivateJoin;
-      if (!pendingJoin) return;
+      if (!pendingJoin || pendingWebsiteJoin || (pendingJoin.awaitingMembership && !pendingJoin.joinError)) return;
       const joinRequest = parsePrivateJoinInput(input.value, pendingJoin?.roomId || '');
       const wrongRoom = pendingJoin.roomId && joinRequest.roomId && pendingJoin.roomId !== joinRequest.roomId;
       if (!joinRequest.roomId || (pendingJoin.roomId && !joinRequest.accessKey) || wrongRoom) {
@@ -882,8 +1050,30 @@
         document.getElementById('uuid-error').style.display = 'block';
         return;
       }
-      closeUuidModal();
-      joinRoom(
+      const submit = document.getElementById('uuid-submit-btn');
+      submit.disabled = true;
+      submit.setAttribute('aria-busy', 'true');
+      input.disabled = true;
+      document.getElementById('uuid-cancel-btn').textContent = 'Close';
+      const showJoinError = message => {
+        clearTimeout(pendingJoin.membershipTimer);
+        pendingJoin.joinError = message;
+        document.getElementById('uuid-status').textContent = '';
+        document.getElementById('uuid-error').textContent = message;
+        document.getElementById('uuid-error').style.display = 'block';
+        if (pendingJoin.awaitingMembership) {
+          input.disabled = false;
+          submit.disabled = false;
+          submit.removeAttribute('aria-busy');
+          document.getElementById('uuid-cancel-btn').textContent = 'Cancel';
+        }
+      };
+      pendingJoin.joinError = '';
+      pendingJoin.confirmed = false;
+      pendingJoin.awaitingMembership = false;
+      document.getElementById('uuid-error').style.display = 'none';
+      document.getElementById('uuid-status').textContent = 'Sending your room request…';
+      const accepted = await joinRoom(
         joinRequest.roomId,
         pendingJoin?.metaId || '',
         pendingJoin?.metaType || '',
@@ -891,12 +1081,38 @@
           preferDirectJoin: pendingJoin?.preferDirectJoin === true,
           accessKey: joinRequest.accessKey,
           e2eKey: joinRequest.e2eKey,
+          isCurrent: () => pendingPrivateJoin === pendingJoin,
+          onError: showJoinError,
+          onMembershipConfirmed: () => {
+            if (pendingPrivateJoin !== pendingJoin) return;
+            pendingJoin.confirmed = true;
+            if (pendingJoin.awaitingMembership) closeUuidModal();
+          },
         },
       );
+      if (pendingPrivateJoin !== pendingJoin) return;
+      if (accepted && !pendingJoin.confirmed && !pendingJoin.joinError) {
+        pendingJoin.awaitingMembership = true;
+        document.getElementById('uuid-status').textContent = 'Request sent. Waiting for Stremio to confirm membership…';
+        pendingJoin.membershipTimer = setTimeout(() => {
+          if (pendingPrivateJoin === pendingJoin) showJoinError('Room membership was not confirmed. Check Stremio before retrying, or ask the host for a fresh full invite link.');
+        }, 15000);
+        return;
+      }
+      submit.disabled = false;
+      submit.removeAttribute('aria-busy');
+      input.disabled = false;
+      document.getElementById('uuid-cancel-btn').textContent = 'Cancel';
+      if (accepted) closeUuidModal();
+      else input.focus();
     }
     // Modal button listeners
     document.getElementById('uuid-cancel-btn').addEventListener('click', closeUuidModal);
     document.getElementById('uuid-submit-btn').addEventListener('click', submitUuid);
+    document.getElementById('uuid-input').addEventListener('input', event => {
+      event.target.removeAttribute('aria-invalid');
+      document.getElementById('uuid-error').style.display = 'none';
+    });
     // Allow Enter key in modal
     document.getElementById('uuid-input').addEventListener('keydown', (e) => {
       if (e.key === 'Enter') { e.preventDefault(); submitUuid(); }
@@ -925,12 +1141,8 @@
     document.getElementById('uuid-modal').addEventListener('click', (e) => {
       if (e.target === e.currentTarget) closeUuidModal();
     });
-    document.getElementById('hero-primary-btn')?.addEventListener('click', () => {
-      if (document.documentElement.hasAttribute('data-watchparty-ext')) {
-        window.postMessage({ type: 'watchparty-open-stremio', url: 'https://web.stremio.com' }, location.origin);
-      } else {
-        navigateToUrl(CHROME_WEB_STORE_URL);
-      }
+    document.getElementById('hero-primary-btn')?.addEventListener('click', event => {
+      void runWebsiteButton(event.currentTarget, 'watchparty-open-stremio', { url: 'https://web.stremio.com' });
     });
     document.getElementById('hero-private-btn')?.addEventListener('click', () => {
       openPrivateJoinModal();
@@ -942,19 +1154,12 @@
       setRoomsAvailability('loading');
       refreshRoomsNow({ restartStream: true });
     });
-    document.getElementById('hero-resume-btn')?.addEventListener('click', () => {
-      if (document.documentElement.hasAttribute('data-watchparty-ext')) {
-        window.postMessage({ type: 'watchparty-resume-room' }, location.origin);
-      } else {
-        navigateToUrl('https://web.stremio.com');
-      }
+    document.getElementById('hero-resume-btn')?.addEventListener('click', event => {
+      if (!latestExtensionStatus?.room?.id) return;
+      void runWebsiteButton(event.currentTarget, 'watchparty-resume-room', { roomId: latestExtensionStatus.room.id });
     });
-    document.getElementById('hero-settings-btn')?.addEventListener('click', () => {
-      if (document.documentElement.hasAttribute('data-watchparty-ext')) {
-        window.postMessage({ type: 'watchparty-open-options' }, location.origin);
-      } else {
-        navigateToUrl(CHROME_WEB_STORE_URL);
-      }
+    document.getElementById('hero-settings-btn')?.addEventListener('click', event => {
+      void runWebsiteButton(event.currentTarget, 'watchparty-open-options');
     });
 
     // --- Redirect page (/r/ROOM_ID) ---
@@ -973,26 +1178,88 @@
       });
       const button = document.getElementById('redirect-btn');
       const retry = document.getElementById('redirect-retry-btn');
-      let joined = false;
+      let accepted = false;
+      let membershipConfirmed = false;
+      let attempted = false;
+      let inFlight = false;
+      let attemptGeneration = 0;
+      let membershipTimer = null;
       let extCheck = null;
-      function continueToRoom() {
-        if (joined || !document.documentElement.hasAttribute('data-watchparty-ext')) return false;
-        joined = true;
-        clearTimeout(extCheck);
-        document.getElementById('no-ext-warning').style.display = 'none';
-        document.getElementById('redirect-status').textContent = 'Opening your room in Stremio…';
+      const status = document.getElementById('redirect-status');
+      reportRedirectJoinError = message => {
+        if (!attempted || membershipConfirmed) return;
+        attemptGeneration += 1;
+        accepted = false;
+        inFlight = false;
+        clearTimeout(membershipTimer);
+        button.removeAttribute('aria-busy');
+        button.style.display = 'none';
+        status.textContent = message;
+        if (retry) { retry.hidden = false; retry.textContent = 'Try joining again'; }
+      };
+      observeRedirectMembership = roomStatus => {
+        if (!attempted || !isConnectedRoomMember(roomStatus, roomId)) return;
+        membershipConfirmed = true;
+        accepted = true;
+        clearTimeout(membershipTimer);
+        clearInviteHashFromAddressBar();
+        status.textContent = 'Your room is connected in Stremio.';
         button.href = 'https://web.stremio.com';
         button.removeAttribute('target');
         button.textContent = 'Open Stremio';
         button.style.display = 'inline-flex';
         if (retry) retry.hidden = true;
-        window.postMessage(joinMessage(), location.origin);
-        clearInviteHashFromAddressBar();
-        setTimeout(() => handoffToStremio('https://web.stremio.com'), 500);
+      };
+      async function openAcceptedRoom() {
+        if (inFlight) return;
+        const generation = attemptGeneration;
+        inFlight = true;
+        button.setAttribute('aria-busy', 'true');
+        const result = await handoffToStremio('https://web.stremio.com');
+        if (generation !== attemptGeneration) return;
+        inFlight = false;
+        button.removeAttribute('aria-busy');
+        status.textContent = !result.ok ? result.error : membershipConfirmed ? 'Your room is connected in Stremio.'
+          : 'Stremio was opened. Finish joining your room there.';
+      }
+      function continueToRoom(force = false) {
+        if (accepted || inFlight || (attempted && force !== true) || !document.documentElement.hasAttribute('data-watchparty-ext')) return false;
+        attempted = true;
+        inFlight = true;
+        membershipConfirmed = false;
+        const generation = ++attemptGeneration;
+        lastRequestedRoomId = roomId;
+        clearTimeout(extCheck);
+        document.getElementById('no-ext-warning').style.display = 'none';
+        status.textContent = 'Sending your room request…';
+        button.style.display = 'none';
+        if (retry) retry.hidden = true;
+        void requestExtensionAction('watchparty-join-room', joinMessage()).then(async result => {
+          if (generation !== attemptGeneration) return;
+          inFlight = false;
+          if (!result.ok) {
+            status.textContent = result.error;
+            if (retry) {
+              retry.hidden = false;
+              retry.textContent = extensionUnavailable || !extensionSupportsActionResults() ? 'Refresh this page' : 'Try joining again';
+            }
+            return;
+          }
+          accepted = true;
+          button.href = 'https://web.stremio.com';
+          button.removeAttribute('target');
+          button.textContent = 'Open Stremio';
+          button.style.display = 'inline-flex';
+          if (!membershipConfirmed) membershipTimer = setTimeout(() => {
+            reportRedirectJoinError('Room membership was not confirmed. Check Stremio before retrying, or ask the host for a fresh full invite link.');
+          }, 15000);
+          scheduleLandingPresenceRefresh();
+          await openAcceptedRoom();
+        });
         return true;
       }
       function showInstallHelp() {
-        if (joined) return;
+        if (accepted || inFlight || attempted) return;
         document.getElementById('no-ext-warning').style.display = 'block';
         document.getElementById('redirect-status').textContent = 'Install WatchParty, then come back to this tab and try again.';
         button.href = CHROME_WEB_STORE_URL;
@@ -1003,13 +1270,20 @@
         if (retry) retry.hidden = false;
       }
       button.addEventListener('click', (event) => {
+        if (extensionUnavailable) {
+          event.preventDefault();
+          status.textContent = 'The extension changed or disconnected. Refresh this page to reconnect.';
+          return;
+        }
         if (!document.documentElement.hasAttribute('data-watchparty-ext')) return;
         event.preventDefault();
-        if (!continueToRoom()) handoffToStremio('https://web.stremio.com');
+        if (accepted) void openAcceptedRoom();
+        else continueToRoom(true);
       });
       retry?.addEventListener('click', () => {
-        if (continueToRoom()) return;
-        if (joined) { handoffToStremio('https://web.stremio.com'); return; }
+        if (inFlight) return;
+        if (extensionSupportsActionResults() && continueToRoom(true)) return;
+        if (accepted && !extensionUnavailable) { void openAcceptedRoom(); return; }
         // A newly installed content script may require a page reload. Keep
         // keys only in the fragment until an extension can receive the join.
         const keys = new URLSearchParams();
@@ -1022,6 +1296,12 @@
       window.addEventListener('message', (event) => {
         if (event.source !== window || event.origin !== location.origin) return;
         if (['watchparty-ext-ready', 'watchparty-ext-profile'].includes(event.data?.type)) continueToRoom();
+        if (event.data?.type === 'watchparty-ext-unavailable') {
+          status.textContent = 'The extension changed or disconnected. Refresh this page to reconnect.';
+          document.getElementById('no-ext-warning').style.display = 'none';
+          button.style.display = 'none';
+          if (retry) { retry.hidden = false; retry.textContent = 'Refresh this page'; }
+        }
       });
       document.addEventListener('watchparty-ext-ready', continueToRoom);
       if (retry) retry.hidden = true;

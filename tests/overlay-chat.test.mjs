@@ -85,7 +85,7 @@ function overlayRuntime() {
     requestAnimationFrame: () => 0, cancelAnimationFrame() {},
     setTimeout: (callback, ms) => { const id = ++timerId; timers.set(id, { callback, ms }); return id; },
     clearTimeout: (id) => timers.delete(id), setInterval: () => 0, clearInterval() {},
-    chrome: { runtime: { getURL: (file) => file }, storage: { local: { get: (_keys, callback) => callback({}) }, onChanged: { addListener() {} } } },
+    chrome: { runtime: { getURL: (file) => file }, storage: { local: { get: (_keys, callback) => callback({}), set: async () => {} }, onChanged: { addListener() {} } } },
     WPUtils: { getUserColor: () => '#6366f1', escapeHtml: (value) => String(value) },
     WPDOM: {
       el: (tag, options = {}) => Object.assign(new Element(tag), { className: options.className || '', textContent: options.text || '', style: options.style || {}, dataset: options.dataset || {} }),
@@ -138,6 +138,25 @@ test('transport rejection preserves the draft and makes sending retryable', asyn
   assert.equal(ui.messages().length, 0);
   assert.equal(ui.button.disabled, false);
   assert.match(ui.notices.at(-1), /not sent/);
+});
+
+test('a best-effort typing transport failure cannot interrupt an already-confirmed chat echo', async () => {
+  for (const fail of ['throw', 'reject']) {
+    const ui = overlayRuntime();
+    ui.api.setActionDispatcher(action => {
+      if (action.action === 'room.typing.send') {
+        if (fail === 'throw') throw new Error('Typing transport gone');
+        return Promise.reject(new Error('Typing transport gone'));
+      }
+      return { handled: true };
+    });
+    ui.input.value = 'Confirmed text'; await ui.click();
+    ui.echo('Confirmed text');
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    assert.equal(ui.input.value, '');
+    assert.equal(ui.messages().length, 1);
+    assert.equal(ui.notices.length, 0, 'ephemeral typing failure does not mislabel delivered chat');
+  }
 });
 
 test('server rejection or acknowledgment timeout cannot leave a false successful chat message', async () => {
@@ -227,7 +246,7 @@ test('a rejected private join replaces pending lobby feedback and preserves the 
   input.value = 'private-room-id';
   const panelClick = ui.nodes.get('wp-panel-room').listeners.get('click');
   panelClick({ isTrusted: true, target: { closest: (selector) => selector === '#wp-lobby-join-btn' ? ui.nodes.get('wp-lobby-join-btn') : null } });
-  await Promise.resolve();
+  for (let i = 0; i < 20; i += 1) await Promise.resolve();
   const feedback = ui.nodes.get('wp-lobby-join-feedback');
   assert.equal(feedback.textContent, 'Joining room...');
   assert.equal(feedback.dataset.pending, 'true');
@@ -246,7 +265,7 @@ test('failed creation receives persistent lobby feedback instead of remaining in
   ui.api.setActionDispatcher(async () => ({ handled: true }));
   const panelClick = ui.nodes.get('wp-panel-room').listeners.get('click');
   panelClick({ isTrusted: true, target: { closest: (selector) => selector === '#wp-lobby-create-btn' ? ui.nodes.get('wp-lobby-create-btn') : null } });
-  await Promise.resolve();
+  for (let i = 0; i < 20; i += 1) await Promise.resolve();
   const feedback = ui.nodes.get('wp-lobby-create-feedback');
   assert.equal(feedback.textContent, 'Creating room...');
   ui.api.showRoomError({ code: 'VALIDATION_FAILED', message: 'Choose a different room name.' });

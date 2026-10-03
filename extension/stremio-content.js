@@ -392,9 +392,11 @@
     const recovery = { id: message.recoveryId, kind: message.kind, work: Promise.resolve() };
     currentRecovery = recovery;
     recovery.work = (async () => {
-      // LEAVE is ordered after any queued JOIN/CREATE on this socket. Close
-      // it afterwards so reconnect callbacks cannot resurrect the old room.
-      if (isControllerTab && WPWS.isReady()) WPWS.send({ type: WPProtocol.COMMAND.ROOM_LEAVE, payload: {} });
+      // Known membership can be left explicitly. Closing the socket below
+      // also cancels a pending create whose room ID is not known yet.
+      if (isControllerTab && WPWS.isReady() && roomState?.id) {
+        WPWS.send({ type: WPProtocol.COMMAND.ROOM_LEAVE, payload: { roomId: roomState.id } });
+      }
       roomIntentCancellationGeneration += 1;
       controllerLeaseResponses.invalidate();
       activeVideoLeaseResponses.invalidate();
@@ -796,6 +798,7 @@
     if (!leavingRoomId && pendingMembershipOperations.size === 0
       && !pendingRoomCreateCommand && !pendingRoomJoinCommand && !pendingActionsPromise) return;
     roomIntentCancellationGeneration += 1;
+    const cancelPendingMembership = pendingMembershipOperations.size > 0;
     for (const [requestId, operation] of pendingMembershipOperations) {
       cancelledMembershipOperations.set(requestId, { ...operation, previousRoomId: roomState?.id });
     }
@@ -805,20 +808,21 @@
     pendingRoomCreateCommand = null;
     pendingRoomJoinCommand = null;
     pendingCreatedPrivateKeys = null;
-    // WebSocket preserves ordering: JOIN/CREATE followed by LEAVE cancels
-    // membership even while its snapshot is still in flight. Do not wait for
-    // application readiness or the pending target can resurrect after Leave.
-    const leaveSent = options.sendLeave && WPWS.isReady()
-      && WPWS.send({ type: WPProtocol.COMMAND.ROOM_LEAVE, payload: {} });
+    // A pending create has no known room ID, and a pending switch may already
+    // have changed server membership. Close that socket to cancel it without
+    // an unscoped command that could leave an unrelated room.
+    const leaveSent = options.sendLeave && WPWS.isReady() && !cancelPendingMembership && leavingRoomId
+      && WPWS.send({ type: WPProtocol.COMMAND.ROOM_LEAVE, payload: { roomId: leavingRoomId } });
     if (leaveSent) {
       clearDeferredLeaveIntent(leavingRoomId);
-    } else if (leavingRoomId) {
+    } else if (leavingRoomId && !cancelPendingMembership) {
       rememberDeferredLeaveIntent(leavingRoomId);
       if (!WPWS.isConnected()) {
         ensureControllerConnection();
       }
     }
     applyLocalLeaveState(leavingRoomId);
+    if (cancelPendingMembership && options.sendLeave) WPWS.disconnect({ resetReplay: true });
     if (leaveSent) WPWS.markApplicationReady();
   }
 
@@ -835,7 +839,7 @@
     lastJoinAttemptRoomId = roomId;
     WPWS.send({
       type: WPProtocol.COMMAND.ROOM_JOIN,
-      payload,
+      payload: { ...payload, clientRequestId: operation.requestId },
     });
     return true;
   }
@@ -899,22 +903,11 @@
   }
 
   function requestLatestHostSync() {
-    if (!inRoom || isHost || !isActiveVideoTab || !WPWS.isReady()) return;
+    if (!inRoom || !roomState?.id || isHost || !isActiveVideoTab || !WPWS.isReady() || !WPWS.isApplicationReady()) return false;
     playbackSyncRequestPending = true;
-    if (WPWS.supportsCapability(WPProtocol.CAPABILITY?.PLAYBACK_TIMELINE_V1)) {
-      WPWS.send({ type: WPProtocol.COMMAND.ROOM_PLAYBACK_REQUEST, payload: { roomId: roomState?.id } });
-      return;
-    }
-    const player = roomState?.player || WPProtocol.DEFAULT_PLAYER;
-    WPWS.send({
-      type: WPProtocol.COMMAND.ROOM_PLAYBACK_PUBLISH,
-      payload: {
-        paused: player.paused === true,
-        buffering: player.buffering === true,
-        time: Number.isFinite(player.time) ? Math.max(0, player.time) : 0,
-        speed: Number.isFinite(player.speed) ? player.speed : 1,
-      },
-    });
+    const sent = WPWS.send({ type: WPProtocol.COMMAND.ROOM_PLAYBACK_REQUEST, payload: { roomId: roomState.id } }) === true;
+    if (!sent) playbackSyncRequestPending = false;
+    return sent;
   }
 
   function syncPeerVideoToRoom(options = {}) {
@@ -1493,13 +1486,11 @@
       case WPProtocol.EVENT.ROOM_SNAPSHOT:
         if (!p?.id) return;
         {
-          const cancelled = p.clientRequestId ? cancelledMembershipOperations.get(p.clientRequestId)
-            : [...cancelledMembershipOperations.values()].find((operation) => operation.legacy
-              && (operation.kind === 'join' ? operation.roomId === p.id : operation.previousRoomId !== p.id));
+          const cancelled = cancelledMembershipOperations.get(p.clientRequestId);
           if (cancelled) {
             cancelledMembershipOperations.delete(cancelled.requestId);
-            // LEAVE is already ordered behind this request. Sending another
-            // leave here could remove a newer explicit room the user joined.
+            // Cancellation closed that socket. Ignore its delayed snapshot;
+            // never leave a newer explicit membership in response to it.
             return;
           }
         }
@@ -1510,7 +1501,7 @@
         if (shouldDrainDeferredLeave(p)) {
           lastJoinAttemptRoomId = null;
           clearDeferredLeaveIntent(p.id);
-          WPWS.send({ type: WPProtocol.COMMAND.ROOM_LEAVE, payload: {} });
+          WPWS.send({ type: WPProtocol.COMMAND.ROOM_LEAVE, payload: { roomId: p.id } });
           applyLocalLeaveState(p.id);
           WPWS.clearQueue();
           WPWS.markApplicationReady();
@@ -1518,17 +1509,9 @@
         }
         {
           const requestId = p.clientRequestId;
-          // Old servers can be matched safely only when one operation is in
-          // flight (or by a known join target). Never give a create's key to
-          // an unrelated snapshot just because it arrived first.
-          const candidates = [...pendingMembershipOperations.values()];
-          const membershipOperation = requestId ? pendingMembershipOperations.get(requestId)
-            : !supportsMembershipRequestIds()
-              ? candidates.find((operation) => operation.kind === 'join' && operation.roomId === p.id)
-                || (candidates.length === 1 && candidates[0].kind === 'create' && p.id !== roomState?.id ? candidates[0] : null)
-              : null;
+          const membershipOperation = pendingMembershipOperations.get(requestId);
           if (membershipOperation) pendingMembershipOperations.delete(membershipOperation.requestId);
-          if (lastJoinAttemptRoomId === p.id && (!requestId || requestId === pendingJoinAttempt?.requestId)) {
+          if (lastJoinAttemptRoomId === p.id && requestId === pendingJoinAttempt?.requestId) {
             lastJoinAttemptRoomId = null;
             pendingJoinAttempt = null;
           }
@@ -1575,11 +1558,9 @@
         if (p?.command === WPProtocol.COMMAND.ROOM_CONTENT_UPDATE) pendingContentPublication = null;
         WPOverlay.showRoomError?.(p);
         notifyBackground({ action: WPConstants.ACTION.ROOM_ERROR_EVENT, payload: p });
-        // Correlated errors reject only their own draft; legacy servers can
-        // still report an unscoped chat error. An accepted canonical echo is
-        // the only confirmation that clears a pending draft.
-        if (p?.command === WPProtocol.COMMAND.ROOM_CHAT_SEND
-          || (!p?.command && lastUserAction === WPConstants.ACTION.ROOM_CHAT_SEND)) {
+        // Only correlated server errors can reject a draft. Its own canonical
+        // echo remains the only successful delivery acknowledgement.
+        if (p?.command === WPProtocol.COMMAND.ROOM_CHAT_SEND) {
           if (!p?.roomId || p.roomId === roomState?.id) {
             WPOverlay.rejectPendingChat?.(p?.message || 'The message was not accepted.', p?.clientMessageId);
           }
@@ -1587,22 +1568,15 @@
         if (p?.clientRequestId) {
           pendingMembershipOperations.delete(p.clientRequestId);
           if (pendingMembershipOperations.size === 0) WPWS.markApplicationReady();
-        } else if (!supportsMembershipRequestIds() && pendingMembershipOperations.size === 1) {
-          const operation = pendingMembershipOperations.values().next().value;
-          const expectedCommand = operation.kind === 'create' ? WPProtocol.COMMAND.ROOM_CREATE : WPProtocol.COMMAND.ROOM_JOIN;
-          if (!p?.command || p.command === expectedCommand || (operation.kind === 'join' && p.command === WPProtocol.COMMAND.ROOM_REJOIN)) {
-            pendingMembershipOperations.delete(operation.requestId);
-            WPWS.markApplicationReady();
-          }
         }
         if (deferredLeaveIntent?.roomId && lastJoinAttemptRoomId === deferredLeaveIntent.roomId) {
           clearDeferredLeaveIntent(deferredLeaveIntent.roomId);
         }
         {
-          const joinError = !p?.command || p.command === WPProtocol.COMMAND.ROOM_JOIN || p.command === WPProtocol.COMMAND.ROOM_REJOIN;
+          const joinError = p?.command === WPProtocol.COMMAND.ROOM_JOIN || p.command === WPProtocol.COMMAND.ROOM_REJOIN;
           const matchingAttempt = joinError && lastJoinAttemptRoomId
-            && (!p?.roomId || p.roomId === lastJoinAttemptRoomId)
-            && (!p?.clientRequestId || p.clientRequestId === pendingJoinAttempt?.requestId);
+            && p?.roomId === lastJoinAttemptRoomId
+            && p?.clientRequestId === pendingJoinAttempt?.requestId;
           const rejectedJoin = matchingAttempt && [WPProtocol.ERROR_CODE.ROOM_NOT_FOUND,
             WPProtocol.ERROR_CODE.INVALID_ROOM_KEY, WPProtocol.ERROR_CODE.ROOM_KEY_REQUIRED,
             WPProtocol.ERROR_CODE.USERNAME_IN_USE, WPProtocol.ERROR_CODE.COOLDOWN,
@@ -1754,10 +1728,6 @@
   });
 
   // --- Process pending create/join actions from storage ---
-  function supportsMembershipRequestIds() {
-    return WPWS.supportsCapability(WPProtocol.CAPABILITY?.MEMBERSHIP_REQUEST_ID_V1);
-  }
-
   function beginRoomOperation() {
     return { revision: roomIntentResponses.begin(), connection: WPWS.getConnectionGeneration(), requestId: crypto.randomUUID() };
   }
@@ -1771,10 +1741,6 @@
   async function createRoomFromCommand(command) {
     if (!command || !isControllerTab || !WPWS.isReady()) return;
     if (switchBackendForCommand(command, stagePendingRoomCreateCommand)) return;
-    if (!supportsMembershipRequestIds() && pendingMembershipOperations.size > 0) {
-      stagePendingRoomCreateCommand(command);
-      return;
-    }
     const operation = beginRoomOperation();
     pendingJoinedPrivateKeys = null;
     WPWS.clearQueue();
@@ -1795,9 +1761,9 @@
       if (!isCurrentRoomOperation(operation)) return;
       const isPublic = command?.public === true;
       const isListed = command?.listed !== false;
-      /** @type {{ meta: any, stream: any, joinHint: any, public: boolean, listed: boolean, visibility: string, clientRequestId?: string, accessKey?: string, name?: string }} */
+      /** @type {{ meta: any, stream: any, joinHint: any, public: boolean, listed: boolean, visibility: string, clientRequestId: string, accessKey?: string, name?: string }} */
       const payload = {
-        ...(supportsMembershipRequestIds() ? { clientRequestId: operation.requestId } : {}),
+        clientRequestId: operation.requestId,
         meta,
         stream,
         joinHint,
@@ -1820,7 +1786,7 @@
       }
       if (command?.roomName) payload.name = command.roomName;
       pendingMembershipOperations.set(operation.requestId, {
-        ...operation, kind: 'create', keys: pendingCreatedPrivateKeys, legacy: !supportsMembershipRequestIds(),
+        ...operation, kind: 'create', keys: pendingCreatedPrivateKeys,
       });
       if (!WPWS.send({ type: WPProtocol.COMMAND.ROOM_CREATE, payload })) {
         pendingMembershipOperations.delete(operation.requestId);
@@ -1837,10 +1803,6 @@
   async function joinRoomFromCommand(command, stored = {}, options = {}) {
     if (!isControllerTab) return;
     if (switchBackendForCommand(command, stagePendingRoomJoinCommand)) return;
-    if (!supportsMembershipRequestIds() && pendingMembershipOperations.size > 0) {
-      stagePendingRoomJoinCommand(command);
-      return;
-    }
     const roomToJoin = command?.roomId;
     if (!roomToJoin || !extOk() || !WPWS.isReady()) return;
     const resumingProjectedRoom = options.replay === true
@@ -1861,14 +1823,27 @@
     const requestedE2eKey = normalizePrivateKeyInput(command?.e2eKey);
     const e2eKey = requestedE2eKey || (extOk() ? await WPRoomKeys.getE2eKey(roomToJoin) : null);
     if (!isCurrentRoomOperation(operation)) return;
-    if (!e2eKey && (accessKey || (resumingProjectedRoom && roomState?.public === false))) {
+    const suppliedEncryptionKey = command?.e2eKey != null && command.e2eKey !== '';
+    const invalidEncryptionKey = (suppliedEncryptionKey && (!requestedE2eKey || !/^[A-Za-z0-9_-]{43}$/.test(requestedE2eKey)))
+      || (e2eKey && (typeof e2eKey !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(e2eKey)));
+    if (invalidEncryptionKey || (!e2eKey && (accessKey || (resumingProjectedRoom && roomState?.public === false)))) {
       if (resumingProjectedRoom) {
         // A new socket has not rejoined this cached membership. Keep the
         // access credential for invite recovery, but do not present stale
         // users/host controls as an authenticated live room.
         applyLocalLeaveState(roomToJoin, { preservePrivateKeys: true });
       }
-      WPOverlay.showToast('Paste the full invite link so private-room chat stays encrypted.', 3500);
+      const failure = {
+        code: invalidEncryptionKey ? 'PRIVATE_CHAT_KEY_INVALID' : 'PRIVATE_CHAT_KEY_REQUIRED',
+        message: invalidEncryptionKey ? 'This encryption key is invalid. Paste the full invite link from the host.'
+          : 'Paste the full invite link so private-room chat stays encrypted.',
+        roomId: roomToJoin,
+        command: options.replay === true ? WPProtocol.COMMAND.ROOM_REJOIN : WPProtocol.COMMAND.ROOM_JOIN,
+        clientRequestId: operation.requestId,
+      };
+      WPOverlay.showRoomError?.(failure);
+      notifyBackground({ action: WPConstants.ACTION.ROOM_ERROR_EVENT, payload: failure });
+      WPOverlay.showToast(failure.message, 3500);
       WPOverlay.openSidebar('room');
       WPWS.markApplicationReady();
       return;
@@ -1879,13 +1854,12 @@
     if (!isCurrentRoomOperation(operation)) return;
     const username = command?.username || stored[WPConstants.STORAGE.USERNAME];
     sendSessionHello(username);
-    const payload = { ...await buildRoomAccessPayload(roomToJoin, accessKey),
-      ...(supportsMembershipRequestIds() ? { clientRequestId: operation.requestId } : {}) };
+    const payload = { ...await buildRoomAccessPayload(roomToJoin, accessKey), clientRequestId: operation.requestId };
     if (!isCurrentRoomOperation(operation)) return;
     pendingJoinedPrivateKeys = { roomId: roomToJoin, e2eKey };
     lastJoinAttemptRoomId = roomToJoin;
     pendingJoinAttempt = { roomId: roomToJoin, previousRoomId, acknowledgedMembership, connection: operation.connection, requestId: operation.requestId };
-    pendingMembershipOperations.set(operation.requestId, { ...operation, kind: 'join', roomId: roomToJoin, keys: { e2eKey }, legacy: !supportsMembershipRequestIds() });
+    pendingMembershipOperations.set(operation.requestId, { ...operation, kind: 'join', roomId: roomToJoin, keys: { e2eKey } });
     const lastSeq = options.replay === true ? WPWS.getLastSeq() : 0;
     if (!WPWS.send(lastSeq > 0
       ? { type: WPProtocol.COMMAND.ROOM_REJOIN, payload: { ...payload, lastSeq } }
@@ -1899,7 +1873,6 @@
 
   function processPendingActions() {
     if (recoverySuspended || !WPWS.isReady() || !extOk() || !isControllerTab) return;
-    if (!supportsMembershipRequestIds() && pendingMembershipOperations.size > 0) return;
     // sessionId MUST be loaded before sending any room messages — otherwise server can't dedup
     if (!sessionId) return;
     if (pendingActionsPromise) return pendingActionsPromise;
@@ -1972,8 +1945,7 @@
     }).finally(() => {
       if (pendingActionsPromise !== processing) return;
       pendingActionsPromise = null;
-      if (canContinue() && (supportsMembershipRequestIds() || pendingMembershipOperations.size === 0)
-        && (pendingRoomCreateCommand || pendingRoomJoinCommand)) processPendingActions();
+      if (canContinue() && (pendingRoomCreateCommand || pendingRoomJoinCommand)) processPendingActions();
     });
     pendingActionsPromise = processing;
     return processing;
@@ -2226,7 +2198,8 @@
 
   // --- Content link sharing ---
   function contentPublisher() {
-    return controllerLease && isControllerTab
+    return controllerLease && isControllerTab && controllerLease.leaseId
+      && Number.isInteger(controllerLease.fence) && controllerLease.fence >= 0
       ? { id: controllerLease.leaseId, fence: controllerLease.fence } : undefined;
   }
 
@@ -2248,8 +2221,9 @@
 
   function publishContent(payload, shareKey) {
     const publisher = contentPublisher();
+    if (!publisher || !roomState?.id) return false;
     if (!WPWS.send({ type: WPProtocol.COMMAND.ROOM_CONTENT_UPDATE,
-      payload: { ...payload, roomId: roomState?.id, ...(publisher ? { publisher } : {}) } })) return false;
+      payload: { ...payload, roomId: roomState.id, publisher } })) return false;
     pendingContentPublication = { key: shareKey, roomId: roomState?.id, connection: WPWS.getConnectionGeneration(),
       fence: controllerLease?.fence, at: WPRuntimeClock.now() };
     return true;
@@ -2459,16 +2433,13 @@
       time: Number.isFinite(state.time) ? Math.max(0, state.time) : 0,
       speed: Number.isFinite(state.speed) ? Math.max(0.25, Math.min(4, state.speed)) : 1,
     };
-    if (!WPWS.supportsCapability(WPProtocol.CAPABILITY?.PLAYBACK_TIMELINE_V1)) return player;
-
-    const publisher = controllerLease && isControllerTab
-      ? { id: controllerLease.leaseId, fence: controllerLease.fence }
-      : undefined;
+    const publisher = contentPublisher();
+    if (!publisher || !roomState?.id) return null;
     return {
       player,
       roomId: roomState?.id,
       ...(Number.isFinite(state.sampledAtServer) ? { sampledAtServer: state.sampledAtServer } : {}),
-      ...(publisher ? { publisher } : {}),
+      publisher,
     };
   }
 
@@ -2495,9 +2466,9 @@
           }
           maybeRepairSharedPlayerRoute();
           const payload = buildPlaybackPublishPayload(state);
-          const localPlayer = 'player' in payload ? payload.player : payload;
+          if (!payload) return;
           applyPlaybackUpdate({
-            player: { ...(roomState.player || WPProtocol.DEFAULT_PLAYER), ...localPlayer },
+            player: { ...(roomState.player || WPProtocol.DEFAULT_PLAYER), ...payload.player },
           }, { force: true });
           WPWS.send({
             type: WPProtocol.COMMAND.ROOM_PLAYBACK_PUBLISH,
@@ -2822,7 +2793,7 @@
     [WPConstants.ACTION.ROOM_REACTION_SEND]: (m) => WPWS.send({ type: WPProtocol.COMMAND.ROOM_REACTION_SEND, payload: { emoji: m.emoji, messageId: m.messageId || undefined, roomId: m.roomId } }),
     [WPConstants.ACTION.ROOM_MEMBER_PRESENCE_PUBLISH]: (m) => WPWS.send({ type: WPProtocol.COMMAND.ROOM_MEMBER_PRESENCE_PUBLISH, payload: { status: m.status, roomId: m.roomId } }),
     [WPConstants.ACTION.ROOM_MEMBER_PLAYBACK_STATUS_PUBLISH]: (m) => WPWS.send({ type: WPProtocol.COMMAND.ROOM_MEMBER_PLAYBACK_STATUS_PUBLISH, payload: { status: m.status, roomId: m.roomId } }),
-    [WPConstants.ACTION.ROOM_PLAYBACK_REQUEST_SYNC]: () => { requestLatestHostSync(); },
+    [WPConstants.ACTION.ROOM_PLAYBACK_REQUEST_SYNC]: () => requestLatestHostSync(),
   };
 
   async function handleAction(message, options = {}) {
@@ -2836,6 +2807,9 @@
     const isCreateOrJoin = action === WPConstants.ACTION.ROOM_CREATE || action === WPConstants.ACTION.ROOM_JOIN;
     const scoped = action.startsWith('room.') && !isCreateOrJoin;
     const targetRoomId = scoped ? (message.roomId || roomState?.id || null) : null;
+    if (scoped && action !== WPConstants.ACTION.ROOM_LEAVE && (!targetRoomId || !inRoom || !WPWS.isApplicationReady())) {
+      return { handled: false, error: 'Reconnect to your room before trying this action.' };
+    }
     if (scoped && message.roomId && message.roomId !== roomState?.id) {
       return { handled: false, error: 'The room changed. Please try again in your current room.' };
     }
@@ -2882,7 +2856,7 @@
   // --- Presence (only from tab with video to avoid multi-tab conflicts) ---
   let presenceTimeout = null;
   document.addEventListener('visibilitychange', () => {
-    if (!inRoom) return;
+    if (!inRoom || !roomState?.id || !WPWS.isApplicationReady()) return;
     // Only the active video tab reports presence — prevents away/active flicker
     if (!isActiveVideoTab || !isControllerTab) return;
     WPRuntimeClock.clearTimeout(presenceTimeout);

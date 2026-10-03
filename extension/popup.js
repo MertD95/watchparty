@@ -10,10 +10,12 @@ let currentSessionId = null;
 let currentLobbyMode = 'create';
 let suppressedRoomId = null;
 let pendingLeaveRoomId = null;
+let membershipClearGeneration = 0;
 let pendingLobbyAction = null;
 let pendingLobbyRoomId = null;
 let copyOperation = 0;
 let copyingRoomId = null;
+let stremioStatusGeneration = 0;
 
 document.body.dataset.statusReady = 'false';
 
@@ -185,6 +187,15 @@ function setStremioStatus(hasStremioTab) {
   }
 }
 
+function refreshStremioTabStatus() {
+  const generation = ++stremioStatusGeneration;
+  chrome.runtime.sendMessage({ type: 'watchparty-ext', action: WPConstants.ACTION.STATUS_GET }, response => {
+    if (chrome.runtime.lastError || generation !== stremioStatusGeneration || !response) return;
+    setStremioStatus(response.hasStremioTab === true);
+    updateStatusHint(response.hasStremioTab === true, response.stremioRunning === true, response.bootstrapPending === true);
+  });
+}
+
 function updateStatusHint(hasStremioTab, stremioRunning, bootstrapPending) {
   const hint = $('status-hint');
   if (!hint) return;
@@ -352,8 +363,10 @@ function applyStatusResponse(response) {
   currentWsConnected = !!response.wsConnected;
   currentUserId = response.userId || currentUserId || null;
   currentSessionId = response.sessionId || currentSessionId || null;
-  setStremioStatus(!!response.hasStremioTab);
-  updateStatusHint(!!response.hasStremioTab, !!response.stremioRunning, !!response.bootstrapPending);
+  if (stremioStatusGeneration === 0) {
+    setStremioStatus(!!response.hasStremioTab);
+    updateStatusHint(!!response.hasStremioTab, !!response.stremioRunning, !!response.bootstrapPending);
+  }
   renderBackendControls();
   setWsStatus(currentWsConnected);
 }
@@ -376,6 +389,11 @@ function applyCoordinatorUpdate(payload) {
     showRoomView(nextRoom, currentUserId);
     return;
   }
+  // An authoritative empty membership completes the previous leave. A future
+  // join from Stremio may legitimately return to that same room ID.
+  membershipClearGeneration += 1;
+  suppressedRoomId = null;
+  pendingLeaveRoomId = null;
   if (!$('view-room').classList.contains('hidden')) {
     showLobbyView();
   }
@@ -547,6 +565,13 @@ chrome.runtime.onMessage.addListener((message) => {
   }
   return false;
 });
+
+// The manual popup can stay open while tabs are launched, navigated or closed.
+// Read tab presence through the coordinator; do not infer it from local-service
+// availability or a cached room, and never let a late lookup replace room UI.
+for (const event of ['onCreated', 'onUpdated', 'onRemoved']) {
+  chrome.tabs?.[event]?.addListener(refreshStremioTabStatus);
+}
 
 document.querySelectorAll('#backend-toggle .backend-btn').forEach((btn) => {
   btn.addEventListener('click', () => setBackendMode(btn.dataset.mode));
@@ -763,8 +788,10 @@ $('btn-leave').addEventListener('click', () => {
   if (!roomId || pendingLeaveRoomId === roomId) return;
   showActionError();
   pendingLeaveRoomId = roomId;
+  const clearGeneration = membershipClearGeneration;
   updateQuickActions();
   chrome.runtime.sendMessage({ type: 'watchparty-ext', action: WPConstants.ACTION.ROOM_LEAVE, roomId }, response => {
+    if (membershipClearGeneration !== clearGeneration) return;
     if (pendingLeaveRoomId === roomId) pendingLeaveRoomId = null;
     if (currentRenderedRoom?.id !== roomId) return;
     updateQuickActions();

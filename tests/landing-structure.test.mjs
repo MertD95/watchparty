@@ -111,3 +111,22 @@ test('each route has a skip link within its visible surface and a focusable targ
     assert.equal(elementsById.get(id).attributes.get('tabindex'), '-1');
   }
 });
+
+test('action feedback is announced separately from room-list health and stale profile hints', () => {
+  for (const id of ['website-action-status', 'rooms-action-status', 'rooms-status']) {
+    const attributes = elementsById.get(id).attributes;
+    assert.equal(attributes.get('role'), 'status', id);
+    assert.equal(attributes.get('aria-live'), 'polite', id);
+  }
+});
+
+test('privacy has a local return link, keyboard focus styling and current GIF data-sharing disclosure', () => {
+  const privacy = fs.readFileSync(path.join(landingRoot, 'privacy.html'), 'utf8');
+  const links = openingTags(privacy).filter(tag => tag.tag === 'a');
+  assert.ok(links.some(link => link.attributes.get('href') === '/'));
+  assert.match(privacy, /a:focus-visible/);
+  assert.match(privacy, /Last updated: 2026-10-03/);
+  assert.match(privacy, /Shared GIF images load from the image host/);
+  assert.doesNotMatch(privacy, /GIF search requests are sent/);
+  for (const link of links) assert.doesNotMatch(link.attributes.get('href'), /^(?:javascript|data):/i);
+});
