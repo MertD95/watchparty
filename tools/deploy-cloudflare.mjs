@@ -148,7 +148,18 @@ export function buildPlan(snapshot, assetsDirectory = path.join(ROOT, 'landing')
   if (metadata.id !== WORKER || metadata.has_assets !== true || metadata.has_modules !== false) {
     blockers.push('metadata does not confirm an existing assets-only Worker');
   }
-  if (nonempty(metadata.handlers)) blockers.push('Worker has custom runtime handlers');
+  // Observed assets-only Workers expose the platform's fetch handler despite
+  // having no user script. Wrangler's /content/v2 reader covers both classic
+  // and module scripts; allow this exact shape only after the independent
+  // empty-content, asset, binding and named-handler checks all agree.
+  const platformAssetFetch = Array.isArray(metadata.handlers) && metadata.handlers.length === 1
+    && metadata.handlers[0] === 'fetch' && metadata.has_assets === true && metadata.has_modules === false
+    && content.kind === 'empty' && content.status === 204 && content.bytes === 0
+    && Array.isArray(settings.bindings) && settings.bindings.length === 0 && !nonempty(metadata.named_handlers);
+  if (!Array.isArray(metadata.handlers) || (metadata.handlers.length > 0 && !platformAssetFetch)) {
+    blockers.push('Worker has custom runtime handlers');
+  }
+  if (nonempty(metadata.named_handlers)) blockers.push('Worker has named runtime handlers');
   if (!['empty', 'no-user-script'].includes(content.kind)) blockers.push('Worker contains custom or unrecognized source');
   if (!isObject(settings)) blockers.push('unrecognized settings shape');
   if (!Array.isArray(settings.bindings) || settings.bindings.length) blockers.push('Worker bindings require an explicit reviewed migration');
@@ -209,6 +220,8 @@ export function buildPlan(snapshot, assetsDirectory = path.join(ROOT, 'landing')
     runtimeHandlers: Array.isArray(metadata.handlers) ? metadata.handlers.filter(name => PUBLIC_HANDLER_NAMES.has(name)) : [],
     unknownHandlerCount: Array.isArray(metadata.handlers) ? metadata.handlers.filter(name => !PUBLIC_HANDLER_NAMES.has(name)).length : null,
     handlerShapeRecognized: Array.isArray(metadata.handlers),
+    hasNamedHandlers: nonempty(metadata.named_handlers),
+    platformAssetFetch,
     bindingCount: Array.isArray(settings.bindings) ? settings.bindings.length : null,
     settingKeys: Object.keys(settings).sort(), workersDev: subdomain.enabled, previewUrls: subdomain.previews_enabled,
   } };
