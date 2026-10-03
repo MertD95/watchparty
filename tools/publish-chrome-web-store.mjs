@@ -16,6 +16,68 @@ const KNOWN_STATES = new Set([...ACTIVE_STATES, 'REJECTED', 'CANCELLED']);
 // The UploadState schema calls this IN_PROGRESS; method prose also mentions
 // UPLOAD_IN_PROGRESS. Handle both without treating any unknown state as success.
 const IN_PROGRESS = new Set(['IN_PROGRESS', 'UPLOAD_IN_PROGRESS']);
+const VALIDATION_PERMISSIONS = ['declarativeNetRequestWithHostAccess', 'declarativeNetRequest',
+  'offscreen', 'storage', 'scripting', 'sidePanel', 'host_permissions'];
+const GOOGLE_ERROR_STATUSES = new Set(['INVALID_ARGUMENT', 'FAILED_PRECONDITION']);
+
+// Classify only an explicit review-validation failure. Provider strings stay in
+// memory; the diagnostic contains fixed labels and known permission names only.
+// Read at most 32 KiB / 128 chunks and inspect only these bounded schema paths.
+async function submissionValidationDiagnostic(response) {
+  let reader;
+  try {
+    reader = response.body?.getReader();
+    if (!reader) return null;
+    const chunks = [];
+    let bytes = 0, complete = false;
+    for (let reads = 0; reads < 128; reads++) {
+      const chunk = await reader.read();
+      if (chunk.done) { complete = true; break; }
+      if (!(chunk.value instanceof Uint8Array) || bytes + chunk.value.byteLength > 32768) return null;
+      bytes += chunk.value.byteLength;
+      chunks.push(Buffer.from(chunk.value));
+    }
+    if (!complete) return null;
+    const data = JSON.parse(Buffer.concat(chunks, bytes).toString('utf8'));
+    const error = data?.error;
+    if (!error || typeof error !== 'object' || Array.isArray(error)) return null;
+    const texts = [];
+    const add = value => {
+      if (typeof value === 'string' && value.length <= 4096 && texts.length < 128) texts.push(value);
+    };
+    const entries = value => Array.isArray(value) ? value.slice(0, 16) : [];
+    add(error.message);
+    for (const detail of entries(error.details)) {
+      if (!detail || typeof detail !== 'object' || Array.isArray(detail)) continue;
+      add(detail.message);
+      add(detail.description);
+      for (const warning of entries(detail.warnings)) {
+        add(warning?.reason);
+        add(warning?.description);
+      }
+      for (const violation of entries(detail.fieldViolations)) {
+        add(violation?.field);
+        add(violation?.description);
+      }
+    }
+    const mentions = expression => texts.some(value => expression.test(value));
+    return {
+      event: 'submission-validation-failed',
+      httpStatus: response.status,
+      googleStatus: GOOGLE_ERROR_STATUSES.has(error.status) ? error.status : null,
+      mentionsPermissionJustification: mentions(/\b(?:permission\w*[^\n]{0,120}justif\w*|justif\w*[^\n]{0,120}permission\w*)\b/i),
+      mentionsMissingRequiredValue: mentions(/\b(?:missing|required|empty|blank|not provided|not supplied|not specified)\b/i),
+      mentionsPrivacyPolicy: mentions(/\bprivacy[ _-]+policy\b/i),
+      mentionsStoreListing: mentions(/\b(?:store[ _-]+listing|listing[ _-]+(?:description|metadata)|screenshots?)\b/i),
+      knownPermissions: VALIDATION_PERMISSIONS.filter(permission => mentions(new RegExp(`\\b${permission}\\b`, 'i'))),
+    };
+  } catch {
+    return null;
+  } finally {
+    try { await reader?.cancel(); } catch {}
+    try { reader?.releaseLock(); } catch {}
+  }
+}
 
 export function compareVersions(a, b) {
   const left = a.split('.').map(Number);
@@ -117,7 +179,13 @@ export async function runPublisher({ env = process.env, submit = false, uploadOn
     }
     // Do not echo response bodies, OAuth data, HTTP headers or provider error
     // descriptions: these can contain credentials or publisher-only metadata.
-    if (!response.ok) throw new Error(`${label} failed (HTTP ${response.status}). Check the Chrome Web Store dashboard or OAuth configuration.`);
+    if (!response.ok) {
+      if (label === 'Submit for review' && [400, 412].includes(response.status)) {
+        const diagnostic = await submissionValidationDiagnostic(response);
+        if (diagnostic) log(JSON.stringify(diagnostic));
+      }
+      throw new Error(`${label} failed (HTTP ${response.status}). Check the Chrome Web Store dashboard or OAuth configuration.`);
+    }
     if (expectEmpty) {
       // cancelSubmission documents an empty response, unlike all other methods.
       let body;
