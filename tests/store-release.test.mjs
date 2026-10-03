@@ -142,6 +142,7 @@ test('release workflow keeps short-lived auth scoped, status cheap, and exact-ta
   assert.match(workflow, /vars\.CHROME_PUBLISH_ENABLED == 'true'/);
   assert.match(workflow, /run: node tools\/verify-release-source\.mjs/);
   assert.match(workflow, /CHROME_RELEASE_CANDIDATE_SHA: \$\{\{ vars\.CHROME_RELEASE_CANDIDATE_SHA \}\}/);
+  assert.match(workflow, /CHROME_RELEASE_CANDIDATE_BASE_SHA: \$\{\{ vars\.CHROME_RELEASE_CANDIDATE_BASE_SHA \}\}/);
   assert.match(workflow, /test "\$\{GITHUB_REF\}" = 'refs\/heads\/main'/);
   assert.match(workflow, /path: release-source/);
   assert.match(workflow, /ref: \$\{\{ github\.sha \}\}/);
@@ -387,6 +388,30 @@ test('release source guard allows main history and one exact candidate with trus
     { event: 'workflow_dispatch', ref: 'refs/heads/main', mainOnRelease: false },
     { event: 'workflow_dispatch', ref: 'refs/heads/release/v2.1.0', releaseOnMain: true },
   ]) assert.throws(() => verifyReleaseSource({ ...candidate, ...override }));
+});
+
+test('held candidate baseline permits only trusted-main dispatch of the exact pinned source after main advances', () => {
+  const releaseSha = 'a'.repeat(40), baseline = 'c'.repeat(40);
+  const held = { repository: 'MertD95/watchparty', event: 'workflow_dispatch', ref: 'refs/heads/main',
+    workflowSha: 'b'.repeat(40), releaseTag: 'v2.1.1', releaseSha, candidateSha: releaseSha,
+    candidateBaseSha: baseline, releaseOnMain: false, mainOnRelease: false,
+    baseOnRelease: true, baseOnMain: true };
+  assert.deepEqual(verifyReleaseSource(held), { releaseTag: 'v2.1.1', releaseSha });
+  for (const override of [
+    { candidateSha: undefined }, { candidateSha: 'd'.repeat(40) }, { candidateSha: releaseSha + '\n' },
+    { candidateBaseSha: undefined }, { candidateBaseSha: '' }, { candidateBaseSha: 'main' },
+    { candidateBaseSha: baseline.toUpperCase() }, { candidateBaseSha: baseline + '\n' },
+    { baseOnRelease: false }, { baseOnMain: false }, { baseOnRelease: 'true' }, { baseOnMain: 'true' },
+    { ref: 'refs/heads/release/v2.1.1' }, { ref: 'refs/tags/v2.1.1' },
+    { repository: 'someone/watchparty' }, { event: 'push' },
+    // A matching tag's own workflow cannot use the manual-main baseline exception.
+    { event: 'release', ref: 'refs/tags/v2.1.1', workflowSha: releaseSha },
+  ]) assert.throws(() => verifyReleaseSource({ ...held, ...override }));
+  // Release events retain their original exact tag identity AND current-main ancestry.
+  assert.doesNotThrow(() => verifyReleaseSource({ ...held, event: 'release', ref: 'refs/tags/v2.1.1',
+    workflowSha: releaseSha, mainOnRelease: true }));
+  assert.throws(() => verifyReleaseSource({ ...held, event: 'release', ref: 'refs/tags/v2.1.1',
+    workflowSha: 'd'.repeat(40), mainOnRelease: true }));
 });
 
 test('upload-only prepares the exact package and stops before review or publication', async () => {
