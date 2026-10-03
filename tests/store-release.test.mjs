@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { runPublisher, compareVersions, validateReleasePackage } from '../tools/publish-chrome-web-store.mjs';
 import { readStorePackage } from '../tools/validate-store-package.mjs';
+import { verifyReleaseSource } from '../tools/verify-release-source.mjs';
 
 const env = { CHROME_EXTENSION_ID: 'a'.repeat(32), CHROME_PUBLISHER_ID: 'test-publisher',
   CHROME_CLIENT_ID: 'private-client-id', CHROME_CLIENT_SECRET: 'private-client-secret', CHROME_REFRESH_TOKEN: 'private-refresh-token' };
@@ -97,7 +98,7 @@ test('short-lived supplied access token requires no OAuth secrets and never refr
   assert.ok(submit.calls.every(call => !call.url.includes('oauth2.googleapis.com')));
 });
 
-test('supplied token failures do not fall back to legacy secrets or expose the token', async () => {
+test('supplied token failures do not fall back to OAuth refresh credentials or expose the token', async () => {
   for (const invalid of ['', ' ', 'private\nsecret', 'private\rsecret', 'private\tsecret']) {
     const h = harness([], { env: { ...env, CHROME_ACCESS_TOKEN: invalid }, submit: false });
     await assert.rejects(h.run(), /valid OAuth access token/);
@@ -138,7 +139,8 @@ test('release workflow keeps short-lived auth scoped, status cheap, and exact-ta
   assert.match(workflow, /!github\.event\.release\.prerelease/);
   assert.match(workflow, /inputs\.mode == 'package' \|\| inputs\.mode == 'submit'/);
   assert.match(workflow, /vars\.CHROME_PUBLISH_ENABLED == 'true'/);
-  assert.match(workflow, /git merge-base --is-ancestor "\$\{release_sha\}" origin\/main/);
+  assert.match(workflow, /run: node tools\/verify-release-source\.mjs/);
+  assert.match(workflow, /CHROME_RELEASE_CANDIDATE_SHA: \$\{\{ vars\.CHROME_RELEASE_CANDIDATE_SHA \}\}/);
   assert.match(workflow, /test "\$\{GITHUB_REF\}" = 'refs\/heads\/main'/);
   assert.match(workflow, /path: release-source/);
   assert.match(workflow, /ref: \$\{\{ github\.sha \}\}/);
@@ -179,7 +181,7 @@ test('store submission uses API v2, exact ZIP and mandatory review with warning 
   assert.match(h.calls[2].url, /^https:\/\/chromewebstore\.googleapis\.com\/upload\/v2\/publishers\//);
   assert.deepEqual(h.calls[2].body, archive());
   assert.equal(h.calls[2].headers['Content-Type'], 'application/zip');
-  assert.deepEqual(JSON.parse(h.calls[4].body), { publishType: 'DEFAULT_PUBLISH', skipReview: false, blockOnWarnings: true });
+  assert.deepEqual(JSON.parse(h.calls[4].body), { publishType: 'STAGED_PUBLISH', skipReview: false, blockOnWarnings: true });
   assert.ok(h.logs.some(line => JSON.parse(line).event === 'submission-accepted' && JSON.parse(line).approved === false));
 });
 
@@ -352,13 +354,148 @@ test('status and ordinary release submission never cancel even when an expected 
 
 test('workflow cancellation is manual-only, skips packaging and uses protected explicit expected-version input', () => {
   const workflow = fs.readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
-  assert.match(workflow, /options: \[status, package, submit, cancel-review\]/);
-  assert.match(workflow, /expected_pending_version:/);
-  assert.match(workflow, /CHROME_EXPECTED_PENDING_VERSION: \$\{\{ inputs\.expected_pending_version \}\}/);
+  assert.match(workflow, /options: \[status, package, submit, cancel-review, publish-staged\]/);
+  assert.match(workflow, /expected_version:/);
+  assert.match(workflow, /CHROME_EXPECTED_PENDING_VERSION: \$\{\{ inputs\.expected_version \}\}/);
   const packageJob = workflow.slice(workflow.indexOf('  package:'), workflow.indexOf('  chrome-store:'));
   assert.doesNotMatch(packageJob, /cancel-review/);
-  assert.match(workflow, /github\.event_name == 'workflow_dispatch' && \(inputs\.mode == 'status' \|\| inputs\.mode == 'cancel-review'\)/);
+  assert.match(workflow, /github\.event_name == 'workflow_dispatch' && \(inputs\.mode == 'status' \|\| inputs\.mode == 'cancel-review' \|\| inputs\.mode == 'publish-staged'\)/);
   assert.match(workflow, /if \[ "\$\{STORE_MODE\}" = 'cancel-review' \]; then\r?\n\s+test "\$\{GITHUB_EVENT_NAME\}" = 'workflow_dispatch'/);
   assert.equal((workflow.match(/--cancel-review "\$\{CHROME_EXPECTED_PENDING_VERSION\}"/g) || []).length, 2);
   assert.doesNotMatch(workflow, /npm (?:ci|install|test|run verify)|node --test/);
+});
+
+test('release source guard allows main history and only one authorized descendant release-tag candidate', () => {
+  const releaseSha = 'a'.repeat(40), candidate = { repository: 'MertD95/watchparty', event: 'release',
+    ref: 'refs/tags/v2.1.0', workflowSha: releaseSha, releaseTag: 'v2.1.0', releaseSha,
+    releaseOnMain: false, mainOnRelease: true, candidateSha: releaseSha };
+  assert.deepEqual(verifyReleaseSource(candidate), { releaseTag: 'v2.1.0', releaseSha });
+  assert.doesNotThrow(() => verifyReleaseSource({ ...candidate, releaseOnMain: true, candidateSha: undefined, mainOnRelease: false }));
+  assert.doesNotThrow(() => verifyReleaseSource({ ...candidate, event: 'workflow_dispatch', ref: 'refs/heads/main',
+    workflowSha: 'b'.repeat(40), releaseOnMain: true, candidateSha: undefined }));
+  for (const override of [
+    { repository: 'someone/watchparty' }, { event: 'push' }, { ref: 'refs/heads/release/v2.1.0' },
+    { workflowSha: 'b'.repeat(40) }, { releaseSha: 'not-a-sha' }, { releaseTag: 'v2.1.0-beta' },
+    { releaseTag: 'v02.1.0' }, { releaseTag: 'v2.1.0\n' }, { releaseTag: 'v2.1.0;echo unsafe' },
+    { candidateSha: undefined }, { candidateSha: 'b'.repeat(40) }, { candidateSha: releaseSha + '\n' },
+    { candidateSha: releaseSha.toUpperCase() }, { mainOnRelease: false }, { mainOnRelease: 'true' },
+    { event: 'workflow_dispatch', ref: 'refs/heads/main' },
+    { event: 'workflow_dispatch', ref: 'refs/heads/release/v2.1.0', releaseOnMain: true },
+  ]) assert.throws(() => verifyReleaseSource({ ...candidate, ...override }));
+});
+
+const stagedTwo = () => status({ submittedItemRevisionStatus: revision('STAGED', '2.0.2') });
+const publishedTwo = () => status({ publishedItemRevisionStatus: revision('PUBLISHED', '2.0.2') });
+const activateHarness = (responses, options = {}) => harness(responses, {
+  submit: false, publishStaged: true, expectedStagedVersion: '2.0.2', zipBytes: undefined, ...options,
+});
+
+test('staged activation is exact-version, exclusive and package-free before authentication', async () => {
+  for (const expectedStagedVersion of [undefined, '', 'v2.0.2', '02.0.2', '2.0.2\n', '65536', '1.2.3.4.5']) {
+    const h = activateHarness([], { expectedStagedVersion });
+    await assert.rejects(h.run(), /exact expected staged version/);
+    assert.equal(h.calls.length, 0);
+  }
+  for (const options of [{ submit: true }, { cancelReview: true }, { zipBytes: archive() }]) {
+    const h = activateHarness([], options);
+    await assert.rejects(h.run(), /separate operations|must not receive/);
+    assert.equal(h.calls.length, 0);
+  }
+});
+
+test('staged activation rechecks approved exact version then publishes once and confirms without upload', async () => {
+  const h = activateHarness([token(), stagedTwo(), stagedTwo(), { ...identity, state: 'PUBLISHED' }, publishedTwo()]);
+  assert.equal((await h.run()).event, 'staged-publication-confirmed');
+  const mutations = h.calls.filter(call => call.method === 'POST' && !call.url.includes('oauth2.googleapis.com'));
+  assert.equal(mutations.length, 1);
+  assert.equal(mutations[0].url, `https://chromewebstore.googleapis.com/v2/${identity.name}:publish`);
+  assert.deepEqual(JSON.parse(mutations[0].body), { publishType: 'DEFAULT_PUBLISH', skipReview: false, blockOnWarnings: true });
+  assert.equal(h.calls.filter(call => call.url.endsWith(':fetchStatus')).length, 3);
+  assert.ok(h.logs.some(line => JSON.parse(line).event === 'staged-publication-accepted'));
+  for (const secret of [env.CHROME_CLIENT_ID, env.CHROME_CLIENT_SECRET, env.CHROME_REFRESH_TOKEN, 'private-access-token']) {
+    assert.equal(h.logs.join('').includes(secret), false);
+  }
+});
+
+test('staged activation refuses unapproved, missing, mismatched, ambiguous, unknown or policy-blocked state', async () => {
+  const ambiguous = revision('STAGED', '2.0.2');
+  ambiguous.distributionChannels.push({ crxVersion: '2.0.3' });
+  const missingVersion = revision('STAGED', '2.0.2');
+  missingVersion.distributionChannels.push({});
+  for (const initial of [status(), pending,
+    status({ submittedItemRevisionStatus: revision('REJECTED', '2.0.2') }),
+    status({ submittedItemRevisionStatus: revision('STAGED', '2.0.3') }),
+    status({ submittedItemRevisionStatus: revision('STAGED', '2.0.2.0') }),
+    status({ submittedItemRevisionStatus: ambiguous }), status({ submittedItemRevisionStatus: missingVersion }),
+    { ...stagedTwo(), warned: true }, { ...stagedTwo(), takenDown: true },
+    { ...stagedTwo(), lastAsyncUploadState: 'UPLOAD_IN_PROGRESS' },
+    { ...stagedTwo(), publishedItemRevisionStatus: revision('PUBLISHED', '2.0.3') },
+    { ...stagedTwo(), publishedItemRevisionStatus: revision('FUTURE_STATE', '2.0.1') },
+    { ...stagedTwo(), publishedItemRevisionStatus: { state: 'PUBLISHED' } },
+    { ...stagedTwo(), publishedItemRevisionStatus: { state: 'PUBLISHED', distributionChannels: [{ crxVersion: '2.0.1' }, {}] } },
+  ]) {
+    const h = activateHarness([token(), initial]);
+    await assert.rejects(h.run(), /no staged publication was performed/);
+    assert.equal(h.calls.length, 2);
+    assert.equal(h.calls.some(call => call.url.endsWith(':publish')), false);
+  }
+});
+
+test('already published exact staged target is idempotent at initial or immediate preflight status', async () => {
+  for (const responses of [[token(), publishedTwo()], [token(), stagedTwo(), publishedTwo()]]) {
+    const h = activateHarness(responses);
+    assert.equal((await h.run()).event, 'already-published-no-changes');
+    assert.equal(h.calls.some(call => call.url.endsWith(':publish')), false);
+  }
+  for (const changed of [pending, status({ submittedItemRevisionStatus: revision('STAGED', '2.0.3') }), { ...stagedTwo(), warned: true }]) {
+    const h = activateHarness([token(), stagedTwo(), changed]);
+    await assert.rejects(h.run(), /no staged publication was performed/);
+    assert.equal(h.calls.some(call => call.url.endsWith(':publish')), false);
+  }
+});
+
+test('staged activation polls only status after acceptance and never retries ambiguous publication', async () => {
+  const h = activateHarness([token(), stagedTwo(), stagedTwo(), { ...identity, state: 'PUBLISHED' }, stagedTwo(), publishedTwo()], { maxPolls: 1 });
+  assert.equal((await h.run()).event, 'staged-publication-confirmed');
+  assert.equal(h.calls.filter(call => call.url.endsWith(':publish')).length, 1);
+  for (const failure of [new Error('private-provider-data'), { httpError: 409, details: 'private-provider-data' },
+    { ...identity, state: 'PENDING_REVIEW' }, { ...identity, itemId: 'wrong-item', state: 'PUBLISHED' }]) {
+    const failed = activateHarness([token(), stagedTwo(), stagedTwo(), failure]);
+    await assert.rejects(failed.run(), error => !error.message.includes('private-provider-data'));
+    assert.equal(failed.calls.filter(call => call.url.endsWith(':publish')).length, 1);
+  }
+  for (const followup of [new Error('private-provider-data'), stagedTwo(), { ...publishedTwo(), warned: true },
+    status({ publishedItemRevisionStatus: revision('PUBLISHED', '2.0.3') })]) {
+    const failed = activateHarness([token(), stagedTwo(), stagedTwo(), { ...identity, state: 'PUBLISHED' }, followup], { maxPolls: 0 });
+    await assert.rejects(failed.run());
+    assert.equal(failed.calls.filter(call => call.url.endsWith(':publish')).length, 1);
+    assert.ok(failed.logs.some(line => JSON.parse(line).event === 'staged-publication-accepted'));
+  }
+});
+
+test('CI staged publication requires enabled trusted manual main and never automatically activates a submission', async () => {
+  const trusted = { ...env, GITHUB_ACTIONS: 'true', GITHUB_EVENT_NAME: 'workflow_dispatch',
+    GITHUB_REF: 'refs/heads/main', GITHUB_REPOSITORY: 'MertD95/watchparty', CHROME_PUBLISH_ENABLED: 'true' };
+  for (const changes of [{ GITHUB_EVENT_NAME: 'release' }, { GITHUB_REF: 'refs/tags/v2.0.2' },
+    { GITHUB_REPOSITORY: 'someone/watchparty' }, { CHROME_PUBLISH_ENABLED: 'false' }]) {
+    const h = activateHarness([], { env: { ...trusted, ...changes } });
+    await assert.rejects(h.run(), /enabled manual dispatch/);
+    assert.equal(h.calls.length, 0);
+  }
+  const h = activateHarness([stagedTwo(), stagedTwo(), { ...identity, state: 'PUBLISHED' }, publishedTwo()], {
+    env: { ...trusted, CHROME_ACCESS_TOKEN: 'private-short-lived-token' },
+  });
+  assert.equal((await h.run()).event, 'staged-publication-confirmed');
+  assert.equal(h.calls.some(call => call.url.includes('oauth2.googleapis.com')), false);
+  for (const submit of [true, false]) {
+    const passive = harness([token(), stagedTwo()], { submit, expectedStagedVersion: '2.0.2' });
+    assert.match((await passive.run()).event, /already-submitted-no-changes|status-only-no-changes/);
+    assert.equal(passive.calls.some(call => call.url.endsWith(':publish')), false);
+  }
+  const workflow = fs.readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
+  const packageJob = workflow.slice(workflow.indexOf('  package:'), workflow.indexOf('  chrome-store:'));
+  assert.doesNotMatch(packageJob, /publish-staged/);
+  assert.match(workflow, /CHROME_EXPECTED_STAGED_VERSION: \$\{\{ inputs\.expected_version \}\}/);
+  assert.match(workflow, /if \[ "\$\{STORE_MODE\}" = 'publish-staged' \]; then\r?\n\s+test "\$\{GITHUB_EVENT_NAME\}" = 'workflow_dispatch'/);
+  assert.equal((workflow.match(/--publish-staged "\$\{CHROME_EXPECTED_STAGED_VERSION\}"/g) || []).length, 2);
 });

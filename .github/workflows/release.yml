@@ -6,17 +6,17 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'Package/submit a tested tag, check status, or explicitly cancel an expected pending review'
+        description: 'Package, submit for staged review, check status, or explicitly publish/cancel an exact version'
         required: true
         default: status
         type: choice
-        options: [status, package, submit, cancel-review]
+        options: [status, package, submit, cancel-review, publish-staged]
       release_tag:
-        description: 'Existing stable tag for package/submit (e.g. v2.0.4); ignored for status/cancel-review'
+        description: 'Existing stable tag for package/submit (e.g. v2.1.0); ignored for other modes'
         required: false
         type: string
-      expected_pending_version:
-        description: 'Required only for cancel-review: exact version currently pending (e.g. 2.0.3). No automatic replacement.'
+      expected_version:
+        description: 'Required for cancel-review or publish-staged: exact pending/staged version (e.g. 2.1.0). Never automatic.'
         required: false
         type: string
 
@@ -52,37 +52,21 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: ${{ env.NODE_VERSION }}
       - name: Verify trusted release source
         id: source
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
-        run: |
-          set -euo pipefail
-          test "${GITHUB_REPOSITORY}" = 'MertD95/watchparty'
-          if [ "${GITHUB_EVENT_NAME}" = 'workflow_dispatch' ]; then
-            test "${GITHUB_REF}" = 'refs/heads/main'
-          fi
-          if ! [[ "${RELEASE_TAG}" =~ ^v(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*)){0,3}$ ]]; then
-            echo '::error::Provide an existing stable release tag such as v2.0.2.'
-            exit 1
-          fi
-          release_sha="$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}")"
-          git merge-base --is-ancestor "${release_sha}" origin/main
-          if [ "${GITHUB_EVENT_NAME}" = 'release' ]; then
-            test "${GITHUB_REF}" = "refs/tags/${RELEASE_TAG}"
-            test "${release_sha}" = "${GITHUB_SHA}"
-          fi
-          echo "release_tag=${RELEASE_TAG}" >> "${GITHUB_OUTPUT}"
-          echo "release_sha=${release_sha}" >> "${GITHUB_OUTPUT}"
+          CHROME_RELEASE_CANDIDATE_SHA: ${{ vars.CHROME_RELEASE_CANDIDATE_SHA }}
+        run: node tools/verify-release-source.mjs
       - name: Checkout exact tested tag separately from workflow tools
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
         with:
           ref: ${{ steps.source.outputs.release_sha }}
           path: release-source
           persist-credentials: false
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
-        with:
-          node-version: ${{ env.NODE_VERSION }}
       - name: Package extension (no tests or dependency install)
         env:
           CHROME_RELEASE_TAG: ${{ steps.source.outputs.release_tag }}
@@ -115,7 +99,7 @@ jobs:
     # before entering the environment. A disabled manual submit fails closed below.
     if: >-
       always() && !cancelled() &&
-      ((github.event_name == 'workflow_dispatch' && (inputs.mode == 'status' || inputs.mode == 'cancel-review')) ||
+      ((github.event_name == 'workflow_dispatch' && (inputs.mode == 'status' || inputs.mode == 'cancel-review' || inputs.mode == 'publish-staged')) ||
        (needs.package.result == 'success' &&
         ((github.event_name == 'workflow_dispatch' && inputs.mode == 'submit') ||
          (github.event_name == 'release' && vars.CHROME_PUBLISH_ENABLED == 'true'))))
@@ -129,7 +113,8 @@ jobs:
       CHROME_PUBLISH_ENABLED: ${{ vars.CHROME_PUBLISH_ENABLED }}
       CHROME_RELEASE_TAG: ${{ needs.package.outputs.release_tag }}
       STORE_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'submit' }}
-      CHROME_EXPECTED_PENDING_VERSION: ${{ inputs.expected_pending_version }}
+      CHROME_EXPECTED_PENDING_VERSION: ${{ inputs.expected_version }}
+      CHROME_EXPECTED_STAGED_VERSION: ${{ inputs.expected_version }}
     steps:
       - name: Require trusted invocation and configured store identity
         env:
@@ -145,7 +130,7 @@ jobs:
             test "${GITHUB_REF}" = 'refs/heads/main'
           fi
           case "${STORE_MODE}" in
-            status|submit|cancel-review) ;;
+            status|submit|cancel-review|publish-staged) ;;
             *) echo '::error::Unsupported store operation.'; exit 1 ;;
           esac
           if [ "${STORE_MODE}" != 'status' ] && [ "${CHROME_PUBLISH_ENABLED}" != 'true' ]; then
@@ -156,6 +141,13 @@ jobs:
             test "${GITHUB_EVENT_NAME}" = 'workflow_dispatch'
             if ! [[ "${CHROME_EXPECTED_PENDING_VERSION}" =~ ^(0|[1-9][0-9]{0,4})(\.(0|[1-9][0-9]{0,4})){0,3}$ ]]; then
               echo '::error::Provide the exact expected pending version before cancelling its review.'
+              exit 1
+            fi
+          fi
+          if [ "${STORE_MODE}" = 'publish-staged' ]; then
+            test "${GITHUB_EVENT_NAME}" = 'workflow_dispatch'
+            if ! [[ "${CHROME_EXPECTED_STAGED_VERSION}" =~ ^(0|[1-9][0-9]{0,4})(\.(0|[1-9][0-9]{0,4})){0,3}$ ]]; then
+              echo '::error::Provide the exact approved staged version before publishing.'
               exit 1
             fi
           fi
@@ -210,6 +202,7 @@ jobs:
           case "${STORE_MODE}" in
             status) node tools/publish-chrome-web-store.mjs --status ;;
             cancel-review) node tools/publish-chrome-web-store.mjs --cancel-review "${CHROME_EXPECTED_PENDING_VERSION}" ;;
+            publish-staged) node tools/publish-chrome-web-store.mjs --publish-staged "${CHROME_EXPECTED_STAGED_VERSION}" ;;
             submit) node tools/publish-chrome-web-store.mjs --submit "${PACKAGE_NAME}" ;;
             *) exit 1 ;;
           esac
@@ -225,6 +218,7 @@ jobs:
           case "${STORE_MODE}" in
             status) node tools/publish-chrome-web-store.mjs --status ;;
             cancel-review) node tools/publish-chrome-web-store.mjs --cancel-review "${CHROME_EXPECTED_PENDING_VERSION}" ;;
+            publish-staged) node tools/publish-chrome-web-store.mjs --publish-staged "${CHROME_EXPECTED_STAGED_VERSION}" ;;
             submit) node tools/publish-chrome-web-store.mjs --submit "${PACKAGE_NAME}" ;;
             *) exit 1 ;;
           esac

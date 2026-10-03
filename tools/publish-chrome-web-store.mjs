@@ -10,7 +10,7 @@ import { readStorePackage } from './validate-store-package.mjs';
 // https://developer.chrome.com/docs/webstore/api/reference/rest/v2/publishers.items/cancelSubmission
 const API = 'https://chromewebstore.googleapis.com';
 const ID_ENV = ['CHROME_EXTENSION_ID', 'CHROME_PUBLISHER_ID'];
-const LEGACY_AUTH_ENV = ['CHROME_CLIENT_ID', 'CHROME_CLIENT_SECRET', 'CHROME_REFRESH_TOKEN'];
+const OAUTH_AUTH_ENV = ['CHROME_CLIENT_ID', 'CHROME_CLIENT_SECRET', 'CHROME_REFRESH_TOKEN'];
 const ACTIVE_STATES = new Set(['PENDING_REVIEW', 'STAGED', 'PUBLISHED', 'PUBLISHED_TO_TESTERS']);
 const KNOWN_STATES = new Set([...ACTIVE_STATES, 'REJECTED', 'CANCELLED']);
 // The UploadState schema calls this IN_PROGRESS; method prose also mentions
@@ -40,6 +40,17 @@ function versions(revision) {
   return (revision?.distributionChannels || []).map(channel => channel.crxVersion).filter(value => typeof value === 'string' && /^\d+(?:\.\d+){0,3}$/.test(value));
 }
 
+function validExpectedVersion(version) {
+  return typeof version === 'string'
+    && /^(?:0|[1-9]\d{0,4})(?:\.(?:0|[1-9]\d{0,4})){0,3}$/.test(version)
+    && version.split('.').every(part => Number(part) <= 65535);
+}
+
+function matchesExactVersion(revision, version) {
+  return Array.isArray(revision?.distributionChannels) && revision.distributionChannels.length > 0
+    && revision.distributionChannels.every(channel => channel?.crxVersion === version);
+}
+
 function summarize(status) {
   return {
     publishedState: status.publishedItemRevisionStatus?.state || null,
@@ -52,19 +63,20 @@ function summarize(status) {
   };
 }
 
-export async function runPublisher({ env = process.env, submit = false, cancelReview = false,
-  expectedPendingVersion = env.CHROME_EXPECTED_PENDING_VERSION, zipBytes, expectedTag = env.CHROME_RELEASE_TAG,
+export async function runPublisher({ env = process.env, submit = false, cancelReview = false, publishStaged = false,
+  expectedPendingVersion = env.CHROME_EXPECTED_PENDING_VERSION, expectedStagedVersion = env.CHROME_EXPECTED_STAGED_VERSION,
+  zipBytes, expectedTag = env.CHROME_RELEASE_TAG,
   fetchImpl = globalThis.fetch, sleep = delay, now = Date.now, log = console.log,
   pollIntervalMs = 5000, maxPolls = 24, uploadDeadlineMs = 180000 } = {}) {
   const suppliedToken = env.CHROME_ACCESS_TOKEN !== undefined;
-  const missing = [...ID_ENV, ...(suppliedToken ? [] : LEGACY_AUTH_ENV)].filter(name => !env[name]?.trim());
+  const missing = [...ID_ENV, ...(suppliedToken ? [] : OAUTH_AUTH_ENV)].filter(name => !env[name]?.trim());
   if (missing.length) throw new Error(`Missing required environment variables: ${missing.join(', ')}.`);
   if (!/^[a-p]{32}$/.test(env.CHROME_EXTENSION_ID) || !/^[A-Za-z0-9_-]+$/.test(env.CHROME_PUBLISHER_ID)) throw new Error('Invalid Chrome item or publisher ID.');
-  if (cancelReview && submit) throw new Error('Cancel review and submit are separate operations; they cannot run together.');
+  if ([submit, cancelReview, publishStaged].filter(Boolean).length > 1) {
+    throw new Error('Submit, cancel review and publish staged are separate operations; they cannot run together.');
+  }
   if (cancelReview) {
-    if (typeof expectedPendingVersion !== 'string'
-      || !/^(?:0|[1-9]\d{0,4})(?:\.(?:0|[1-9]\d{0,4})){0,3}$/.test(expectedPendingVersion)
-      || expectedPendingVersion.split('.').some(part => Number(part) > 65535)) {
+    if (!validExpectedVersion(expectedPendingVersion)) {
       throw new Error('Cancel review requires the exact expected pending version, such as 2.0.3.');
     }
     if (zipBytes !== undefined) throw new Error('Cancel review must not receive a release package.');
@@ -74,9 +86,18 @@ export async function runPublisher({ env = process.env, submit = false, cancelRe
       throw new Error('CI cancellation requires an explicitly enabled manual dispatch from trusted main.');
     }
   }
+  if (publishStaged) {
+    if (!validExpectedVersion(expectedStagedVersion)) throw new Error('Publish staged requires the exact expected staged version, such as 2.1.0.');
+    if (zipBytes !== undefined) throw new Error('Publish staged must not receive a release package.');
+    if (env.GITHUB_ACTIONS === 'true' && (env.GITHUB_EVENT_NAME !== 'workflow_dispatch'
+      || env.GITHUB_REF !== 'refs/heads/main' || env.GITHUB_REPOSITORY !== 'MertD95/watchparty'
+      || env.CHROME_PUBLISH_ENABLED !== 'true')) {
+      throw new Error('CI staged publication requires an explicitly enabled manual dispatch from trusted main.');
+    }
+  }
   if (submit && env.GITHUB_ACTIONS === 'true' && env.CHROME_PUBLISH_ENABLED !== 'true') throw new Error('Chrome submission is disabled; CHROME_PUBLISH_ENABLED must be true.');
   if (submit && env.GITHUB_ACTIONS === 'true' && !expectedTag) throw new Error('A release tag is required for CI submission.');
-  const version = cancelReview ? expectedPendingVersion
+  const version = publishStaged ? expectedStagedVersion : cancelReview ? expectedPendingVersion
     : submit ? (expectedTag === undefined ? readStorePackage(zipBytes).manifest.version : validateReleasePackage(zipBytes, expectedTag)) : null;
   const name = `publishers/${env.CHROME_PUBLISHER_ID}/items/${env.CHROME_EXTENSION_ID}`;
   const endpoint = `${API}/v2/${name}`;
@@ -137,10 +158,62 @@ export async function runPublisher({ env = process.env, submit = false, cancelRe
   }
   const initial = await fetchStatus();
   report('initial-status', initial);
+  if (publishStaged) {
+    const alreadyPublished = status => status.publishedItemRevisionStatus?.state === 'PUBLISHED'
+      && matchesExactVersion(status.publishedItemRevisionStatus, expectedStagedVersion);
+    const assertPublicationTarget = status => {
+      if (status.takenDown || status.warned || IN_PROGRESS.has(status.lastAsyncUploadState)) {
+        throw new Error('Store policy or upload state requires inspection; no staged publication was performed.');
+      }
+      if (alreadyPublished(status)) return;
+      const published = status.publishedItemRevisionStatus;
+      if (published && (!['PUBLISHED', 'PUBLISHED_TO_TESTERS'].includes(published.state)
+        || !Array.isArray(published.distributionChannels) || !published.distributionChannels.length
+        || published.distributionChannels.some(channel => !validExpectedVersion(channel?.crxVersion)))) {
+        throw new Error('Published version is unknown; no staged publication was performed.');
+      }
+      if (versions(published).some(current => compareVersions(current, expectedStagedVersion) >= 0)) {
+        throw new Error('The expected version or a newer version is already published in a different state; no staged publication was performed.');
+      }
+      if (status.submittedItemRevisionStatus?.state !== 'STAGED'
+        || !matchesExactVersion(status.submittedItemRevisionStatus, expectedStagedVersion)) {
+        throw new Error('The approved staged item does not exactly match the expected version; no staged publication was performed.');
+      }
+    };
+    assertPublicationTarget(initial);
+    if (alreadyPublished(initial)) return report('already-published-no-changes', initial);
+    // Google supplies no atomic version/etag precondition. Serialize workflows,
+    // re-read immediately before the one mutation, and avoid dashboard edits.
+    const preflight = await fetchStatus();
+    assertPublicationTarget(preflight);
+    if (alreadyPublished(preflight)) return report('already-published-no-changes', preflight);
+    report('staged-publication-preflight', preflight);
+    const result = await request('Publish approved staged item', `${endpoint}:publish`, {
+      method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ publishType: 'DEFAULT_PUBLISH', skipReview: false, blockOnWarnings: true }),
+    });
+    if (result.name !== name || result.itemId !== env.CHROME_EXTENSION_ID || result.state !== 'PUBLISHED') {
+      throw new Error('Staged publication returned an unexpected response. Check --status before proceeding; publication was not retried.');
+    }
+    log(JSON.stringify({ event: 'staged-publication-accepted', itemId: env.CHROME_EXTENSION_ID,
+      requestedVersion: version, state: result.state }));
+    for (let poll = 0; poll <= maxPolls; poll++) {
+      let status;
+      try { status = await fetchStatus(); }
+      catch { throw new Error('Staged publication was accepted but status confirmation failed. Check --status before proceeding; do not automatically retry publication.'); }
+      if (status.takenDown || status.warned || IN_PROGRESS.has(status.lastAsyncUploadState)) {
+        throw new Error('Store policy or upload state changed after staged publication. Inspect --status before proceeding.');
+      }
+      if (alreadyPublished(status)) return report('staged-publication-confirmed', status);
+      // Waiting is read-only; a changed item or another submission is not success.
+      try { assertPublicationTarget(status); }
+      catch { throw new Error('Store state changed after staged publication. Inspect --status before proceeding; publication was not retried.'); }
+      if (poll < maxPolls) await sleep(pollIntervalMs);
+    }
+    throw new Error('Staged publication was accepted but the expected published version is not confirmed. Check --status before proceeding; publication was not retried.');
+  }
   if (cancelReview) {
-    const matchesExpectedVersion = revision => Array.isArray(revision?.distributionChannels)
-      && revision.distributionChannels.length > 0
-      && revision.distributionChannels.every(channel => channel?.crxVersion === expectedPendingVersion);
+    const matchesExpectedVersion = revision => matchesExactVersion(revision, expectedPendingVersion);
     const assertCancellationTarget = status => {
       if (status.takenDown || status.warned || IN_PROGRESS.has(status.lastAsyncUploadState)) {
         throw new Error('Store policy or upload state requires inspection; no cancellation was performed.');
@@ -228,12 +301,13 @@ export async function runPublisher({ env = process.env, submit = false, cancelRe
   }
   const publishedResult = await request('Submit for review', `${endpoint}:publish`, {
     method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ publishType: 'DEFAULT_PUBLISH', skipReview: false, blockOnWarnings: true }),
+    body: JSON.stringify({ publishType: 'STAGED_PUBLISH', skipReview: false, blockOnWarnings: true }),
   });
   if (publishedResult.name !== name || publishedResult.itemId !== env.CHROME_EXTENSION_ID
     || !ACTIVE_STATES.has(publishedResult.state)) throw new Error('Submission returned an unexpected response; inspect store status before retrying.');
   log(JSON.stringify({ event: 'submission-accepted', itemId: env.CHROME_EXTENSION_ID, requestedVersion: version, state: publishedResult.state,
-    approved: publishedResult.state === 'PUBLISHED', note: 'Google controls review and approval; accepted does not imply approved.' }));
+    approved: publishedResult.state === 'STAGED', stagedPublication: true,
+    note: 'Google controls review and approval. An approved staged version requires a separate explicit publication.' }));
   // Preserve the confirmed submission result if the read-only follow-up fails.
   try { return report('final-status', await fetchStatus(), { submissionState: publishedResult.state }); }
   catch { return { event: 'submission-accepted-status-unavailable', state: publishedResult.state, requestedVersion: version }; }
@@ -242,11 +316,12 @@ export async function runPublisher({ env = process.env, submit = false, cancelRe
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   try {
     const [mode, argument, ...extra] = process.argv.slice(2);
-    if (extra.length || !['--status', '--submit', '--cancel-review'].includes(mode) || (mode === '--status' ? argument : !argument)) {
-      throw new Error('Usage: node tools/publish-chrome-web-store.mjs --status | --submit <package.zip> | --cancel-review <expected-pending-version>');
+    if (extra.length || !['--status', '--submit', '--cancel-review', '--publish-staged'].includes(mode) || (mode === '--status' ? argument : !argument)) {
+      throw new Error('Usage: node tools/publish-chrome-web-store.mjs --status | --submit <package.zip> | --cancel-review <expected-pending-version> | --publish-staged <expected-staged-version>');
     }
-    const result = await runPublisher({ submit: mode === '--submit', cancelReview: mode === '--cancel-review',
+    const result = await runPublisher({ submit: mode === '--submit', cancelReview: mode === '--cancel-review', publishStaged: mode === '--publish-staged',
       expectedPendingVersion: mode === '--cancel-review' ? argument : undefined,
+      expectedStagedVersion: mode === '--publish-staged' ? argument : undefined,
       zipBytes: mode === '--submit' ? await fs.readFile(argument) : undefined });
     if (result.event === 'submission-accepted-status-unavailable') console.log(JSON.stringify(result));
   } catch (error) {
