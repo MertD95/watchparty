@@ -56,6 +56,7 @@ function harness(responses, options = {}) {
     assert.notEqual(response, undefined, `Unexpected request: ${url}`);
     if (response instanceof Error) throw response;
     return { ok: !response.httpError, status: response.httpError || response.httpStatus || 200,
+      body: response.body,
       json: async () => response,
       text: async () => response.rawText === undefined ? JSON.stringify(response) : response.rawText };
   };
@@ -211,6 +212,110 @@ test('store failure does not expose OAuth responses and mutations are not retrie
   const network = harness([token(), status(), new Error(env.CHROME_REFRESH_TOKEN)]);
   await assert.rejects(network.run(), error => !error.message.includes(env.CHROME_REFRESH_TOKEN) && /no automatic retry/.test(error.message));
   assert.equal(network.calls.length, 3);
+});
+
+function diagnosticBody(value, { chunkBytes, onCancel, failRead = false } = {}) {
+  const bytes = Buffer.from(typeof value === 'string' ? value : JSON.stringify(value));
+  let offset = 0;
+  return new ReadableStream({
+    pull(controller) {
+      if (failRead) { controller.error(new Error('private-provider-read-error')); return; }
+      if (offset === bytes.length) { controller.close(); return; }
+      const end = Math.min(bytes.length, offset + (chunkBytes || bytes.length));
+      controller.enqueue(bytes.subarray(offset, end));
+      offset = end;
+    },
+    cancel() { onCancel?.(); },
+  });
+}
+
+test('review validation failure logs only fixed diagnostic fields and never retries mutations', async () => {
+  for (const httpError of [400, 412]) {
+    const body = diagnosticBody({ error: { status: 'INVALID_ARGUMENT',
+      message: 'Permission justification is missing for sidePanel. private-access-token', details: [
+        { message: 'Privacy policy is required: https://private.example/secret',
+          description: 'Store listing description is empty; private-client-secret',
+          warnings: [{ reason: 'Permission justification required for scripting', description: 'storage private-refresh-token' }],
+          fieldViolations: [{ field: 'host_permissions', description: 'offscreen and declarativeNetRequestWithHostAccess justification' }] },
+      ] } }, { chunkBytes: 17 });
+    const h = harness([token(), status(), uploaded(), status(), { httpError, body }]);
+    await assert.rejects(h.run(), new RegExp(`HTTP ${httpError}`));
+    const diagnostics = h.logs.map(line => JSON.parse(line)).filter(row => row.event === 'submission-validation-failed');
+    assert.deepEqual(diagnostics, [{ event: 'submission-validation-failed', httpStatus: httpError,
+      googleStatus: 'INVALID_ARGUMENT', mentionsPermissionJustification: true, mentionsMissingRequiredValue: true,
+      mentionsPrivacyPolicy: true, mentionsStoreListing: true,
+      knownPermissions: ['declarativeNetRequestWithHostAccess', 'offscreen', 'storage', 'scripting', 'sidePanel', 'host_permissions'] }]);
+    assert.equal(h.calls.filter(call => call.url.endsWith(':publish')).length, 1);
+    assert.equal(h.calls.filter(call => call.url.endsWith(':upload')).length, 1);
+    for (const secret of ['private-access-token', 'private-client-secret', 'private-refresh-token', 'https://private.example/secret']) {
+      assert.equal(h.logs.join('').includes(secret), false);
+    }
+  }
+});
+
+test('review diagnostics ignore arbitrary provider fields, unknown codes and permission substrings', async () => {
+  const body = diagnosticBody({ error: { status: 'private-provider-code', metadata: { message: 'Permission justification is missing for scripting' },
+    details: [{ nested: { description: 'Privacy policy required' }, warnings: [{ unexpected: 'Store listing blank' }],
+      fieldViolations: [{ field: 'privatestoragetoken', description: 'presidePanelpost' }] }] } });
+  const h = harness([token(), status(), uploaded(), status(), { httpError: 400, body }]);
+  await assert.rejects(h.run(), /HTTP 400/);
+  const diagnostic = h.logs.map(line => JSON.parse(line)).find(row => row.event === 'submission-validation-failed');
+  assert.deepEqual(diagnostic, { event: 'submission-validation-failed', httpStatus: 400, googleStatus: null,
+    mentionsPermissionJustification: false, mentionsMissingRequiredValue: false,
+    mentionsPrivacyPolicy: false, mentionsStoreListing: false, knownPermissions: [] });
+  assert.equal(h.logs.join('').includes('private-'), false);
+});
+
+test('review diagnostic body is byte-bounded and does not fall back to unbounded parsing', async () => {
+  const valid = JSON.stringify({ error: { status: 'FAILED_PRECONDITION', message: 'Permission justification missing for sidePanel' } });
+  const exact = valid.padEnd(32768, ' ');
+  const accepted = harness([token(), status(), uploaded(), status(), { httpError: 412, body: diagnosticBody(exact) }]);
+  await assert.rejects(accepted.run(), /HTTP 412/);
+  assert.equal(accepted.logs.map(line => JSON.parse(line)).some(row => row.googleStatus === 'FAILED_PRECONDITION'), true);
+  let cancelled = false;
+  const oversized = harness([token(), status(), uploaded(), status(), { httpError: 400,
+    body: diagnosticBody(exact + ' '.repeat(60000), { chunkBytes: 20000, onCancel: () => { cancelled = true; } }) }]);
+  await assert.rejects(oversized.run(), /HTTP 400/);
+  assert.equal(cancelled, true);
+  assert.equal(oversized.logs.some(line => line.includes('submission-validation-failed')), false);
+  assert.equal(oversized.calls.filter(call => call.url.endsWith(':publish')).length, 1);
+});
+
+test('review diagnostic traversal and chunk count are bounded and unknown bodies stay generic', async () => {
+  const tooMany = diagnosticBody({ error: { details: Array.from({ length: 17 }, (_, index) => index === 16
+    ? { message: 'Permission justification is missing for sidePanel' } : {}) } });
+  const ignored = harness([token(), status(), uploaded(), status(), { httpError: 400, body: tooMany }]);
+  await assert.rejects(ignored.run(), /HTTP 400/);
+  assert.equal(ignored.logs.map(line => JSON.parse(line)).find(row => row.event === 'submission-validation-failed').mentionsPermissionJustification, false);
+  const cases = [undefined, diagnosticBody('not JSON private-provider-data'), diagnosticBody({ error: [] }),
+    diagnosticBody({ error: { message: 'x'.repeat(4097) + 'Permission justification missing' } }),
+    diagnosticBody({ error: { message: 'Permission justification missing' }, padding: 'x'.repeat(256) }, { chunkBytes: 1 }),
+    diagnosticBody({}, { failRead: true })];
+  for (const body of cases) {
+    const h = harness([token(), status(), uploaded(), status(), { httpError: 400, body }]);
+    await assert.rejects(h.run(), error => /HTTP 400/.test(error.message) && !error.message.includes('private-'));
+    assert.equal(h.logs.some(line => line.includes('"mentionsPermissionJustification":true')), false);
+    assert.equal(h.logs.join('').includes('private-'), false);
+    assert.equal(h.calls.filter(call => call.url.endsWith(':publish')).length, 1);
+  }
+});
+
+test('sanitized review diagnostics never inspect OAuth, status, upload or nonvalidation errors', async () => {
+  let readAttempts = 0;
+  const forbiddenBody = { getReader() { readAttempts++; throw new Error('Nonvalidation response must not be read'); } };
+  for (const responses of [
+    [{ httpError: 400, body: forbiddenBody }],
+    [token(), { httpError: 400, body: forbiddenBody }],
+    [token(), status(), { httpError: 400, body: forbiddenBody }],
+    [token(), status(), uploaded(), status(), { httpError: 401, body: forbiddenBody }],
+    [token(), status(), uploaded(), status(), { httpError: 403, body: forbiddenBody }],
+    [token(), status(), uploaded(), status(), { httpError: 500, body: forbiddenBody }],
+  ]) {
+    const h = harness(responses);
+    await assert.rejects(h.run(), /HTTP/);
+    assert.equal(h.logs.some(line => line.includes('submission-validation-failed')), false);
+    assert.equal(readAttempts, 0);
+  }
 });
 
 test('upload version mismatch or another active submission appearing after upload prevents publish', async () => {
