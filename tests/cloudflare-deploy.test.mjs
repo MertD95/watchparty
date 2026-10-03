@@ -201,6 +201,56 @@ test('known absent/default settings normalize conservatively without hiding expl
   assert.deepEqual(buildPlan(smart).config.placement, { mode: 'smart' });
 });
 
+test('disabled placement API forms produce a valid explicit off mode and the same fingerprint', () => {
+  const baseline = buildPlan(snapshot());
+  for (const value of [undefined, null, {}, { mode: 'off' }]) {
+    const changed = snapshot(); changed.settings.placement = value;
+    const plan = buildPlan(changed);
+    assert.deepEqual(plan.blockers, []);
+    assert.deepEqual(plan.config.placement, { mode: 'off' });
+    assert.equal(plan.fingerprint, baseline.fingerprint);
+    assert.doesNotThrow(() => authorizePlan(plan, enabled(baseline)));
+    assert.equal(plan.summary.placementEmpty, value !== null && typeof value === 'object' && Object.keys(value).length === 0);
+  }
+});
+
+test('meaningful smart placement is preserved and changes the approved fingerprint', () => {
+  const baseline = buildPlan(snapshot());
+  for (const placement of [{ mode: 'smart' }, { mode: 'smart', hint: 'private-example' }]) {
+    const changed = snapshot(); changed.settings.placement = placement;
+    const plan = buildPlan(changed);
+    assert.deepEqual(plan.blockers, []);
+    assert.deepEqual(plan.config.placement, placement);
+    assert.notEqual(plan.fingerprint, baseline.fingerprint);
+    assert.throws(() => authorizePlan(plan, enabled(baseline)));
+    assert.equal(JSON.stringify(plan.summary).includes('private-example'), false);
+  }
+});
+
+test('malformed and unknown placement never silently become disabled or leak remote values', () => {
+  const baseline = buildPlan(snapshot());
+  for (const placement of [false, '', [], 0, { mode: null }, { mode: 'private-example' },
+    { hint: 'aws:eu-central-1' }, { mode: 'off', hint: 'aws:eu-central-1' }, { mode: 'smart', hint: 1 },
+    { mode: 'targeted' }, { mode: 'targeted', region: '' }, { mode: 'smart', region: 'aws:eu-central-1' },
+    { mode: 'targeted', region: 'aws:eu-central-1' }, { region: 'aws:eu-central-1' },
+    { mode: 'targeted', host: 'private-example:443' }, { hostname: 'private-example' },
+    { region: 'aws:eu-central-1', host: 'private-example' }, { host: 'private-example', hint: 'aws:eu-central-1' },
+    { 'private-example': true }, { mode: 'off', future: {} }]) {
+    const changed = snapshot(); changed.settings.placement = placement;
+    const plan = buildPlan(changed);
+    assert.ok(plan.blockers.some(reason => reason.includes('placement')));
+    assert.notEqual(plan.fingerprint, baseline.fingerprint);
+    assert.throws(() => authorizePlan(plan, enabled(plan)));
+    assert.equal(JSON.stringify({ ...plan.summary, blockers: plan.blockers }).includes('private-example'), false);
+  }
+  const changed = snapshot(); changed.settings.placement = { mode: 'smart', hint: 'private-example', future: true };
+  const summary = buildPlan(changed).summary;
+  assert.deepEqual(summary.placementKeys, ['hint', 'mode']);
+  assert.equal(summary.unknownPlacementKeyCount, 1);
+  assert.equal(summary.placementMode, 'smart');
+  assert.equal(summary.placementEmpty, false);
+});
+
 test('custom scripts, bindings and unsupported settings cannot be silently replaced', () => {
   for (const mutate of [s => { s.metadata.has_modules = true; }, s => { s.metadata.has_assets = false; },
     s => { s.metadata.handlers = ['scheduled']; }, s => { s.content.kind = 'custom-or-unknown'; },

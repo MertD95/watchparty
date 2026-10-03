@@ -11,12 +11,34 @@ const REPO = 'MertD95/watchparty';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const API = `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/workers/scripts`;
 const PUBLIC_HANDLER_NAMES = new Set(['fetch', 'scheduled', 'alarm', 'queue', 'email', 'tail', 'trace', 'connect', 'test']);
+const PLACEMENT_FIELDS = new Set(['mode', 'hint']);
+const PLACEMENT_MODES = new Set(['off', 'smart']);
 const sha256 = value => createHash('sha256').update(value).digest('hex');
 const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const nonempty = value => value != null && value !== false && value !== '' &&
   (!Array.isArray(value) || value.length > 0) && (!isObject(value) || Object.keys(value).length > 0);
 const stable = value => Array.isArray(value) ? value.map(stable) : isObject(value)
   ? Object.fromEntries(Object.keys(value).sort().map(key => [key, stable(value[key])])) : value;
+
+// The Workers settings API can represent disabled placement as {}. Wrangler
+// requires a mode for that shape; its parseConfigPlacement maps mode:off back
+// to disabled placement. Normalize only known empty forms, never discard a
+// hint, target, unknown field, or malformed meaningful value.
+function normalizePlacement(value, blockers) {
+  if (value == null || (isObject(value) && Object.keys(value).length === 0)) return { mode: 'off' };
+  if (!isObject(value)) {
+    blockers.push('unrecognized placement settings');
+    return value;
+  }
+  const result = structuredClone(value);
+  if (Object.keys(result).some(key => !PLACEMENT_FIELDS.has(key))) blockers.push('unsupported placement fields');
+  const hasHint = Object.hasOwn(result, 'hint');
+  if (!PLACEMENT_MODES.has(result.mode) ||
+    (hasHint && (result.mode !== 'smart' || typeof result.hint !== 'string' || !result.hint.trim()))) {
+    blockers.push('invalid placement mode or hint');
+  }
+  return result;
+}
 
 // Fingerprint-only defaults from Wrangler 4.147.0 normalizeObservability in
 // @cloudflare/deploy-helpers/src/deploy/helpers/config-diffs.ts. Never emit these
@@ -176,7 +198,7 @@ export function buildPlan(snapshot, assetsDirectory = path.join(ROOT, 'landing')
   const normalizedSettings = { compatibility_date: settings.compatibility_date || '2026-10-03',
     compatibility_flags: settings.compatibility_flags ?? [], usage_model: settings.usage_model ?? 'standard',
     logpush: settings.logpush ?? false, observability: normalizeObservability(settings.observability, blockers),
-    tail_consumers: settings.tail_consumers ?? [], placement: settings.placement ?? { mode: 'off' },
+    tail_consumers: settings.tail_consumers ?? [], placement: normalizePlacement(settings.placement, blockers),
     limits: settings.limits ?? null };
   // Wrangler 4 no longer supports usage_model in configuration. An older
   // nonstandard plan must be inspected instead of silently changing it.
@@ -222,6 +244,10 @@ export function buildPlan(snapshot, assetsDirectory = path.join(ROOT, 'landing')
     handlerShapeRecognized: Array.isArray(metadata.handlers),
     hasNamedHandlers: nonempty(metadata.named_handlers),
     platformAssetFetch,
+    placementKeys: isObject(settings.placement) ? Object.keys(settings.placement).filter(key => PLACEMENT_FIELDS.has(key)).sort() : [],
+    unknownPlacementKeyCount: isObject(settings.placement) ? Object.keys(settings.placement).filter(key => !PLACEMENT_FIELDS.has(key)).length : null,
+    placementMode: PLACEMENT_MODES.has(settings.placement?.mode) ? settings.placement.mode : null,
+    placementEmpty: isObject(settings.placement) && Object.keys(settings.placement).length === 0,
     bindingCount: Array.isArray(settings.bindings) ? settings.bindings.length : null,
     settingKeys: Object.keys(settings).sort(), workersDev: subdomain.enabled, previewUrls: subdomain.previews_enabled,
   } };
