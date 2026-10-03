@@ -50,6 +50,23 @@ test('deployment requires all explicit enablement flags and exact approved confi
   assert.throws(() => authorizePlan(plan, { ...enabled(plan), CLOUDFLARE_EXPECTED_SETTINGS_SHA256: 'b'.repeat(64) }));
 });
 
+test('inspection exposes only known handler names, never arbitrary remote values', () => {
+  const changed = snapshot();
+  changed.metadata.handlers = ['fetch', 'scheduled', 'private-do-not-log'];
+  const plan = buildPlan(changed);
+  assert.deepEqual(plan.summary.runtimeHandlers, ['fetch', 'scheduled']);
+  assert.equal(plan.summary.unknownHandlerCount, 1);
+  assert.equal(plan.summary.handlerShapeRecognized, true);
+  assert.equal(JSON.stringify(plan.summary).includes('private-do-not-log'), false);
+  assert.ok(plan.blockers.includes('Worker has custom runtime handlers'));
+  changed.metadata.handlers = 'private-do-not-log';
+  const malformed = buildPlan(changed);
+  assert.equal(malformed.summary.handlerShapeRecognized, false);
+  assert.equal(malformed.summary.unknownHandlerCount, null);
+  assert.deepEqual(malformed.summary.runtimeHandlers, []);
+  assert.equal(JSON.stringify(malformed.summary).includes('private-do-not-log'), false);
+});
+
 test('configuration fingerprint stays stable across normal asset deployments', () => {
   const before = snapshot(), after = snapshot();
   after.metadata.modified_on = 'next';

@@ -10,6 +10,7 @@ export const ORIGIN = 'https://watchparty.mertd.me';
 const REPO = 'MertD95/watchparty';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const API = `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/workers/scripts`;
+const PUBLIC_HANDLER_NAMES = new Set(['fetch', 'scheduled', 'alarm', 'queue', 'email', 'tail', 'trace', 'connect', 'test']);
 const sha256 = value => createHash('sha256').update(value).digest('hex');
 const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const nonempty = value => value != null && value !== false && value !== '' &&
@@ -205,6 +206,9 @@ export function buildPlan(snapshot, assetsDirectory = path.join(ROOT, 'landing')
   return { config, blockers, fingerprint: sha256(JSON.stringify(stable(fingerprint))), summary: {
     worker: WORKER, account: ACCOUNT_ID, hasAssets: metadata.has_assets === true, hasModules: metadata.has_modules,
     contentKind: content.kind, contentStatus: content.status, contentBytes: content.bytes,
+    runtimeHandlers: Array.isArray(metadata.handlers) ? metadata.handlers.filter(name => PUBLIC_HANDLER_NAMES.has(name)) : [],
+    unknownHandlerCount: Array.isArray(metadata.handlers) ? metadata.handlers.filter(name => !PUBLIC_HANDLER_NAMES.has(name)).length : null,
+    handlerShapeRecognized: Array.isArray(metadata.handlers),
     bindingCount: Array.isArray(settings.bindings) ? settings.bindings.length : null,
     settingKeys: Object.keys(settings).sort(), workersDev: subdomain.enabled, previewUrls: subdomain.previews_enabled,
   } };
