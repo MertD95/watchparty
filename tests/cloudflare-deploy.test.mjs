@@ -50,6 +50,56 @@ test('deployment requires all explicit enablement flags and exact approved confi
   assert.throws(() => authorizePlan(plan, { ...enabled(plan), CLOUDFLARE_EXPECTED_SETTINGS_SHA256: 'b'.repeat(64) }));
 });
 
+test('inspection exposes only known handler names, never arbitrary remote values', () => {
+  const changed = snapshot();
+  changed.metadata.handlers = ['fetch', 'scheduled', 'private-do-not-log'];
+  const plan = buildPlan(changed);
+  assert.deepEqual(plan.summary.runtimeHandlers, ['fetch', 'scheduled']);
+  assert.equal(plan.summary.unknownHandlerCount, 1);
+  assert.equal(plan.summary.handlerShapeRecognized, true);
+  assert.equal(JSON.stringify(plan.summary).includes('private-do-not-log'), false);
+  assert.ok(plan.blockers.includes('Worker has custom runtime handlers'));
+  changed.metadata.handlers = 'private-do-not-log';
+  const malformed = buildPlan(changed);
+  assert.equal(malformed.summary.handlerShapeRecognized, false);
+  assert.equal(malformed.summary.unknownHandlerCount, null);
+  assert.deepEqual(malformed.summary.runtimeHandlers, []);
+  assert.equal(JSON.stringify(malformed.summary).includes('private-do-not-log'), false);
+});
+
+test('observed platform asset fetch handler is allowed only with independently empty user source', () => {
+  const observed = snapshot();
+  observed.metadata.handlers = ['fetch'];
+  observed.content = { kind: 'empty', status: 204, bytes: 0 };
+  const plan = buildPlan(observed);
+  assert.deepEqual(plan.blockers, []);
+  assert.equal(plan.summary.platformAssetFetch, true);
+  assert.equal(plan.summary.hasNamedHandlers, false);
+  assert.doesNotThrow(() => authorizePlan(plan, enabled(plan)));
+  assert.equal('main' in plan.config, false);
+});
+
+test('platform fetch exception never admits custom code, ambiguous content or other handlers', () => {
+  for (const change of [s => { s.metadata.handlers = ['fetch', 'scheduled']; },
+    s => { s.metadata.handlers = ['fetch', 'fetch']; }, s => { s.metadata.handlers = ['private-value']; },
+    s => { s.metadata.handlers = ''; }, s => { s.metadata.has_modules = true; },
+    s => { s.metadata.has_assets = false; }, s => { s.metadata.named_handlers = ['private-value']; },
+    s => { s.metadata.handlers = []; s.metadata.named_handlers = ['private-value']; },
+    s => { s.content.kind = 'custom-or-unknown'; }, s => { s.content.status = 200; },
+    s => { s.content = { kind: 'no-user-script', status: 404, bytes: 0 }; },
+    s => { s.content.bytes = 1; }, s => { s.settings.bindings = [{ type: 'secret_text', name: 'PRIVATE' }]; }]) {
+    const changed = snapshot();
+    changed.metadata.handlers = ['fetch'];
+    changed.content = { kind: 'empty', status: 204, bytes: 0 };
+    change(changed);
+    const plan = buildPlan(changed);
+    assert.equal(plan.summary.platformAssetFetch, false);
+    assert.ok(plan.blockers.length > 0);
+    assert.throws(() => authorizePlan(plan, enabled(plan)));
+    assert.equal(JSON.stringify(plan.summary).includes('private-value'), false);
+  }
+});
+
 test('configuration fingerprint stays stable across normal asset deployments', () => {
   const before = snapshot(), after = snapshot();
   after.metadata.modified_on = 'next';
@@ -153,7 +203,7 @@ test('known absent/default settings normalize conservatively without hiding expl
 
 test('custom scripts, bindings and unsupported settings cannot be silently replaced', () => {
   for (const mutate of [s => { s.metadata.has_modules = true; }, s => { s.metadata.has_assets = false; },
-    s => { s.metadata.handlers = ['fetch']; }, s => { s.content.kind = 'custom-or-unknown'; },
+    s => { s.metadata.handlers = ['scheduled']; }, s => { s.content.kind = 'custom-or-unknown'; },
     s => { s.settings.bindings = [{ type: 'secret_text', name: 'PRIVATE', text: 'never-log-this' }]; },
     s => { s.settings.unknown_setting = { value: 'never-log-this' }; },
     s => { s.settings.assets = { config: { not_found_handling: 'single-page-application' } }; },
