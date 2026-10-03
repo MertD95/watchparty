@@ -25,6 +25,16 @@ function openingTags(source) {
 const tags = openingTags(html);
 const elementsById = new Map(tags.filter(tag => tag.attributes.has('id')).map(tag => [tag.attributes.get('id'), tag]));
 
+test('every website document declares an existing root-relative favicon', () => {
+  for (const name of ['index.html', 'privacy.html']) {
+    const pageTags = openingTags(fs.readFileSync(path.join(landingRoot, name), 'utf8'));
+    const icon = pageTags.find(tag => tag.tag === 'link' && tag.attributes.get('rel') === 'icon');
+    assert.ok(icon, `${name} should not request a missing implicit favicon.ico`);
+    assert.equal(icon.attributes.get('href'), '/favicon.svg');
+    assert.ok(fs.statSync(path.join(landingRoot, 'favicon.svg')).isFile());
+  }
+});
+
 test('landing assets are external root-relative files that also work under room invite routes', () => {
   const scripts = tags.filter(tag => tag.tag === 'script');
   assert.equal(scripts.length, 1);
