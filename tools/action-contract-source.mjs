@@ -9,6 +9,9 @@ export const ACTION = Object.freeze({
   BOOTSTRAP_PENDING: 'bootstrap.pending',
   SESSION_STATE_PUBLISH: 'session.state.publish',
   SESSION_IDENTITY_GET: 'session.identity.get',
+  SESSION_RECOVERY_REQUEST: 'session.recovery.request',
+  SESSION_RECOVERY_BEGIN: 'session.recovery.begin',
+  SESSION_RECOVERY_COMPLETE: 'session.recovery.complete',
   CONTROLLER_RELEASED: 'controller.released',
   CONTROLLER_LEASE_CLAIM: 'controller.lease.claim',
   CONTROLLER_LEASE_RELEASE: 'controller.lease.release',
@@ -20,6 +23,7 @@ export const ACTION = Object.freeze({
   ROOM_CHAT_EVENT: 'room.chat.appended',
   ROOM_TYPING_EVENT: 'room.typing.updated',
   ROOM_BOOKMARK_EVENT: 'room.bookmark.appended',
+  ROOM_READY_CHECK_EVENT: 'room.readyCheck.event',
   ROOM_REACTION_EVENT: 'room.reaction.appended',
   ROOM_ERROR_EVENT: 'room.error',
   ROOM_VISIBILITY_UPDATE: 'room.visibility.update',
@@ -88,6 +92,18 @@ export const ACTION_ROUTE = Object.freeze({
     sources: ['stremio-content'],
     target: 'background',
   },
+  SESSION_RECOVERY_REQUEST: {
+    sources: ['options'],
+    target: 'background',
+  },
+  SESSION_RECOVERY_BEGIN: {
+    sources: ['background'],
+    target: 'stremio-content',
+  },
+  SESSION_RECOVERY_COMPLETE: {
+    sources: ['background'],
+    target: 'stremio-content',
+  },
   CONTROLLER_RELEASED: {
     sources: ['stremio-content'],
     target: 'background',
@@ -133,6 +149,10 @@ export const ACTION_ROUTE = Object.freeze({
     sources: ['stremio-content', 'background'],
     target: 'extension-surfaces',
   },
+  ROOM_READY_CHECK_EVENT: {
+    sources: ['stremio-content', 'background'],
+    target: 'extension-surfaces',
+  },
   ROOM_REACTION_EVENT: {
     sources: ['stremio-content', 'background'],
     target: 'stremio-content',
@@ -172,7 +192,7 @@ export const ACTION_ROUTE = Object.freeze({
     requiresTrustedEvent: true,
   },
   ROOM_BOOKMARK_SEEK: {
-    sources: ['sidepanel'],
+    sources: ['overlay', 'sidepanel'],
     target: 'controller',
     requiresTrustedEvent: true,
   },

@@ -1,6 +1,5 @@
 /* Preview-only dependencies: no Stremio controller, socket, or playback adapter. */
 const WPWS = { getBackendMode: () => 'local', getActiveBackend: () => 'local' };
-const WPGifProvider = { search: async () => ({ results: [] }) };
 
 document.addEventListener('DOMContentLoaded', () => {
   function render(status) {

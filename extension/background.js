@@ -62,6 +62,13 @@ const leaseMutationQueues = new Map();
 /** @type {any} */
 let coordinatorState = WPCoordinatorKernel.createInitialState();
 let coordinatorHydration = null;
+let recoveryInFlight = false;
+let recoveryFinishing = false;
+let recoveryGeneration = 0;
+let activeRecoveryId = null;
+let recoveryFinished = null;
+const runtimeOperations = new Set();
+const stateWrites = new Set();
 
 function ensureCoordinatorHydrated() {
   if (coordinatorHydration) return coordinatorHydration;
@@ -276,7 +283,9 @@ function updateCoordinatorState(nextState, sender) {
 
 async function applyCurrentControllerPublication(payload, sender, publish) {
   return enqueueLeaseMutation(WPConstants.STORAGE.CONTROLLER_TAB, async () => {
+    if (recoveryInFlight) return { ok: false, stale: true };
     const result = await chrome.storage.session.get(WPConstants.STORAGE.CONTROLLER_TAB);
+    if (recoveryInFlight) return { ok: false, stale: true };
     const lease = WPConstants.CONTROLLER_TAB_LEASE.normalize(result[WPConstants.STORAGE.CONTROLLER_TAB]);
     if (!WPCoordinatorKernel.isCurrentControllerPublication(lease, payload, sender?.tab?.id)) {
       return { ok: false, stale: true };
@@ -353,11 +362,15 @@ async function getExtensionState(keys) {
 }
 
 async function setExtensionState(values) {
-  return WPRuntimeState.set(values);
+  const work = WPRuntimeState.set(values);
+  stateWrites.add(work);
+  try { return await work; } finally { stateWrites.delete(work); }
 }
 
 async function removeExtensionState(keys) {
-  return WPRuntimeState.remove(keys);
+  const work = WPRuntimeState.remove(keys);
+  stateWrites.add(work);
+  try { return await work; } finally { stateWrites.delete(work); }
 }
 
 // ── Stremio server detection ──
@@ -409,6 +422,8 @@ async function fetchStremioSettings() {
 // ── Profile sync via Stremio API ──
 
 async function tryProfileSync() {
+  const generation = recoveryGeneration;
+  if (recoveryInFlight) return;
   const { [WPConstants.STORAGE.STREMIO_PROFILE]: stremioProfile } = await getExtensionState(WPConstants.STORAGE.STREMIO_PROFILE);
   if (Array.isArray(stremioProfile?.addons) && stremioProfile.addons.length > 0) return;
   const authKey = typeof stremioAuthKey === 'string' && stremioAuthKey.trim()
@@ -435,6 +450,7 @@ async function tryProfileSync() {
       },
       readAt: WPRuntimeClock.now(),
     };
+    if (recoveryInFlight || generation !== recoveryGeneration) return;
     await setExtensionState({ [WPConstants.STORAGE.STREMIO_PROFILE]: profile });
     broadcastToWatchParty({ action: WPConstants.ACTION.PROFILE_UPDATED });
   } catch (e) { console.warn('[WP-BG] Profile sync failed:', formatErrorMessage(e)); }
@@ -525,8 +541,8 @@ function relayToPanel(action, payload) {
   chrome.runtime.sendMessage({ type: 'watchparty-ext', action, payload }).catch(() => {});
 }
 
-function respondAsync(sendResponse, work) {
-  Promise.resolve()
+function respondAsync(sendResponse, work, options = {}) {
+  const task = Promise.resolve()
     .then(work)
     .then((result) => sendResponse?.(result ?? { ok: true }))
     .catch((error) => {
@@ -534,6 +550,10 @@ function respondAsync(sendResponse, work) {
       console.warn('[WP-BG] async handler failed:', message);
       sendResponse?.({ ok: false, error: message });
     });
+  if (options.track !== false) {
+    runtimeOperations.add(task);
+    task.finally(() => runtimeOperations.delete(task));
+  }
   return true;
 }
 
@@ -754,6 +774,7 @@ async function getBootstrapRoomIntent() {
 
 async function claimLease({ storageKey, fenceStorageKey, leaseContract, lease, senderTabId, force = false }) {
   return enqueueLeaseMutation(storageKey, async () => {
+    if (recoveryInFlight) return { ok: false, claimed: false, lease: null };
     await ensureCoordinatorHydrated();
     const requestedLeaseBase = leaseContract.build({
       ...lease,
@@ -766,6 +787,7 @@ async function claimLease({ storageKey, fenceStorageKey, leaseContract, lease, s
       fenceStorageKey ? chrome.storage.local.get(fenceStorageKey) : Promise.resolve({}),
     ]);
     const result = { ...leaseValues, ...fenceValues };
+    if (recoveryInFlight) return { ok: false, claimed: false, lease: null };
     const currentLease = leaseContract.normalize(result[storageKey]);
     const persistedFence = fenceStorageKey && Number.isSafeInteger(result[fenceStorageKey])
       ? Math.max(0, result[fenceStorageKey])
@@ -951,37 +973,48 @@ async function copyToClipboard(text) {
   if (!value) return { ok: false, error: 'Missing clipboard text' };
   if (!chrome.offscreen) return { ok: false, error: 'Offscreen API unavailable' };
 
-  await ensureOffscreenDocument(
-    'offscreen.html',
-    ['CLIPBOARD'],
-    'Copy WatchParty room links and invite keys from extension surfaces.'
-  );
-
-  return new Promise((resolve) => {
-    chrome.runtime.sendMessage(
-      {
-        type: 'watchparty-ext',
-        target: 'offscreen',
-        action: WPConstants.ACTION.OFFSCREEN_COPY,
-        text: value,
-      },
-      (response) => {
-        if (chrome.runtime.lastError) {
-          resolve({ ok: false, error: chrome.runtime.lastError.message });
-          return;
-        }
-        resolve(response?.ok ? { ok: true } : { ok: false, error: response?.error || 'Copy failed' });
-      }
+  const copy = async () => {
+    await ensureOffscreenDocument(
+      'offscreen.html',
+      ['CLIPBOARD'],
+      'Copy WatchParty room links and invite keys from extension surfaces.'
     );
-  });
+    return new Promise((resolve) => {
+      chrome.runtime.sendMessage(
+        {
+          type: 'watchparty-ext',
+          target: 'offscreen',
+          action: WPConstants.ACTION.OFFSCREEN_COPY,
+          text: value,
+        },
+        (response) => {
+          if (chrome.runtime.lastError) {
+            resolve({ ok: false, error: chrome.runtime.lastError.message });
+            return;
+          }
+          resolve(response?.ok ? { ok: true } : { ok: false, error: response?.error || 'Copy failed' });
+        }
+      );
+    });
+  };
+  try {
+    return await withBackgroundTimeout(copy(), 4000, 'Clipboard did not respond. Please try copying again.');
+  } catch (error) {
+    return { ok: false, error: formatErrorMessage(error) };
+  }
 }
 
-async function resumeRoomInStremio() {
+async function resumeRoomInStremio(expectedRoomId) {
   const stremioTabs = await getStremioTabs();
-  const runtimeState = await getProjectedRuntimeState();
   const bootstrapIntent = await getBootstrapRoomIntent();
+  const runtimeState = await getProjectedRuntimeState();
   const room = runtimeState.room ?? null;
   const currentRoomId = runtimeState.currentRoomId ?? room?.id ?? null;
+  const resumeTargetId = bootstrapIntent?.action === WPConstants.ACTION.ROOM_JOIN ? bootstrapIntent.roomId : currentRoomId;
+  if (expectedRoomId !== undefined && (typeof expectedRoomId !== 'string'
+    || !expectedRoomId.trim() || expectedRoomId.trim() !== resumeTargetId)) {
+    return { ok: false, openedStremio: false, error: 'The room changed. Refresh the room controls before returning to Stremio.' };
+  }
   const hasResumeTarget = !!room || !!currentRoomId || !!bootstrapIntent;
   if (!hasResumeTarget) return { ok: false, openedStremio: false };
 
@@ -1017,11 +1050,139 @@ async function getLocalBackendResource(resource) {
   };
 }
 
+function withBackgroundTimeout(work, timeoutMs, errorMessage) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = WPRuntimeClock.setTimeout(() => reject(new Error(errorMessage)), timeoutMs);
+  });
+  return Promise.race([work, timeout]).finally(() => WPRuntimeClock.clearTimeout(timer));
+}
+
+function withRecoveryTimeout(work) {
+  return withBackgroundTimeout(work, 8000, 'A Stremio tab did not respond. Refresh your Stremio tabs and try again.');
+}
+
+async function clearRecoveryStorage(kind) {
+  // Read/delete directly so a failed storage operation cannot be reported as
+  // a successful reset. Only WatchParty-owned session data is in scope.
+  const [local, session] = await Promise.all([
+    chrome.storage.local.get(null), chrome.storage.session.get(null),
+  ]);
+  const privatePrefixes = ['wpRoomAccessKey:', 'wpRoomE2eKey:', 'wpRoomInviteAccessToken:'];
+  const runtimeKeys = kind === 'forget-keys' ? [] : [
+    ...WPConstants.STORAGE_CONTRACT.SESSION_RUNTIME,
+    ...WPConstants.STORAGE_CONTRACT.BOOTSTRAP_SESSION,
+    ...(kind === 'reset' ? [
+      ...WPConstants.STORAGE_CONTRACT.SENSITIVE_SESSION,
+      WPConstants.STORAGE.USERNAME, WPConstants.STORAGE.SESSION_ID,
+      WPConstants.STORAGE.SESSION_TOKEN, WPConstants.STORAGE.STREMIO_PROFILE,
+    ] : []),
+  ];
+  const dynamicKeys = [...new Set([...Object.keys(local), ...Object.keys(session)])].filter((key) => (
+    (kind !== 'clear-room' && privatePrefixes.some((prefix) => key.startsWith(prefix)))
+    || (kind !== 'forget-keys' && key.startsWith('wpRoomChatHistory:'))
+  ));
+  const keys = [...new Set([...runtimeKeys, ...dynamicKeys])];
+  await Promise.all([
+    chrome.storage.local.remove(keys), chrome.storage.session.remove(keys),
+  ]);
+  return keys.filter((key) => key in local || key in session).length;
+}
+
+async function recoverSession(kind) {
+  if (!['clear-room', 'reset', 'forget-keys'].includes(kind)) return { ok: false, error: 'Unknown recovery action.' };
+  if (recoveryInFlight) return { ok: false, error: 'Recovery is already running. Please wait.' };
+  recoveryInFlight = true;
+  recoveryGeneration += 1;
+  const recoveryId = crypto.randomUUID();
+  activeRecoveryId = recoveryId;
+  let releaseRecovery = () => {};
+  recoveryFinished = new Promise((resolve) => { releaseRecovery = () => resolve(undefined); });
+  const quiesced = new Set();
+  let failure = null;
+  let count = 0;
+  try {
+    // Let operations admitted before the barrier finish before stopping their
+    // controllers. New mutating messages cannot enter while this runs.
+    await withRecoveryTimeout(Promise.allSettled([...runtimeOperations]));
+    await ensureCoordinatorHydrated();
+    if (kind === 'forget-keys') {
+      const state = await getProjectedRuntimeState();
+      if (state.room?.id || state.currentRoomId || state.bootstrapPending) {
+        throw new Error('Leave your room and clear pending joins before forgetting private room keys.');
+      }
+      count = await clearRecoveryStorage(kind);
+      return { ok: true, count };
+    }
+    // Include newly registered passive tabs too; they must drop their cached
+    // projections before a controller can be elected again.
+    for (let pass = 0; pass < 3; pass += 1) {
+      const tabs = (await getStremioTabs()).filter((tab) => !quiesced.has(tab.id));
+      if (!tabs.length) break;
+      await Promise.all(tabs.map(async (tab) => {
+        try {
+          const response = await withRecoveryTimeout(chrome.tabs.sendMessage(tab.id, {
+            type: 'watchparty-ext', action: WPConstants.ACTION.SESSION_RECOVERY_BEGIN, recoveryId, kind,
+          }));
+          if (response?.ok !== true || response.recoveryId !== recoveryId) {
+            throw new Error('Refresh your Stremio tabs so WatchParty can finish recovery safely.');
+          }
+          quiesced.add(tab.id);
+        } catch (error) {
+          try { await chrome.tabs.get(tab.id); } catch { return; }
+          throw error;
+        }
+      }));
+    }
+    const remaining = (await getStremioTabs()).filter((tab) => !quiesced.has(tab.id));
+    if (remaining.length) throw new Error('Stremio tabs changed during recovery. Please try again.');
+    await withRecoveryTimeout(Promise.allSettled([...leaseMutationQueues.values(), ...stateWrites]));
+    count = await clearRecoveryStorage(kind);
+    if (kind === 'reset') stremioAuthKey = null;
+    coordinatorState = { ...WPCoordinatorKernel.createInitialState(), updatedAt: WPRuntimeClock.now() };
+    coordinatorHydration = Promise.resolve();
+    lastWatchPartyProjectionKey = '';
+    publishCoordinatorState();
+    updateBadge();
+  } catch (error) {
+    failure = formatErrorMessage(error);
+  } finally {
+    recoveryFinishing = true;
+    const completions = await Promise.allSettled([...quiesced].map(async (tabId) => {
+      try {
+        const response = await withRecoveryTimeout(chrome.tabs.sendMessage(tabId, {
+          type: 'watchparty-ext', action: WPConstants.ACTION.SESSION_RECOVERY_COMPLETE, recoveryId, kind,
+        }));
+        if (response?.ok !== true) throw new Error('Recovery finished, but a Stremio tab needs refreshing.');
+      } catch (error) {
+        try { await chrome.tabs.get(tabId); } catch { return; }
+        throw error;
+      }
+    }));
+    if (!failure && completions.some((entry) => entry.status === 'rejected')) {
+      failure = 'Saved data was cleared, but a Stremio tab needs refreshing before WatchParty can continue.';
+    }
+    recoveryFinishing = false;
+    recoveryInFlight = false;
+    activeRecoveryId = null;
+    releaseRecovery();
+    recoveryFinished = null;
+  }
+  return failure ? { ok: false, error: failure } : { ok: true, count };
+}
+
 const messageHandlers = {
-  [WPConstants.ACTION.SESSION_IDENTITY_GET]: (_m, _s, sendResponse) => respondAsync(sendResponse, async () => ({
-    ok: true,
-    ...await sessionIdentity.ensure(),
-  })),
+  [WPConstants.ACTION.SESSION_RECOVERY_REQUEST]: (m, _s, sr) => respondAsync(sr, () => recoverSession(m.kind), { track: false }),
+  [WPConstants.ACTION.SESSION_IDENTITY_GET]: (m, _s, sendResponse) => {
+    // New tabs wait outside the reset barrier. Recovery completion itself
+    // needs the fresh identity before acknowledging that the tab is idle.
+    const pendingRecovery = recoveryInFlight
+      && !(recoveryFinishing && m.recoveryId === activeRecoveryId) ? recoveryFinished : null;
+    return respondAsync(sendResponse, async () => {
+      if (pendingRecovery) await pendingRecovery;
+      return { ok: true, ...await sessionIdentity.ensure() };
+    });
+  },
   [WPConstants.ACTION.STATUS_GET]: (_m, _s, sendResponse) => respondAsync(sendResponse, buildStatusSnapshot),
   [WPConstants.ACTION.SERVER_DIAGNOSTICS_GET]: (_m, _s, sendResponse) => respondAsync(sendResponse, buildServerDiagnosticsSnapshot),
   [WPConstants.ACTION.LOCAL_LANDING_ACCESS_SYNC]: (_m, _s, sendResponse) => respondAsync(sendResponse, async () => {
@@ -1101,6 +1262,14 @@ const messageHandlers = {
     relayToPanel(WPConstants.ACTION.ROOM_BOOKMARK_EVENT, m.payload);
     broadcastToStremioTabs({ action: WPConstants.ACTION.ROOM_BOOKMARK_EVENT, payload: m.payload });
   },
+  [WPConstants.ACTION.ROOM_READY_CHECK_EVENT]: (m, sender, sr) => respondAsync(sr, () => {
+    const payload = m.payload || {};
+    if (!payload.roomId || payload.roomId !== coordinatorState.room?.id) return { ok: false, stale: true };
+    return applyCurrentControllerPublication(payload, sender, () => {
+      relayToPanel(WPConstants.ACTION.ROOM_READY_CHECK_EVENT, payload);
+      broadcastToStremioTabs({ action: WPConstants.ACTION.ROOM_READY_CHECK_EVENT, payload });
+    });
+  }),
   [WPConstants.ACTION.ROOM_REACTION_EVENT]: (m) => {
     broadcastToStremioTabs({ action: WPConstants.ACTION.ROOM_REACTION_EVENT, payload: m.payload });
   },
@@ -1195,7 +1364,7 @@ const messageHandlers = {
     sendResponse?.({ ok: true, tabId: sender?.tab?.id ?? null });
     return true;
   },
-  [WPConstants.ACTION.ROOM_RESUME]: (_m, _s, sendResponse) => respondAsync(sendResponse, () => resumeRoomInStremio()),
+  [WPConstants.ACTION.ROOM_RESUME]: (m, _s, sendResponse) => respondAsync(sendResponse, () => resumeRoomInStremio(m.roomId)),
   [WPConstants.ACTION.APP_OPTIONS_OPEN]: (_m, _s, sendResponse) => respondAsync(sendResponse, async () => {
     await chrome.runtime.openOptionsPage();
     return { ok: true };
@@ -1224,6 +1393,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!normalized.ok) {
     console.warn('[WP-BG] Rejected action from unauthorized source:', message.action, normalized.source || 'unknown');
     sendResponse?.({ ok: false, error: 'ACTION_SOURCE_NOT_ALLOWED' });
+    return false;
+  }
+  if (recoveryInFlight && ![
+    WPConstants.ACTION.SESSION_RECOVERY_REQUEST, WPConstants.ACTION.STATUS_GET,
+    WPConstants.ACTION.SESSION_IDENTITY_GET,
+    WPConstants.ACTION.SURFACE_READY, WPConstants.ACTION.PROBE_SURFACE,
+    WPConstants.ACTION.CLIPBOARD_COPY, WPConstants.ACTION.OFFSCREEN_COPY,
+  ].includes(normalized.message.action)) {
+    sendResponse?.({ ok: false, handled: false, error: 'WatchParty recovery is running. Please try again shortly.' });
     return false;
   }
   const handler = messageHandlers[normalized.message.action];

@@ -6,13 +6,17 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'Package a tested tag, check Google status, or submit a tested tag'
+        description: 'Package/submit a tested tag, check status, or explicitly cancel an expected pending review'
         required: true
         default: status
         type: choice
-        options: [status, package, submit]
+        options: [status, package, submit, cancel-review]
       release_tag:
-        description: 'Existing stable tag for package/submit (e.g. v2.0.2); ignored for status'
+        description: 'Existing stable tag for package/submit (e.g. v2.0.4); ignored for status/cancel-review'
+        required: false
+        type: string
+      expected_pending_version:
+        description: 'Required only for cancel-review: exact version currently pending (e.g. 2.0.3). No automatic replacement.'
         required: false
         type: string
 
@@ -32,7 +36,7 @@ jobs:
   package:
     if: >-
       (github.event_name == 'release' && !github.event.release.prerelease && startsWith(github.event.release.tag_name, 'v')) ||
-      (github.event_name == 'workflow_dispatch' && inputs.mode != 'status')
+      (github.event_name == 'workflow_dispatch' && (inputs.mode == 'package' || inputs.mode == 'submit'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     environment: release-artifacts
@@ -111,7 +115,7 @@ jobs:
     # before entering the environment. A disabled manual submit fails closed below.
     if: >-
       always() && !cancelled() &&
-      ((github.event_name == 'workflow_dispatch' && inputs.mode == 'status') ||
+      ((github.event_name == 'workflow_dispatch' && (inputs.mode == 'status' || inputs.mode == 'cancel-review')) ||
        (needs.package.result == 'success' &&
         ((github.event_name == 'workflow_dispatch' && inputs.mode == 'submit') ||
          (github.event_name == 'release' && vars.CHROME_PUBLISH_ENABLED == 'true'))))
@@ -124,7 +128,8 @@ jobs:
     env:
       CHROME_PUBLISH_ENABLED: ${{ vars.CHROME_PUBLISH_ENABLED }}
       CHROME_RELEASE_TAG: ${{ needs.package.outputs.release_tag }}
-      STORE_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'status' && 'status' || 'submit' }}
+      STORE_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'submit' }}
+      CHROME_EXPECTED_PENDING_VERSION: ${{ inputs.expected_pending_version }}
     steps:
       - name: Require trusted invocation and configured store identity
         env:
@@ -139,9 +144,20 @@ jobs:
           if [ "${GITHUB_EVENT_NAME}" = 'workflow_dispatch' ]; then
             test "${GITHUB_REF}" = 'refs/heads/main'
           fi
-          if [ "${STORE_MODE}" = 'submit' ] && [ "${CHROME_PUBLISH_ENABLED}" != 'true' ]; then
+          case "${STORE_MODE}" in
+            status|submit|cancel-review) ;;
+            *) echo '::error::Unsupported store operation.'; exit 1 ;;
+          esac
+          if [ "${STORE_MODE}" != 'status' ] && [ "${CHROME_PUBLISH_ENABLED}" != 'true' ]; then
             echo '::error::Set the repository variable CHROME_PUBLISH_ENABLED=true only after a successful status check.'
             exit 1
+          fi
+          if [ "${STORE_MODE}" = 'cancel-review' ]; then
+            test "${GITHUB_EVENT_NAME}" = 'workflow_dispatch'
+            if ! [[ "${CHROME_EXPECTED_PENDING_VERSION}" =~ ^(0|[1-9][0-9]{0,4})(\.(0|[1-9][0-9]{0,4})){0,3}$ ]]; then
+              echo '::error::Provide the exact expected pending version before cancelling its review.'
+              exit 1
+            fi
           fi
           case "${CHROME_AUTH_MODE}" in
             wif) required_variables='GOOGLE_WORKLOAD_IDENTITY_PROVIDER GOOGLE_SERVICE_ACCOUNT CHROME_EXTENSION_ID CHROME_PUBLISHER_ID' ;;
@@ -184,19 +200,20 @@ jobs:
           access_token_lifetime: 600s
           create_credentials_file: false
           export_environment_variables: false
-      - name: Check status or submit using short-lived WIF token
+      - name: Run explicitly selected store operation using short-lived WIF token
         if: vars.CHROME_AUTH_MODE == 'wif'
         env:
           CHROME_EXTENSION_ID: ${{ vars.CHROME_EXTENSION_ID || secrets.CHROME_EXTENSION_ID }}
           CHROME_PUBLISHER_ID: ${{ vars.CHROME_PUBLISHER_ID || secrets.CHROME_PUBLISHER_ID }}
           CHROME_ACCESS_TOKEN: ${{ steps.google-auth.outputs.access_token }}
         run: |
-          if [ "${STORE_MODE}" = 'status' ]; then
-            node tools/publish-chrome-web-store.mjs --status
-          else
-            node tools/publish-chrome-web-store.mjs --submit "${PACKAGE_NAME}"
-          fi
-      - name: Check status or submit using explicitly configured OAuth credentials
+          case "${STORE_MODE}" in
+            status) node tools/publish-chrome-web-store.mjs --status ;;
+            cancel-review) node tools/publish-chrome-web-store.mjs --cancel-review "${CHROME_EXPECTED_PENDING_VERSION}" ;;
+            submit) node tools/publish-chrome-web-store.mjs --submit "${PACKAGE_NAME}" ;;
+            *) exit 1 ;;
+          esac
+      - name: Run explicitly selected store operation using configured OAuth credentials
         if: vars.CHROME_AUTH_MODE == 'oauth'
         env:
           CHROME_EXTENSION_ID: ${{ vars.CHROME_EXTENSION_ID || secrets.CHROME_EXTENSION_ID }}
@@ -205,8 +222,9 @@ jobs:
           CHROME_CLIENT_SECRET: ${{ secrets.CHROME_CLIENT_SECRET }}
           CHROME_REFRESH_TOKEN: ${{ secrets.CHROME_REFRESH_TOKEN }}
         run: |
-          if [ "${STORE_MODE}" = 'status' ]; then
-            node tools/publish-chrome-web-store.mjs --status
-          else
-            node tools/publish-chrome-web-store.mjs --submit "${PACKAGE_NAME}"
-          fi
+          case "${STORE_MODE}" in
+            status) node tools/publish-chrome-web-store.mjs --status ;;
+            cancel-review) node tools/publish-chrome-web-store.mjs --cancel-review "${CHROME_EXPECTED_PENDING_VERSION}" ;;
+            submit) node tools/publish-chrome-web-store.mjs --submit "${PACKAGE_NAME}" ;;
+            *) exit 1 ;;
+          esac

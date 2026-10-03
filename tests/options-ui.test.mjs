@@ -127,12 +127,15 @@ test('installed settings hides development-only connection and localhost permiss
   const ui = optionsRuntime();
   ui.render({ backendMode: 'auto', wsConnected: false });
   assert.equal(ui.visible('backend-local'), false);
+  assert.equal(ui.visible('backend-toggle'), false);
+  assert.match(ui.nodes.get('backend-note').textContent, /production server automatically/);
   assert.equal(ui.nodes.get('backend-local').disabled, true);
   assert.equal(ui.nodes.get('backend-auto')['aria-pressed'], 'true');
   assert.equal(ui.visible('dev-localhost-block'), false);
   const dev = optionsRuntime({ installed: false });
   dev.render({ backendMode: 'local', isDevInstall: true, localLandingAccess: { available: true, granted: false } });
   assert.equal(dev.visible('backend-local'), true);
+  assert.equal(dev.visible('backend-toggle'), true);
   assert.equal(dev.visible('dev-localhost-block'), true);
   assert.equal(dev.nodes.get('backend-local')['aria-pressed'], 'true');
 });
@@ -160,21 +163,57 @@ test('cancelling recovery confirmations never removes saved state or room keys',
   assert.equal(ui.messages.length, 0);
 });
 
-test('confirmed reset clears runtime data but preserves appearance and connection preferences', async () => {
+test('confirmed reset requests acknowledged background recovery instead of racing live controllers by deleting storage', async () => {
   const ui = optionsRuntime();
   ui.run('bindRecoveryButtons()');
   ui.confirm(true);
   ui.click('btn-reset-runtime');
   await flush();
-  assert.equal(ui.keysCleared, 1);
-  assert.ok(ui.removed.includes('wpUsername'));
-  assert.ok(ui.removed.includes('wpSessionToken'));
-  assert.ok(ui.removed.includes('currentRoom'));
-  for (const retained of ['wpAccentColor', 'wpCompactChat', 'wpReactionSound', 'wpFloatingReactions', 'wpBackendMode']) {
-    assert.equal(ui.removed.includes(retained), false, `${retained} must be retained`);
-  }
+  assert.equal(ui.keysCleared, 0);
+  assert.deepEqual(ui.removed, []);
+  const recovery = ui.messages.find(message => message.action === 'session.recovery.request');
+  assert.equal(recovery?.kind, 'reset');
   assert.match(ui.nodes.get('recovery-feedback').textContent, /preferences were kept/);
   assert.equal(ui.nodes.get('btn-reset-runtime').disabled, false);
+});
+
+test('recovery errors are surfaced and controls remain retryable', async () => {
+  const ui = optionsRuntime();
+  ui.run('chrome.runtime.sendMessage = async () => ({ ok: false, error: "Leave your room before forgetting keys." }); bindRecoveryButtons()');
+  ui.confirm(true);
+  ui.click('btn-clear-room-keys');
+  await flush();
+  assert.match(ui.nodes.get('recovery-feedback').textContent, /Leave your room/);
+  assert.equal(ui.nodes.get('btn-clear-room-keys').disabled, false);
+  assert.equal(ui.keysCleared, 0);
+});
+
+test('clear saved room and forget keys also require centralized recovery acknowledgement', async () => {
+  const ui = optionsRuntime();
+  ui.run('bindRecoveryButtons()');
+  ui.confirm(true);
+  ui.click('btn-clear-bootstrap');
+  await flush();
+  ui.click('btn-clear-room-keys');
+  await flush();
+  assert.deepEqual(ui.messages.filter(message => message.action === 'session.recovery.request').map(message => message.kind), ['clear-room', 'forget-keys']);
+  assert.deepEqual(ui.removed, []);
+});
+
+test('diagnostic copying falls back on explicit offscreen rejection, not just thrown errors', async () => {
+  const ui = optionsRuntime();
+  ui.run('globalThis.localCopies = 0; chrome.runtime.sendMessage = async () => ({ ok: false }); navigator.clipboard.writeText = async () => { localCopies += 1; };');
+  assert.equal(await ui.run("copyTextToClipboard('diagnostics')"), true);
+  assert.equal(ui.run('localCopies'), 1);
+});
+
+test('unresponsive clipboard cannot leave the diagnostics button permanently disabled', async () => {
+  const ui = optionsRuntime();
+  ui.render({ wsConnected: false });
+  ui.run('setTimeout = callback => { Promise.resolve().then(callback); return 1; }; chrome.runtime.sendMessage = () => new Promise(() => {}); navigator.clipboard.writeText = () => new Promise(() => {}); bindRecoveryButtons();');
+  await ui.click('btn-copy-diagnostics');
+  assert.equal(ui.nodes.get('btn-copy-diagnostics').disabled, false);
+  assert.match(ui.nodes.get('recovery-feedback').textContent, /Could not copy/);
 });
 
 test('late saved preference read does not replace a newer live room snapshot', async () => {

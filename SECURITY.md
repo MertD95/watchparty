@@ -59,6 +59,14 @@ Only the Chrome job can request a GitHub OIDC token. In WIF mode it obtains a sh
 
 The checked-in Node publisher calls the official Chrome Web Store API v2 directly. It reads the version from the actual ZIP, checks existing published/submitted versions before uploading, refuses conflicting submissions and policy warnings, bounds asynchronous upload polling, and requests review with `skipReview=false` and `blockOnWarnings=true`. It never automatically cancels a submission, skips review, or retries an ambiguous mutation. `DEFAULT_PUBLISH` means Google publishes the extension if it approves the review; submission acceptance is not approval.
 
+### Explicitly replacing a pending review
+
+Only after the publisher has authorized replacing a particular pending version, dispatch **Extension Release** from `main` with `mode=cancel-review` and `expected_pending_version` set to that exact version (for example, `2.0.3`, without `v`). Leave `release_tag` empty. This operation uses the same protected `chrome-web-store` environment and configured WIF/OAuth identity; `CHROME_PUBLISH_ENABLED` must be `true`. It does not package, upload or submit anything.
+
+The helper fetches status twice, requires every submitted distribution channel to match the expected version in `PENDING_REVIEW`, and refuses mismatched, missing, staged, published or policy-blocked reviews. It calls the official `cancelSubmission` endpoint once with an empty body, then performs bounded read-only checks until cancellation is confirmed. No mutation is automatically retried. Confirm the `cancellation-confirmed` result (or run `mode=status` after an ambiguous failure) before creating/submitting the tested replacement release normally.
+
+All store workflow runs share one concurrency group. Google does not offer an atomic version/etag precondition on this cancellation endpoint, so do not edit or submit the same item in the developer dashboard concurrently. If the target has already been approved or the reported version changes, cancellation stops without a mutation; inspect status before deciding the next step. For an explicitly authorized local operation using process-environment credentials, the equivalent command is `node tools/publish-chrome-web-store.mjs --cancel-review 2.0.3`. Never put credentials in its arguments.
+
 For a read-only local status check, provide the two identity variables plus a short-lived `CHROME_ACCESS_TOKEN` in the process environment:
 
 ```bash
@@ -74,4 +82,4 @@ node tools/publish-chrome-web-store.mjs --submit dist/chrome-web-store/watchpart
 
 The local helper also supports the three legacy OAuth variables listed above when no `CHROME_ACCESS_TOKEN` is supplied. It never refreshes or falls back if a supplied access token fails. Do not paste tokens into chat, command-line arguments, source files, or logs. Credentials must belong to the publisher that owns the listing. After any timeout or ambiguous response, use `--status` and the dashboard before retrying.
 
-API references: [authentication and setup](https://developer.chrome.com/docs/webstore/using-api), [GitHub OIDC authentication](https://github.com/google-github-actions/auth), [status](https://developer.chrome.com/docs/webstore/api/reference/rest/v2/publishers.items/fetchStatus), [upload](https://developer.chrome.com/docs/webstore/api/reference/rest/v2/media/upload), [review submission](https://developer.chrome.com/docs/webstore/api/reference/rest/v2/publishers.items/publish).
+API references: [authentication and setup](https://developer.chrome.com/docs/webstore/using-api), [GitHub OIDC authentication](https://github.com/google-github-actions/auth), [status](https://developer.chrome.com/docs/webstore/api/reference/rest/v2/publishers.items/fetchStatus), [upload](https://developer.chrome.com/docs/webstore/api/reference/rest/v2/media/upload), [review submission](https://developer.chrome.com/docs/webstore/api/reference/rest/v2/publishers.items/publish), [explicit review cancellation](https://developer.chrome.com/docs/webstore/api/reference/rest/v2/publishers.items/cancelSubmission).

@@ -195,6 +195,8 @@ test('room-key loading revalidates membership after storage before starting impo
 // their logic. Browser integration remains responsible for layout/popover APIs.
 function modalRuntime() {
   const nodes = new Map();
+  const timers = new Map();
+  let timerId = 0;
   let scheduledIntervals = 0;
   const video = { paused: true, plays: 0, pauses: 0,
     play() { this.plays += 1; return Promise.resolve(); },
@@ -230,11 +232,12 @@ function modalRuntime() {
   const context = vm.createContext({
     document: { getElementById: (id) => nodes.get(id), createElement: () => new Element(), querySelector: () => video },
     setInterval() { scheduledIntervals += 1; return scheduledIntervals; }, clearInterval() {},
-    setTimeout() {}, requestAnimationFrame() {},
+    setTimeout(callback, ms) { const id = ++timerId; timers.set(id, { callback, ms }); return id; },
+    clearTimeout(id) { timers.delete(id); }, requestAnimationFrame() {},
     WPConstants: { ACTION: { ROOM_READY_CHECK_UPDATE: 'room.readyCheck.update' } },
   });
   load(context, 'stremio-overlay-modals.js');
-  return { api: vm.runInContext('WPModals', context), nodes, video, intervals: () => scheduledIntervals };
+  return { api: vm.runInContext('WPModals', context), nodes, video, timers, intervals: () => scheduledIntervals };
 }
 
 test('ready confirmation waits for server counts and never schedules its own playback', async () => {
@@ -280,4 +283,44 @@ test('late ready confirmation cannot mutate a replacement modal and cancellation
   assert.ok(nodes.has('wp-countdown'));
   api.showReadyCheck('cancelled', [], 0, 'session-me');
   assert.equal(nodes.has('wp-countdown'), false);
+});
+
+test('canonical ready confirmation wins over a late rejected transport result', async () => {
+  const { api, nodes, timers } = modalRuntime(); const reply = deferred();
+  api.showReadyCheck('started', [], 2, 'me', () => reply.promise);
+  const button = nodes.get('wp-ready-confirm');
+  const sending = button.listeners.get('click')({ isTrusted: true });
+  api.showReadyCheck('updated', ['me'], 2, 'me');
+  reply.resolve({ handled: false, error: 'late bridge failure' }); await sending;
+  assert.equal(button.disabled, true); assert.equal(button.textContent, 'Waiting...');
+  assert.equal(nodes.get('wp-ready-count').textContent, '1 / 2');
+  assert.equal(timers.size, 0);
+});
+
+test('missing bridge response and missing server echo both make ready confirmation retryable', async () => {
+  for (const mode of ['bridge', 'echo']) {
+    const { api, nodes, timers } = modalRuntime();
+    api.showReadyCheck('started', [], 2, 'me', () => mode === 'bridge' ? new Promise(() => {}) : { handled: true });
+    const button = nodes.get('wp-ready-confirm');
+    const sending = button.listeners.get('click')({ isTrusted: true });
+    if (mode === 'echo') await sending;
+    [...timers.values()].find(timer => timer.ms === 8000).callback();
+    await sending;
+    assert.equal(button.disabled, false);
+    assert.equal(nodes.get('wp-ready-count').textContent, '0 / 2');
+    assert.match(nodes.get('wp-ready-status').textContent, /No response|not received/);
+  }
+});
+
+test('host cancellation waits for the server and failures stay visible and retryable', async () => {
+  const { api, nodes } = modalRuntime(); const reply = deferred(); const commands = [];
+  api.showReadyCheck('started', ['me'], 2, 'me', (_action, detail) => { commands.push(detail); return reply.promise; }, { isHost: true });
+  const button = nodes.get('wp-ready-stop');
+  const cancelling = button.listeners.get('click')({ isTrusted: true });
+  assert.equal(button.disabled, true); assert.ok(nodes.has('wp-ready-modal'));
+  reply.resolve({ handled: false, error: 'No longer host' }); await cancelling;
+  assert.equal(commands[0].readyAction, 'cancel');
+  assert.equal(button.disabled, false); assert.equal(nodes.get('wp-ready-status').textContent, 'No longer host');
+  api.showReadyCheck('cancelled', [], 0, 'me');
+  assert.equal(nodes.has('wp-ready-modal'), false);
 });

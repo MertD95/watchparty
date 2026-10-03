@@ -98,7 +98,7 @@
         <li>Local extension preferences such as accent color, compact chat, reaction sound, floating reactions, and selected backend mode.</li>
         <li>Local Stremio runtime information from the user’s device, such as Stremio Server availability on localhost and basic server settings required for compatibility checks.</li>
         <li>Stremio profile addon and settings data used to understand playback context. The extension keeps the Stremio auth key in extension memory only and does not persist it to extension storage.</li>
-        <li>GIF search queries sent by the user when using the GIF picker.</li>
+        <li>Direct GIF image links shared by users in room chat.</li>
       </ul>
 
       <h2>How data is used</h2>
@@ -114,7 +114,7 @@
       <ul>
         <li>Room and synchronization data is sent to the WatchParty backend so shared rooms can function.</li>
         <li>Stremio addon and compatibility requests may be sent to Stremio services such as api.strem.io and v3-cinemeta.strem.io when needed for extension features.</li>
-        <li>GIF search requests are sent to the GIF provider used by the extension when the user searches for GIFs.</li>
+        <li>Shared GIF images load from the image host in each participant's browser. The image host receives ordinary image-request data such as the participant's IP address. WatchParty does not send GIF search queries to a third-party provider.</li>
         <li>WatchParty does not sell user data.</li>
         <li>WatchParty does not use user data for advertising, credit decisions, or unrelated profiling.</li>
       </ul>

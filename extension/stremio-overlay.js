@@ -18,6 +18,11 @@ const WPOverlay = (() => {
   let launcherLabel = null;
   let launcherInRoom = false;
   let cachedIsHost = false;
+  let cachedWsConnected = false;
+  let roomUiGeneration = 0;
+  let roomControlsPending = null;
+  let accessKeySavePending = null;
+  let roomCodeCopyTimer = null;
   let syncIndicatorAvailable = false;
   let cachedMediaMismatch = false;
   let activePanel = 'room';
@@ -92,8 +97,16 @@ const WPOverlay = (() => {
     if (safeGifUrl) {
       const img = document.createElement('img');
       img.className = 'wp-chat-gif';
-      img.src = safeGifUrl;
       img.alt = 'GIF';
+      img.referrerPolicy = 'no-referrer';
+      img.addEventListener('error', () => {
+        img.hidden = true;
+        content.appendChild(WPDOM.el('span', {
+          className: 'wp-chat-gif-error',
+          text: 'GIF could not load. The image link may have expired or the host may block sharing.',
+        }));
+      }, { once: true });
+      img.src = safeGifUrl;
       content.appendChild(img);
     } else {
       content.appendChild(WPDOM.el('span', { className: 'wp-chat-text', text: text || '' }));
@@ -272,7 +285,8 @@ const WPOverlay = (() => {
   function dispatchAction(action, detail = {}, event = null) {
     if (!isTrustedUserEvent(event)) return false;
     if (!isOverlayRoutedAction(action)) return false;
-    const message = { action, ...detail };
+    const isRoomAction = action.startsWith('room.') && action !== WPConstants.ACTION.ROOM_CREATE && action !== WPConstants.ACTION.ROOM_JOIN;
+    const message = { action, ...(isRoomAction ? { roomId: cachedRoomState?.id || null } : {}), ...detail };
     if (typeof actionDispatcher === 'function') {
       return actionDispatcher(message);
     }
@@ -293,6 +307,16 @@ const WPOverlay = (() => {
     while (pendingActions.length > 0) {
       actionDispatcher(pendingActions.shift());
     }
+  }
+
+  async function requestAction(action, detail, event) {
+    let timer;
+    try {
+      return await Promise.race([
+        Promise.resolve(dispatchAction(action, detail, event)),
+        new Promise(resolve => { timer = setTimeout(() => resolve({ handled: false, error: 'No response from Stremio. Please try again.' }), 8000); }),
+      ]);
+    } finally { clearTimeout(timer); }
   }
 
   function normalizeUsernameInput(value) {
@@ -612,7 +636,7 @@ const WPOverlay = (() => {
         <div class="wp-lobby-room-meta">${room.paused ? 'Paused' : 'Playing'} at ${mins}:${secs}${room.listingState === 'reconnecting' ? ' | Reconnecting' : ''}</div>
         <div class="wp-lobby-room-actions">
           <button class="wp-action-btn" type="button" data-lobby-room-action="join">Join</button>
-          <button class="wp-action-btn" type="button" data-lobby-room-action="direct" ${directReady ? '' : 'disabled'}>Direct Join</button>
+          ${directReady ? '<button class="wp-action-btn" type="button" data-lobby-room-action="direct">Watch host stream</button>' : ''}
         </div>
       `;
       list.appendChild(card);
@@ -716,11 +740,12 @@ const WPOverlay = (() => {
   }
 
   async function handleAccessKeySave(roomState, isHost, event = null) {
-    if (!isTrustedUserEvent(event)) return;
+    if (!isTrustedUserEvent(event) || accessKeySavePending) return;
     const input = document.getElementById('wp-room-key-input');
     const button = document.getElementById('wp-room-key-save');
     const roomId = roomState?.id;
     if (!roomId || roomState?.public !== false || !input) return;
+    if (!cachedWsConnected) { showToast('Reconnect before changing the invite key.', 2200); return; }
     if (!isHost) {
       showToast('Only the host can change the invite key.', 2500);
       return;
@@ -739,35 +764,37 @@ const WPOverlay = (() => {
       return;
     }
 
-    const existingKey = await getStoredAccessKey(roomId);
-    if (existingKey === nextKey) {
-      showToast('That invite key is already active for this private room.', 2200);
-      return;
-    }
-
-    accessKeyDraftRoomId = roomId;
-    accessKeyDraftValue = nextKey;
-    if (button) {
-      button.disabled = true;
-      button.textContent = 'Updating...';
-    }
-
-    if (cachedRoomState?.id !== roomId || !cachedIsHost) return;
-    const result = await dispatchAction(WPConstants.ACTION.ROOM_VISIBILITY_UPDATE, {
-      public: false,
-      listed: roomState?.listed !== false,
-      accessKey: nextKey,
-    }, event);
-    if (cachedRoomState?.id !== roomId) return;
-    showToast(isActionAccepted(result) ? 'Invite key update requested.' : 'Could not update the invite key. Please retry.', 2200);
-
-    setTimeout(() => {
+    const entry = { roomId, generation: roomUiGeneration };
+    accessKeySavePending = entry;
+    const isCurrent = () => cachedRoomState?.id === roomId && roomUiGeneration === entry.generation;
+    try {
       if (button) {
-        button.disabled = false;
-        button.textContent = 'Update';
+        button.disabled = true;
+        button.textContent = 'Updating...';
       }
-      refreshRoomControlsCard();
-    }, 250);
+      const existingKey = await getStoredAccessKey(roomId);
+      if (!isCurrent() || !cachedIsHost || cachedRoomState.public !== false) return;
+      if (cachedRoomState.users?.length > 1) {
+        showToast('Change the invite key when you are alone in the room.', 2500);
+        return;
+      }
+      if (existingKey === nextKey) {
+        showToast('That invite key is already active for this private room.', 2200);
+        return;
+      }
+      accessKeyDraftRoomId = roomId;
+      accessKeyDraftValue = nextKey;
+      const result = await requestAction(WPConstants.ACTION.ROOM_VISIBILITY_UPDATE, {
+        roomId, public: false, listed: cachedRoomState.listed !== false, accessKey: nextKey,
+      }, event);
+      if (isCurrent()) showToast(isActionAccepted(result) ? 'Invite key update requested.'
+        : result?.error || 'Could not update the invite key. Please retry.', 2200);
+    } catch {
+      if (isCurrent()) showToast('Could not update the invite key. Please retry.', 2200);
+    } finally {
+      if (accessKeySavePending === entry) accessKeySavePending = null;
+      if (isCurrent()) refreshRoomControlsCard();
+    }
   }
 
   function renderAccessKeyControls(roomState, isHost) {
@@ -819,8 +846,8 @@ const WPOverlay = (() => {
     }
     if (button) {
       button.hidden = !isHost;
-      button.disabled = !isHost;
-      button.textContent = 'Update';
+      button.disabled = !isHost || !cachedWsConnected || !!accessKeySavePending;
+      button.textContent = accessKeySavePending ? 'Updating...' : 'Update';
     }
 
     const renderSeq = ++accessKeyRenderSeq;
@@ -1205,8 +1232,8 @@ const WPOverlay = (() => {
       } else {
         const input = document.getElementById('wp-chat-input');
         if (input) {
-          const start = input.selectionStart || input.value.length;
-          const end = input.selectionEnd || start;
+          const start = input.selectionStart ?? input.value.length;
+          const end = input.selectionEnd ?? start;
           input.value = input.value.slice(0, start) + emoji + input.value.slice(end);
           input.selectionStart = input.selectionEnd = start + emoji.length;
           input.focus();
@@ -1246,7 +1273,7 @@ const WPOverlay = (() => {
         <div id="wp-header">
           <div id="wp-header-main">
             <span id="wp-title">WatchParty</span>
-            <span id="wp-room-code" title="Click to copy"></span>
+            <button id="wp-room-code" type="button" aria-label="Copy room invite link" title="Copy invite link"></button>
           </div>
           <button id="wp-close-sidebar" title="Close" aria-label="Close sidebar">&times;</button>
         </div>
@@ -1282,9 +1309,12 @@ const WPOverlay = (() => {
                 <input id="wp-chat-input" type="text" placeholder="Message" maxlength="300" autocomplete="off" aria-label="Chat message" />
                 <button id="wp-chat-send">Send</button>
               </div>
-              <div id="wp-gif-picker" class="wp-hidden-el">
-                <input id="wp-gif-search" type="text" placeholder="Search GIFs" autocomplete="off" />
-                <div id="wp-gif-results"></div>
+              <div id="wp-gif-picker" class="wp-hidden-el" role="group" aria-label="Send a GIF">
+                <p id="wp-gif-help">GIF search is unavailable. Paste a direct GIF link.</p>
+                <label for="wp-gif-search">GIF image link</label>
+                <input id="wp-gif-search" type="url" placeholder="https://example.com/image.gif" autocomplete="off" aria-describedby="wp-gif-help wp-gif-status" />
+                <p id="wp-gif-status" role="status" aria-live="polite"></p>
+                <button id="wp-gif-send" type="button" disabled>Send GIF</button>
               </div>
               <div id="wp-emoji-picker" class="wp-hidden-el"></div>
             </div>
@@ -1512,92 +1542,59 @@ const WPOverlay = (() => {
       pickerEl.classList.toggle('wp-hidden-el');
     });
 
-    // --- GIF picker ---
-    let gifDebounce = null;
+    // GIF search was retired by its provider. Direct links require no search
+    // requests or preview loads; the image loads only after it is shared.
+    const gifInput = $('wp-gif-search');
+    const gifSend = $('wp-gif-send');
+    const gifStatus = $('wp-gif-status');
+    refreshGifInputState = () => {
+      const parsed = gifInput.value.trim() ? WPGifLinks.parse(gifInput.value) : { url: '', error: '' };
+      gifInput.setAttribute('aria-invalid', parsed.error ? 'true' : 'false');
+      gifStatus.textContent = parsed.error;
+      gifSend.disabled = !parsed.url || $('wp-chat-send').disabled || !cachedRoomState?.id;
+      return parsed;
+    };
     $('wp-gif-btn').addEventListener('click', (ev) => {
       ev.stopPropagation();
       $('wp-gif-picker').classList.toggle('wp-hidden-el');
       $('wp-emoji-picker').classList.add('wp-hidden-el');
       if (!$('wp-gif-picker').classList.contains('wp-hidden-el')) {
-        $('wp-gif-search').focus();
-        searchGifs('trending');
+        refreshGifInputState();
+        gifInput.focus();
       }
     });
-    bindInputFieldGuards($('wp-gif-search'), {
+    bindInputFieldGuards(gifInput, {
       onEscape() {
         $('wp-gif-picker').classList.add('wp-hidden-el');
         $('wp-chat-input')?.focus();
       },
     });
-    $('wp-gif-search').addEventListener('input', (e) => {
-      clearTimeout(gifDebounce);
-      const q = e.target.value.trim();
-      gifDebounce = setTimeout(() => searchGifs(q || 'trending'), 300);
-    });
-    // Event delegation for GIF clicks (avoids per-element listeners on every search)
-    $('wp-gif-results').addEventListener('click', async (e) => {
-      if (!isTrustedUserEvent(e)) return;
-      const img = e.target.closest('.wp-gif-item');
-      if (!img?.dataset.url) return;
-      const gifContent = `[gif:${img.dataset.url}]`;
-      if (!await submitChatContent(gifContent, e)) return;
+    gifInput.addEventListener('input', () => refreshGifInputState());
+    gifSend.addEventListener('click', async (event) => {
+      if (!isTrustedUserEvent(event)) return;
+      const parsed = refreshGifInputState();
+      if (gifSend.disabled || !parsed.url) return;
+      const generation = roomUiGeneration;
+      if (!await submitChatContent(`[gif:${parsed.url}]`, event, gifInput)) return;
+      if (generation !== roomUiGeneration) return;
       $('wp-gif-picker').classList.add('wp-hidden-el');
       $('wp-chat-input')?.focus();
     });
-
-    function renderGifResults(container, gifs) {
-      container.replaceChildren();
-      if (!gifs.length) {
-        const empty = document.createElement('div');
-        empty.style.cssText = 'text-align:center;color:#666;padding:16px';
-        empty.textContent = 'No GIFs found';
-        container.appendChild(empty);
-        return;
-      }
-      for (const gif of gifs) {
-        const img = document.createElement('img');
-        img.className = 'wp-gif-item';
-        img.src = gif.url;
-        img.dataset.url = gif.url;
-        img.alt = gif.title || 'GIF';
-        img.loading = 'lazy';
-        container.appendChild(img);
-      }
-    }
-
-    function renderGifSearchError(container) {
-      container.replaceChildren();
-      const error = document.createElement('div');
-      error.style.cssText = 'text-align:center;color:#666;padding:16px';
-      error.textContent = 'Search failed';
-      container.appendChild(error);
-    }
-
-    let gifSearchGeneration = 0;
-    async function searchGifs(query) {
-      const generation = ++gifSearchGeneration;
-      const results = $('wp-gif-results');
-      try {
-        const response = await WPGifProvider.search(query, { limit: 20 });
-        if (generation !== gifSearchGeneration) return;
-        renderGifResults(results, response.results || []);
-      } catch {
-        if (generation !== gifSearchGeneration) return;
-        renderGifSearchError(results);
-      }
-    }
+    refreshGifInputState();
   }
 
   let lastSendTime = 0;
   let resetTypingInputState = () => {};
   let pendingChatSend = null;
   let sendCooldownTimer = null;
+  let refreshGifInputState = () => {};
   function setSendButtonDisabled(disabled) {
     const btn = document.getElementById('wp-chat-send');
     if (!btn) return;
     btn.disabled = disabled;
     btn.style.opacity = disabled ? '0.4' : '';
     btn.style.cursor = disabled ? 'not-allowed' : '';
+    refreshGifInputState();
   }
   function isActionAccepted(result) {
     return result === true || !!result && (result.handled === true || result.ok === true)
@@ -1666,7 +1663,14 @@ const WPOverlay = (() => {
     if (sessionId) cachedSessionId = sessionId;
     const wasLauncherInRoom = launcherInRoom;
     const previousRoomId = cachedRoomState?.id;
+    if (previousRoomId !== roomState?.id) {
+      roomUiGeneration += 1;
+      roomControlsPending = null;
+      accessKeySavePending = null;
+      clearTimeout(roomCodeCopyTimer);
+    }
     cachedRoomState = roomState || null;
+    cachedWsConnected = wsConnected === true;
     if (previousRoomId && previousRoomId !== roomState?.id) {
       finishPendingChat(pendingChatSend, false);
       clearTimeout(sendCooldownTimer);
@@ -1675,6 +1679,9 @@ const WPOverlay = (() => {
       resetTypingInputState();
       const draft = document.getElementById('wp-chat-input');
       if (draft) draft.value = '';
+      const gifDraft = document.getElementById('wp-gif-search');
+      if (gifDraft) gifDraft.value = '';
+      refreshGifInputState();
       clearChatMessages();
       closeFloatingPanels();
       WPModals.showReadyCheck('cancelled', [], 0, cachedUserId);
@@ -1771,8 +1778,8 @@ const WPOverlay = (() => {
       : '';
     const roomLabel = roomState?.name || roomState?.meta?.name || 'WatchParty room';
     let actions = '';
-    if (hasVideo && isHost) actions += `<button class="wp-action-btn" id="wp-ready-check-btn" title="Ready Check">✋ Ready?</button>`;
-    if (hasVideo) actions += `<button class="wp-action-btn" id="wp-bookmark-btn" title="Bookmark this moment">📌 Bookmark</button>`;
+    if (hasVideo && isHost) actions += `<button class="wp-action-btn" id="wp-ready-check-btn" title="Ready Check" ${wsConnected !== true ? 'disabled' : ''}>✋ Ready?</button>`;
+    if (hasVideo) actions += `<button class="wp-action-btn" id="wp-bookmark-btn" title="Bookmark this moment" ${wsConnected !== true ? 'disabled' : ''}>📌 Bookmark</button>`;
     const actionsRow = actions ? `<div class="wp-action-row">${actions}</div>` : '';
     const newStatusHtml = `<span class="wp-status-line wp-status-heading">${escapeHtml(roomLabel)}</span><span class="wp-status-line">${hostLabel}</span>${connectionStatus}<span class="wp-status-line wp-muted">${videoStatus}</span>${actionsRow}`;
     if (renderCache.lastStatusHtml === newStatusHtml) return;
@@ -1780,15 +1787,25 @@ const WPOverlay = (() => {
     renderCache.lastStatusHtml = newStatusHtml;
     document.getElementById('wp-ready-check-btn')?.addEventListener('click', (event) => {
       if (!isTrustedUserEvent(event)) return;
-      dispatchAction(WPConstants.ACTION.ROOM_READY_CHECK_UPDATE, { readyAction: 'initiate' }, event);
+      if (cachedRoomState?.readyCheck) {
+        const check = cachedRoomState.readyCheck;
+        showReadyCheck('started', check.confirmed || [], check.total || 0, cachedSessionId || cachedUserId);
+        showReadyCheck('updated', check.confirmed || [], check.total || 0, cachedSessionId || cachedUserId);
+        return;
+      }
+      const generation = roomUiGeneration;
+      const roomId = cachedRoomState?.id;
+      requestAction(WPConstants.ACTION.ROOM_READY_CHECK_UPDATE, { readyAction: 'initiate', roomId }, event)
+        .then(result => { if (generation === roomUiGeneration && !isActionAccepted(result)) showToast(result?.error || 'Could not start a ready check.'); })
+        .catch(() => { if (generation === roomUiGeneration) showToast('Could not start a ready check.'); });
     });
     document.getElementById('wp-bookmark-btn')?.addEventListener('click', (event) => {
       if (!isTrustedUserEvent(event)) return;
-      const video = document.querySelector('video');
-      if (!video) return;
-      const time = video.currentTime;
-      const label = `Bookmark at ${formatPlaybackClock(time)}`;
-      dispatchAction(WPConstants.ACTION.ROOM_BOOKMARK_ADD, { time, label }, event);
+      const generation = roomUiGeneration;
+      const roomId = cachedRoomState?.id;
+      requestAction(WPConstants.ACTION.ROOM_BOOKMARK_ADD, { roomId }, event)
+        .then(result => { if (generation === roomUiGeneration && !isActionAccepted(result)) showToast(result?.error || 'Could not add a bookmark.'); })
+        .catch(() => { if (generation === roomUiGeneration) showToast('Could not add a bookmark.'); });
     });
   }
 
@@ -1829,32 +1846,47 @@ const WPOverlay = (() => {
     accessKeySection?.classList.toggle('wp-hidden-el', !isPrivateRoom);
 
     const copyInviteBtn = container.querySelector('#wp-copy-invite-btn');
-    if (privateToggle) privateToggle.disabled = false;
-    if (listedToggle) listedToggle.disabled = false;
-    if (autoPauseToggle) autoPauseToggle.disabled = false;
-    if (copyInviteBtn) copyInviteBtn.disabled = false;
+    const controlsBusy = !!roomControlsPending;
+    if (privateToggle) privateToggle.disabled = controlsBusy || !cachedWsConnected;
+    if (listedToggle) listedToggle.disabled = controlsBusy || !cachedWsConnected;
+    if (autoPauseToggle) autoPauseToggle.disabled = controlsBusy || !cachedWsConnected;
+    if (copyInviteBtn) copyInviteBtn.disabled = controlsBusy;
 
-    function markRoomControlsPending() {
-      if (privateToggle) privateToggle.disabled = true;
-      if (listedToggle) listedToggle.disabled = true;
-      if (autoPauseToggle) autoPauseToggle.disabled = true;
-      if (copyInviteBtn) copyInviteBtn.disabled = true;
+    async function sendRoomControl(action, detail, event) {
+      if (!isTrustedUserEvent(event) || roomControlsPending) return;
+      if (cachedRoomState?.id !== roomState.id) return;
+      if (action !== WPConstants.ACTION.ROOM_LEAVE && (!cachedIsHost || !cachedWsConnected)) {
+        showToast('Reconnect as the host before changing room settings.', 2500);
+        refreshRoomControlsCard();
+        return;
+      }
+      const entry = { roomId: roomState.id, generation: roomUiGeneration };
+      roomControlsPending = entry;
+      refreshRoomControlsCard();
+      const isCurrent = () => roomUiGeneration === entry.generation && cachedRoomState?.id === entry.roomId;
+      try {
+        const result = await requestAction(action, { ...detail, roomId: entry.roomId }, event);
+        if (isCurrent() && !isActionAccepted(result)) showToast(result?.error || 'The room change was not accepted. Please retry.', 2500);
+      } catch {
+        if (isCurrent()) showToast('Could not update the room. Please retry.', 2500);
+      } finally {
+        if (roomControlsPending === entry) roomControlsPending = null;
+        if (isCurrent()) refreshRoomControlsCard();
+      }
     }
 
     if (copyInviteBtn) {
       copyInviteBtn.onclick = async (event) => {
         if (!isTrustedUserEvent(event)) return;
+        const generation = roomUiGeneration;
         const copied = await copyInviteUrl(roomState);
-        showToast(copied ? 'Invite copied' : 'Copy failed', 1600);
+        if (generation === roomUiGeneration) showToast(copied ? 'Invite copied' : 'Copy failed', 1600);
       };
     }
-    container.querySelector('#wp-leave-room-btn').onclick = (event) => {
-      dispatchAction(WPConstants.ACTION.ROOM_LEAVE, {}, event);
-    };
+    container.querySelector('#wp-leave-room-btn').onclick = (event) => sendRoomControl(WPConstants.ACTION.ROOM_LEAVE, {}, event);
     if (privateToggle) {
       privateToggle.onchange = (event) => {
-        markRoomControlsPending();
-        dispatchAction(WPConstants.ACTION.ROOM_VISIBILITY_UPDATE, {
+        return sendRoomControl(WPConstants.ACTION.ROOM_VISIBILITY_UPDATE, {
           public: !event.target.checked,
           listed: listedToggle ? listedToggle.checked : (roomState.listed !== false),
         }, event);
@@ -1862,8 +1894,7 @@ const WPOverlay = (() => {
     }
     if (listedToggle) {
       listedToggle.onchange = (event) => {
-        markRoomControlsPending();
-        dispatchAction(WPConstants.ACTION.ROOM_VISIBILITY_UPDATE, {
+        return sendRoomControl(WPConstants.ACTION.ROOM_VISIBILITY_UPDATE, {
           public: privateToggle ? !privateToggle.checked : (roomState.public !== false),
           listed: !!event.target.checked,
         }, event);
@@ -1871,8 +1902,7 @@ const WPOverlay = (() => {
     }
     if (autoPauseToggle) {
       autoPauseToggle.onchange = (event) => {
-        markRoomControlsPending();
-        dispatchAction(WPConstants.ACTION.ROOM_SETTINGS_UPDATE, { settings: { autoPauseOnDisconnect: !!event.target.checked } }, event);
+        return sendRoomControl(WPConstants.ACTION.ROOM_SETTINGS_UPDATE, { settings: { autoPauseOnDisconnect: !!event.target.checked } }, event);
       };
     }
     renderAccessKeyControls(roomState, isHost);
@@ -2279,7 +2309,11 @@ const WPOverlay = (() => {
 
   // --- Toast, Ready Check, Countdown: delegated to WPModals module ---
   function showToast(message, durationMs) { WPModals.showToast(message, durationMs); }
-  function showReadyCheck(action, confirmed, total, myUserId) { WPModals.showReadyCheck(action, confirmed, total, myUserId, dispatchAction); }
+  function showReadyCheck(action, confirmed, total, myUserId) {
+    const roomId = cachedRoomState?.id;
+    WPModals.showReadyCheck(action, confirmed, total, myUserId,
+      (request, detail, event) => dispatchAction(request, { ...detail, roomId }, event), { isHost: cachedIsHost });
+  }
   function showCountdown(seconds) { WPModals.showCountdown(seconds); }
 
   // --- Bookmarks ---
@@ -2334,13 +2368,12 @@ const WPOverlay = (() => {
     div.appendChild(WPDOM.el('span', { className: 'wp-chat-text', text: msg.label || '' }));
     timeButton.addEventListener('click', (event) => {
       if (!isTrustedUserEvent(event)) return;
-      const video = document.querySelector('video');
-      if (video) {
-        video.currentTime = msg.time;
-        showToast(`Seeking to ${timeStr}`, 1500);
-      } else {
-        showToast(`Bookmark: ${timeStr}`, 1500);
-      }
+      const generation = roomUiGeneration;
+      const roomId = cachedRoomState?.id;
+      requestAction(WPConstants.ACTION.ROOM_BOOKMARK_SEEK, { time: msg.time, roomId }, event)
+        .then(result => { if (generation === roomUiGeneration) showToast(isActionAccepted(result)
+          ? `Seeking to ${timeStr}` : result?.error || 'Open a video in Stremio to use this bookmark.', 2000); })
+        .catch(() => { if (generation === roomUiGeneration) showToast('Could not seek to this bookmark.'); });
     });
     container.appendChild(div);
     pruneChildren(container);
@@ -2360,7 +2393,7 @@ const WPOverlay = (() => {
     const result = await WPRuntimeState.get([
       WPConstants.STORAGE.BACKEND_MODE,
       WPConstants.STORAGE.ACTIVE_BACKEND,
-    ]).catch(() => ({}));
+    ]);
     const inviteUrl = WPConstants.BACKEND.buildInviteUrl(
       roomId,
       result[WPConstants.STORAGE.BACKEND_MODE],
@@ -2373,7 +2406,13 @@ const WPOverlay = (() => {
     try {
       const roomId = roomState?.id;
       if (!roomId) return false;
-      return await WPUtils.copyTextDeferred(() => buildInviteUrl(roomId));
+      const generation = roomUiGeneration;
+      return await WPUtils.copyTextDeferred(async () => {
+        if (cachedRoomState?.id !== roomId || generation !== roomUiGeneration) throw new Error('Room changed');
+        const url = await buildInviteUrl(roomId);
+        if (cachedRoomState?.id !== roomId || generation !== roomUiGeneration) throw new Error('Room changed');
+        return url;
+      });
     } catch {
       return false;
     }
@@ -2384,9 +2423,14 @@ const WPOverlay = (() => {
     if (!el) return;
     el.onclick = async (event) => {
       if (!isTrustedUserEvent(event)) return;
+      const generation = roomUiGeneration;
       const copied = await copyInviteUrl(roomState);
+      if (generation !== roomUiGeneration || cachedRoomState?.id !== roomState?.id) return;
       el.textContent = copied ? 'Link copied!' : 'Copy failed';
-      setTimeout(() => { el.textContent = roomState?.id?.slice(0, 8) || ''; }, 1500);
+      clearTimeout(roomCodeCopyTimer);
+      roomCodeCopyTimer = setTimeout(() => {
+        if (generation === roomUiGeneration && cachedRoomState?.id === roomState?.id) el.textContent = roomState?.id?.slice(0, 8) || '';
+      }, 1500);
     };
   }
 
@@ -2491,11 +2535,24 @@ const WPOverlay = (() => {
 
   // --- CSS loaded from stremio-overlay.css via manifest.json ---
 
+  function resetSessionIdentity() {
+    cachedUsername = '';
+    cachedUserId = null;
+    cachedSessionId = null;
+    localPreferences.username = '';
+    pendingActions.length = 0;
+    clearUnread();
+    for (const id of ['wp-lobby-username', 'wp-settings-username']) {
+      const input = document.getElementById(id);
+      if (input) input.value = '';
+    }
+  }
+
 
 
   return {
     create, updateState, updateSyncIndicator,
-    setActionDispatcher,
+    setActionDispatcher, resetSessionIdentity,
     rejectPendingChat,
     appendChatMessage, clearChatMessages, showReaction, updateTypingIndicator,
     openSidebar, bindRoomCodeCopy, bindTypingIndicator,

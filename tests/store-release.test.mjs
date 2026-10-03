@@ -54,7 +54,9 @@ function harness(responses, options = {}) {
     const response = responses.shift();
     assert.notEqual(response, undefined, `Unexpected request: ${url}`);
     if (response instanceof Error) throw response;
-    return { ok: !response.httpError, status: response.httpError || 200, json: async () => response };
+    return { ok: !response.httpError, status: response.httpError || response.httpStatus || 200,
+      json: async () => response,
+      text: async () => response.rawText === undefined ? JSON.stringify(response) : response.rawText };
   };
   return { calls, logs, run: () => runPublisher({ env, submit: true, zipBytes: archive(), fetchImpl,
     sleep: async milliseconds => { time += milliseconds; }, now: () => time, log: text => logs.push(text), ...options }) };
@@ -134,7 +136,7 @@ test('release workflow keeps short-lived auth scoped, status cheap, and exact-ta
   const workflow = fs.readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
   assert.doesNotMatch(workflow, /npm (?:ci|install|test|run verify)|node --test/);
   assert.match(workflow, /!github\.event\.release\.prerelease/);
-  assert.match(workflow, /inputs\.mode != 'status'/);
+  assert.match(workflow, /inputs\.mode == 'package' \|\| inputs\.mode == 'submit'/);
   assert.match(workflow, /vars\.CHROME_PUBLISH_ENABLED == 'true'/);
   assert.match(workflow, /git merge-base --is-ancestor "\$\{release_sha\}" origin\/main/);
   assert.match(workflow, /test "\$\{GITHUB_REF\}" = 'refs\/heads\/main'/);
@@ -223,4 +225,140 @@ test('a failed read-only final status cannot erase the confirmed submission resu
   assert.equal(result.event, 'submission-accepted-status-unavailable');
   assert.equal(result.state, 'PENDING_REVIEW');
   assert.equal(h.calls.filter(call => call.url.endsWith(':publish')).length, 1);
+});
+
+const pendingThree = () => status({ submittedItemRevisionStatus: revision('PENDING_REVIEW', '2.0.3') });
+const cancelHarness = (responses, options = {}) => harness(responses, {
+  submit: false, cancelReview: true, expectedPendingVersion: '2.0.3', zipBytes: undefined, ...options,
+});
+
+test('explicit cancellation requires an exact version and never combines with package submission', async () => {
+  for (const expectedPendingVersion of [undefined, '', 'v2.0.3', '02.0.3', '2.0.3\n', '65536', '1.2.3.4.5', '2.0.3;echo unsafe']) {
+    const h = cancelHarness([], { expectedPendingVersion });
+    await assert.rejects(h.run(), /exact expected pending version/);
+    assert.equal(h.calls.length, 0);
+  }
+  for (const options of [{ submit: true }, { zipBytes: archive() }]) {
+    const h = cancelHarness([], options);
+    await assert.rejects(h.run(), /separate operations|must not receive/);
+    assert.equal(h.calls.length, 0);
+  }
+});
+
+test('cancel-review calls the official empty-body endpoint once and confirms removal without uploading', async () => {
+  for (const acknowledgement of [{ rawText: '', httpStatus: 204 }, { rawText: '', httpStatus: 200 }, { rawText: '{ }' }]) {
+    const h = cancelHarness([token(), pendingThree(), pendingThree(), acknowledgement, status()]);
+    const result = await h.run();
+    assert.equal(result.event, 'cancellation-confirmed');
+    assert.equal(result.requestedVersion, '2.0.3');
+    assert.equal(result.submittedState, null);
+    const mutation = h.calls.filter(call => call.url.endsWith(':cancelSubmission'));
+    assert.equal(mutation.length, 1);
+    assert.equal(mutation[0].url, `https://chromewebstore.googleapis.com/v2/${identity.name}:cancelSubmission`);
+    assert.equal(mutation[0].method, 'POST');
+    assert.equal(mutation[0].body, undefined);
+    assert.equal(h.calls.some(call => call.url.endsWith(':upload') || call.url.endsWith(':publish')), false);
+    for (const secret of [env.CHROME_CLIENT_SECRET, env.CHROME_CLIENT_ID, env.CHROME_REFRESH_TOKEN, 'private-access-token']) {
+      assert.equal(h.logs.join('').includes(secret), false);
+    }
+  }
+});
+
+test('cancellation refuses missing, mismatched, ambiguous, approved and policy-blocked reviews without mutation', async () => {
+  const ambiguous = revision('PENDING_REVIEW', '2.0.3');
+  ambiguous.distributionChannels.push({ crxVersion: '2.0.4' });
+  const unknownChannel = revision('PENDING_REVIEW', '2.0.3');
+  unknownChannel.distributionChannels.push({});
+  for (const initial of [status(), pending,
+    status({ submittedItemRevisionStatus: revision('STAGED', '2.0.3') }),
+    status({ submittedItemRevisionStatus: revision('PUBLISHED', '2.0.3') }),
+    status({ submittedItemRevisionStatus: revision('CANCELLED', '2.0.3') }),
+    status({ submittedItemRevisionStatus: { state: 'PENDING_REVIEW' } }),
+    status({ submittedItemRevisionStatus: ambiguous }), status({ submittedItemRevisionStatus: unknownChannel }),
+    { ...pendingThree(), warned: true }, { ...pendingThree(), takenDown: true },
+    { ...pendingThree(), lastAsyncUploadState: 'IN_PROGRESS' },
+    { ...pendingThree(), publishedItemRevisionStatus: revision('PUBLISHED', '2.0.3') },
+  ]) {
+    const h = cancelHarness([token(), initial]);
+    await assert.rejects(h.run(), /no cancellation was performed/);
+    assert.equal(h.calls.length, 2);
+    assert.equal(h.calls.some(call => call.url.endsWith(':cancelSubmission')), false);
+  }
+});
+
+test('the cancellation preflight rechecks the exact pending version immediately before mutation', async () => {
+  for (const changed of [pending, status(), status({ submittedItemRevisionStatus: revision('STAGED', '2.0.3') })]) {
+    const h = cancelHarness([token(), pendingThree(), changed]);
+    await assert.rejects(h.run(), /no cancellation was performed/);
+    assert.equal(h.calls.length, 3);
+    assert.equal(h.calls.some(call => call.url.endsWith(':cancelSubmission')), false);
+  }
+});
+
+test('cancellation polls only read-only status and bounds unchanged review confirmation', async () => {
+  const cancelled = status({ submittedItemRevisionStatus: revision('CANCELLED', '2.0.3') });
+  const h = cancelHarness([token(), pendingThree(), pendingThree(), {}, pendingThree(), cancelled], { maxPolls: 1 });
+  assert.equal((await h.run()).event, 'cancellation-confirmed');
+  assert.equal(h.calls.filter(call => call.url.endsWith(':cancelSubmission')).length, 1);
+  const stillPending = cancelHarness([token(), pendingThree(), pendingThree(), {}, pendingThree(), pendingThree()], { maxPolls: 1 });
+  await assert.rejects(stillPending.run(), /still pending/);
+  assert.equal(stillPending.calls.filter(call => call.url.endsWith(':cancelSubmission')).length, 1);
+});
+
+test('failed or ambiguous cancellation is never retried and never exposes provider data', async () => {
+  for (const failure of [new Error('private-provider-data'), { httpError: 409, details: 'private-provider-data' },
+    { rawText: 'private-provider-data' }, { rawText: '{"error":"private-provider-data"}' }]) {
+    const h = cancelHarness([token(), pendingThree(), pendingThree(), failure]);
+    await assert.rejects(h.run(), error => !error.message.includes('private-provider-data'));
+    assert.equal(h.calls.filter(call => call.url.endsWith(':cancelSubmission')).length, 1);
+    assert.equal(h.logs.join('').includes('private-provider-data'), false);
+  }
+  for (const followup of [new Error('private-provider-data'),
+    { ...pendingThree(), publishedItemRevisionStatus: revision('PUBLISHED', '2.0.3') },
+    status({ submittedItemRevisionStatus: revision('PENDING_REVIEW', '2.0.4') })]) {
+    const h = cancelHarness([token(), pendingThree(), pendingThree(), {}, followup]);
+    await assert.rejects(h.run(), /status confirmation failed|state changed/);
+    assert.equal(h.calls.filter(call => call.url.endsWith(':cancelSubmission')).length, 1);
+    assert.ok(h.logs.some(line => JSON.parse(line).event === 'cancellation-accepted'));
+  }
+});
+
+test('CI cancellation requires explicitly enabled trusted manual main and supports protected WIF auth', async () => {
+  const trusted = { ...env, GITHUB_ACTIONS: 'true', GITHUB_EVENT_NAME: 'workflow_dispatch',
+    GITHUB_REF: 'refs/heads/main', GITHUB_REPOSITORY: 'MertD95/watchparty', CHROME_PUBLISH_ENABLED: 'true' };
+  for (const changes of [{ GITHUB_EVENT_NAME: 'release' }, { GITHUB_REF: 'refs/tags/v2.0.4' },
+    { GITHUB_REPOSITORY: 'someone/watchparty' }, { CHROME_PUBLISH_ENABLED: 'false' }]) {
+    const h = cancelHarness([], { env: { ...trusted, ...changes } });
+    await assert.rejects(h.run(), /enabled manual dispatch/);
+    assert.equal(h.calls.length, 0);
+  }
+  const h = cancelHarness([pendingThree(), pendingThree(), {}, status()], {
+    env: { ...trusted, CHROME_ACCESS_TOKEN: 'private-short-lived-token', CHROME_CLIENT_ID: undefined,
+      CHROME_CLIENT_SECRET: undefined, CHROME_REFRESH_TOKEN: undefined },
+  });
+  assert.equal((await h.run()).event, 'cancellation-confirmed');
+  assert.equal(h.calls.some(call => call.url.includes('oauth2.googleapis.com')), false);
+  assert.equal(h.logs.join('').includes('private-short-lived-token'), false);
+});
+
+test('status and ordinary release submission never cancel even when an expected pending version is configured', async () => {
+  const h = harness([token(), pendingThree()], { env: { ...env, CHROME_EXPECTED_PENDING_VERSION: '2.0.3' } });
+  await assert.rejects(h.run(), /no upload or cancellation was performed/);
+  assert.equal(h.calls.some(call => call.url.endsWith(':cancelSubmission')), false);
+  const readOnly = harness([token(), pendingThree()], { submit: false, expectedPendingVersion: '2.0.3' });
+  assert.equal((await readOnly.run()).event, 'status-only-no-changes');
+  assert.equal(readOnly.calls.length, 2);
+});
+
+test('workflow cancellation is manual-only, skips packaging and uses protected explicit expected-version input', () => {
+  const workflow = fs.readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /options: \[status, package, submit, cancel-review\]/);
+  assert.match(workflow, /expected_pending_version:/);
+  assert.match(workflow, /CHROME_EXPECTED_PENDING_VERSION: \$\{\{ inputs\.expected_pending_version \}\}/);
+  const packageJob = workflow.slice(workflow.indexOf('  package:'), workflow.indexOf('  chrome-store:'));
+  assert.doesNotMatch(packageJob, /cancel-review/);
+  assert.match(workflow, /github\.event_name == 'workflow_dispatch' && \(inputs\.mode == 'status' \|\| inputs\.mode == 'cancel-review'\)/);
+  assert.match(workflow, /if \[ "\$\{STORE_MODE\}" = 'cancel-review' \]; then\r?\n\s+test "\$\{GITHUB_EVENT_NAME\}" = 'workflow_dispatch'/);
+  assert.equal((workflow.match(/--cancel-review "\$\{CHROME_EXPECTED_PENDING_VERSION\}"/g) || []).length, 2);
+  assert.doesNotMatch(workflow, /npm (?:ci|install|test|run verify)|node --test/);
 });

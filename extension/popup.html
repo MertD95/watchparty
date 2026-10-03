@@ -135,6 +135,7 @@
       <button class="btn" id="btn-open-watchparty" type="button">Browse rooms</button>
       <button class="btn" id="btn-open-settings" type="button">Settings</button>
     </nav>
+    <p class="error-text hidden" id="popup-error" role="alert"></p>
     <section class="status-area" aria-label="Connection status">
       <div class="status-grid" aria-live="polite">
         <span class="status-pill"><span class="dot" id="stremio-dot" aria-hidden="true"></span><span id="stremio-status">Checking Stremio…</span></span>
@@ -145,6 +146,7 @@
     <details class="fold-card" id="setup-card">
       <summary>Create or join from this popup</summary>
       <div class="fold-body">
+        <p class="helper-text">Optional setup. Stremio will open to finish creating or joining your room.</p>
         <div class="identity-field">
           <label class="field-label" for="username-input">Your name</label>
           <input type="text" id="username-input" placeholder="Enter your name" maxlength="25" autocomplete="nickname">

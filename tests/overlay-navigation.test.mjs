@@ -17,6 +17,12 @@ function overlayRuntime() {
   const saved = [];
   const actions = [];
   const storage = {};
+  const notices = [];
+  const copied = [];
+  const timers = new Map();
+  let timerId = 0;
+  let keyReader = async () => 'example-room-key-0123456789';
+  let inviteBuilder = async (_id, url) => url;
   const camelCase = (key) => key.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
   let document;
   class Element {
@@ -157,7 +163,8 @@ function overlayRuntime() {
     window: { innerWidth: 1200, addEventListener() {} },
     MutationObserver: class { observe() {} },
     requestAnimationFrame: () => 0, cancelAnimationFrame() {},
-    setTimeout: () => 0, clearTimeout() {}, setInterval: () => 0, clearInterval() {},
+    setTimeout: (callback, ms) => { const id = ++timerId; timers.set(id, { callback, ms }); return id; },
+    clearTimeout: id => timers.delete(id), setInterval: () => 0, clearInterval() {},
     chrome: {
       runtime: { getURL: (file) => file },
       storage: { local: { get: (_keys, callback) => callback(storage) }, onChanged: { addListener: (listener) => storageListeners.push(listener) } },
@@ -165,6 +172,7 @@ function overlayRuntime() {
     WPUtils: {
       getUserColor: () => '#6366f1', escapeHtml: (value) => String(value), getDirectJoinUrl: () => '',
       getCanonicalOwnerUser: () => null, isCurrentSessionUser: () => false,
+      copyTextDeferred: async loader => { const text = await loader(); copied.push(text); return true; },
     },
     WPDOM: {
       clear: (node) => node.replaceChildren(),
@@ -172,9 +180,9 @@ function overlayRuntime() {
       safeColor: (value) => value, safeUrl: (value) => value || '',
     },
     WPTheme: { startListening() {} },
-    WPModals: { showToast() {}, showReadyCheck() {} },
+    WPModals: { showToast: message => notices.push(message), showReadyCheck() {} },
     WPRuntimeState: { get: async () => storage, set: save },
-    WPRoomKeys: { getAccessKey: async () => 'example-room-key-0123456789' },
+    WPRoomKeys: { getAccessKey: (...args) => keyReader(...args), appendToInviteUrl: (...args) => inviteBuilder(...args) },
   });
   for (const file of ['wp-actions.js', 'constants.js', 'wp-protocol.js', 'runtime-clock.js', 'stremio-sync.js', 'stremio-overlay-shells.js', 'stremio-overlay.js']) {
     vm.runInContext(fs.readFileSync(path.join(root, 'extension', file), 'utf8'), context, { filename: file });
@@ -187,7 +195,8 @@ function overlayRuntime() {
   api.initKeyboardShortcuts();
   const room = { id: 'test-room', public: false, listed: false, settings: {}, users: [] };
   return {
-    api, nodes: ids, document, constants, saved, actions, room,
+    api, nodes: ids, document, constants, saved, actions, room, notices, copied, timers,
+    keyReader: reader => { keyReader = reader; }, inviteBuilder: builder => { inviteBuilder = builder; },
     inRoom: (isHost = false, changes = {}, state = {}) => api.updateState({ inRoom: true, isHost, roomState: { ...room, ...changes }, hasVideo: false, wsConnected: true, ...state }),
     selected: (name) => ids.get(`wp-tab-${name}`).getAttribute('aria-selected') === 'true',
     hidden: (id) => ids.get(id).classList.contains('wp-hidden-el'),
@@ -207,6 +216,78 @@ test('personal settings are available before joining, with room-only tabs hidden
   compact.checked = true;
   compact.dispatch('change');
   assert.deepEqual(ui.saved.at(-1), { [ui.constants.STORAGE.COMPACT_CHAT]: true });
+});
+
+test('room setting rejection restores controls and canonical values, including synchronous dispatcher exceptions', async () => {
+  for (const id of ['wp-session-private', 'wp-session-listed', 'wp-session-autopause']) {
+    const ui = overlayRuntime(); ui.inRoom(true);
+    ui.api.setActionDispatcher(() => { throw new Error('closed'); });
+    const toggle = ui.nodes.get(id); const original = toggle.checked; toggle.checked = !original;
+    await toggle.onchange({ isTrusted: true, target: toggle });
+    assert.equal(ui.nodes.get(id).disabled, false);
+    assert.equal(ui.nodes.get(id).checked, original);
+    assert.match(ui.notices.at(-1), /Could not update/);
+  }
+});
+
+test('pending room settings stay disabled during refresh and late failures cannot affect another membership', async () => {
+  const ui = overlayRuntime(); ui.inRoom(true); let finish; const sent = [];
+  ui.api.setActionDispatcher(message => { sent.push(message); return new Promise(resolve => { finish = resolve; }); });
+  const toggle = ui.nodes.get('wp-session-listed'); toggle.checked = true;
+  const work = toggle.onchange({ isTrusted: true, target: toggle });
+  ui.inRoom(true);
+  assert.equal(ui.nodes.get('wp-session-listed').disabled, true);
+  assert.equal(sent[0].roomId, 'test-room');
+  ui.inRoom(true, { id: 'other-room' });
+  finish({ handled: false, error: 'old room failure' }); await work;
+  assert.equal(ui.notices.includes('old room failure'), false);
+  assert.equal(ui.nodes.get('wp-session-listed').disabled, false);
+});
+
+test('a room setting transport timeout restores usable controls', async () => {
+  const ui = overlayRuntime(); ui.inRoom(true);
+  ui.api.setActionDispatcher(() => new Promise(() => {}));
+  const toggle = ui.nodes.get('wp-session-listed'); toggle.checked = true;
+  const work = toggle.onchange({ isTrusted: true, target: toggle });
+  [...ui.timers.values()].find(timer => timer.ms === 8000).callback(); await work;
+  assert.equal(ui.nodes.get('wp-session-listed').disabled, false);
+  assert.match(ui.notices.at(-1), /No response/);
+});
+
+test('private key save failure releases Updating state and key read cannot target a later room', async () => {
+  const flush = async () => { for (let i = 0; i < 16; i += 1) await Promise.resolve(); };
+  const ui = overlayRuntime(); ui.inRoom(true); await flush();
+  ui.api.setActionDispatcher(() => Promise.reject(new Error('closed')));
+  const input = ui.nodes.get('wp-room-key-input'); input.value = 'new-private-key-123456789';
+  ui.nodes.get('wp-room-key-save').click(); await flush();
+  assert.equal(ui.nodes.get('wp-room-key-save').disabled, false);
+  assert.equal(ui.nodes.get('wp-room-key-save').textContent, 'Update');
+  assert.match(ui.notices.at(-1), /Could not update/);
+  let finish; ui.keyReader(() => new Promise(resolve => { finish = resolve; }));
+  input.value = 'another-private-key-123456789'; ui.nodes.get('wp-room-key-save').click();
+  const finishOldRead = finish;
+  ui.inRoom(true, { id: 'room-b' });
+  finishOldRead('previous-private-key-123456789'); await flush();
+  assert.equal(ui.actions.filter(action => action.action === ui.constants.ACTION.ROOM_VISIBILITY_UPDATE).length, 0);
+});
+
+test('copying an invite or restoring copied header text cannot cross a room change', async () => {
+  const ui = overlayRuntime(); ui.inRoom(true);
+  ui.api.bindRoomCodeCopy(ui.room);
+  const chip = ui.nodes.get('wp-room-code');
+  await chip.onclick({ isTrusted: true });
+  assert.equal(chip.textContent, 'Link copied!');
+  const oldTimer = [...ui.timers.values()].find(timer => timer.ms === 1500);
+  ui.inRoom(true, { id: 'new-room' }); oldTimer.callback();
+  assert.equal(chip.textContent, 'new-room');
+
+  let finish;
+  ui.inviteBuilder(() => new Promise(resolve => { finish = resolve; }));
+  const copy = ui.nodes.get('wp-copy-invite-btn').onclick({ isTrusted: true });
+  for (let i = 0; i < 8; i += 1) await Promise.resolve();
+  ui.inRoom(true, { id: 'third-room' });
+  finish('https://example.com/r/new-room#accessKey=old'); await copy;
+  assert.equal(ui.copied.length, 1, 'only the first current-room invite reached the clipboard');
 });
 
 test('panel arrow keys wrap over enabled tabs with one tab stop and matching ARIA', () => {

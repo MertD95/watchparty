@@ -40,7 +40,7 @@
       wpWsConnected: !!room, wpActiveBackend: 'local', wpActiveBackendUrl: 'UI simulation (no connection)' });
   }
   function getStatus() {
-    return structuredClone({ room, userId, sessionId: local.wpSessionId, bgVersion: '2.0.3',
+    return structuredClone({ room, userId, sessionId: local.wpSessionId, bgVersion: '2.0.4',
       wsConnected: !!room, backendMode: local.wpBackendMode, activeBackend: 'local',
       activeBackendUrl: 'UI simulation (no connection)', hasStremioTab: true, stremioRunning: true,
       currentRoomId: room?.id || null, bootstrapPending: false, isDevInstall: true,
@@ -155,6 +155,9 @@
       case 'localBackend.get': return { ok: true, data: message.resource === 'rooms' ? { rooms: sampleDirectory() } : { ready: true } };
       case 'server.diagnostics.get': return { ok: true, serverDiagnostics: null };
       case 'localLandingAccess.sync': return { ok: true };
+      case 'session.recovery.request':
+        return { ok: false, handled: false,
+          error: 'Recovery must be tested in the installed extension. This sample preview has no real Stremio tabs or saved room keys.' };
       case 'auth.key.clear': break;
       default: return { ok: false, handled: false, error: 'This action needs the installed extension, not the UI preview.' };
     }
@@ -167,7 +170,7 @@
   seedRoom();
   window.chrome = { runtime: {
     id: 'watchparty-local-ui-preview', lastError: undefined,
-    getManifest: () => ({ version: '2.0.3', name: 'WatchParty UI preview' }),
+    getManifest: () => ({ version: '2.0.4', name: 'WatchParty UI preview' }),
     getURL: path => new URL('/extension/' + path.replace(/^\//, ''), location.origin).href,
     sendMessage: (message, callback) => { const work = dispatch(message); if (callback) work.then(callback); return work; },
     onMessage: messages,

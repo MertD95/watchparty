@@ -8,8 +8,11 @@ const WPProfile = (() => {
 
   const READ_INTERVAL_MS = 10_000;
   let lastHash = '';
+  let running = false;
+  const writes = new Set();
 
   function readAndCache() {
+    if (!running) return;
     try {
       const raw = localStorage.getItem('profile');
       if (!raw) return;
@@ -38,7 +41,9 @@ const WPProfile = (() => {
         readAt: Date.now(),
       };
 
-      WPRuntimeState.set({ [WPConstants.STORAGE.STREMIO_PROFILE]: data }).catch(() => {});
+      const write = WPRuntimeState.set({ [WPConstants.STORAGE.STREMIO_PROFILE]: data }).catch(() => {});
+      writes.add(write);
+      write.finally(() => writes.delete(write));
       if (authKey) {
         chrome.runtime.sendMessage({
           type: 'watchparty-ext',
@@ -58,19 +63,27 @@ const WPProfile = (() => {
 
   let intervalId = null;
 
-  function start() {
-    readAndCache();
-    intervalId = setInterval(readAndCache, READ_INTERVAL_MS);
-    document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') readAndCache();
-    });
+  function onVisibilityChange() {
+    if (document.visibilityState === 'visible') readAndCache();
   }
 
-  function stop() {
+  function start() {
+    if (running) return;
+    running = true;
+    readAndCache();
+    intervalId = setInterval(readAndCache, READ_INTERVAL_MS);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+  }
+
+  async function stop(options = {}) {
+    running = false;
+    document.removeEventListener('visibilitychange', onVisibilityChange);
     if (intervalId) {
       clearInterval(intervalId);
       intervalId = null;
     }
+    await Promise.allSettled([...writes]);
+    if (options.forget === true) lastHash = '';
   }
 
   return { start, stop, readAndCache };

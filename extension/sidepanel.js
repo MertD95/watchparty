@@ -11,8 +11,14 @@
   let currentSessionId = null;
   let currentRoomState = null;
   let currentWsConnected = false;
+  let currentHasVideo = false;
+  let roomActionGeneration = 0;
+  const pendingRoomActions = new Map();
+  const bookmarkButtons = new Set();
+  let toastTimer = null;
   let coordinatorRevision = 0;
   let renderedRoomId = null;
+  let renderedStatusKey = null;
   const renderedBookmarkKeys = new Set();
   const renderedMessageIds = new Set();
   const typingUsers = new Map();
@@ -47,6 +53,7 @@
     clearTimeout(chatCooldownTimer);
     chatCooldownUntil = 0;
     renderedMessageIds.clear();
+    bookmarkButtons.clear();
     for (const entry of typingUsers.values()) clearTimeout(entry.timeoutId);
     typingUsers.clear();
     clearTimeout(typingIdleTimer);
@@ -180,19 +187,18 @@
     return { label, title };
   }
 
-  function openWatchParty() {
-    chrome.runtime.sendMessage(
-      { type: 'watchparty-ext', action: WPConstants.ACTION.APP_STREMIO_OPEN, url: 'https://web.stremio.com' },
-      (response) => {
-        if (chrome.runtime.lastError || response?.ok === false) {
-          chrome.tabs.create({ url: 'https://web.stremio.com' }).catch(() => {});
-        }
-      }
-    );
+  async function openWatchParty() {
+    try {
+      const response = await chrome.runtime.sendMessage({ type: 'watchparty-ext', action: WPConstants.ACTION.APP_STREMIO_OPEN, url: 'https://web.stremio.com' });
+      if (response?.ok !== true || response.handled === false || response.error) throw new Error('Could not open Stremio');
+    } catch {
+      try { await chrome.tabs.create({ url: 'https://web.stremio.com' }); }
+      catch { showToast('Could not open Stremio. Try again.'); }
+    }
   }
 
   function openOptions() {
-    chrome.runtime.openOptionsPage().catch(() => {});
+    chrome.runtime.openOptionsPage().catch(() => showToast('Could not open settings. Try again.'));
   }
 
   function bindStaticActions() {
@@ -205,23 +211,26 @@
     if (!toast) return;
     toast.textContent = message;
     toast.classList.add('visible');
-    setTimeout(() => toast.classList.remove('visible'), 2000);
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toast.classList.remove('visible'), 4000);
   }
 
   function copyInvite(roomState) {
-    WPUtils.copyTextDeferred(() => new Promise((resolve) => {
-      getExtensionState([
+    const generation = roomActionGeneration;
+    return WPUtils.copyTextDeferred(async () => {
+      const result = await getExtensionState([
         WPConstants.STORAGE.BACKEND_MODE,
         WPConstants.STORAGE.ACTIVE_BACKEND,
-      ], (result) => {
-        const inviteUrl = WPConstants.BACKEND.buildInviteUrl(
-          roomState.id,
-          result[WPConstants.STORAGE.BACKEND_MODE],
-          result[WPConstants.STORAGE.ACTIVE_BACKEND]
-        );
-        WPRoomKeys.appendToInviteUrl(roomState.id, inviteUrl).then(resolve);
-      });
-    }))
+      ]);
+      const inviteUrl = WPConstants.BACKEND.buildInviteUrl(
+        roomState.id,
+        result[WPConstants.STORAGE.BACKEND_MODE],
+        result[WPConstants.STORAGE.ACTIVE_BACKEND]
+      );
+      const fullInvite = await WPRoomKeys.appendToInviteUrl(roomState.id, inviteUrl);
+      if (currentRoomState?.id !== roomState.id || roomActionGeneration !== generation) throw new Error('Room changed');
+      return fullInvite;
+    })
       .then((copied) => showToast(copied ? 'Invite copied' : 'Copy failed'))
       .catch(() => showToast('Copy failed'));
   }
@@ -287,14 +296,74 @@
   }
 
   /** @param {Event | null} [event] */
-  function sendAction(detail, event = null) {
-    if (!WPActionContract.isAllowedSource(detail?.action, 'sidepanel')) return false;
-    if (WPActionContract.requiresTrustedEvent(detail?.action) && !isTrustedUserEvent(event)) return false;
-    chrome.runtime.sendMessage({
-      type: 'watchparty-ext',
-      ...detail,
-    }).catch(() => {});
-    return true;
+  async function sendAction(detail, event = null) {
+    if (!WPActionContract.isAllowedSource(detail?.action, 'sidepanel')
+        || (WPActionContract.requiresTrustedEvent(detail?.action) && !isTrustedUserEvent(event))) {
+      return { ok: false, error: 'This action is not available.' };
+    }
+    let timeout;
+    try {
+      const response = await Promise.race([
+        chrome.runtime.sendMessage({ type: 'watchparty-ext', ...detail }),
+        new Promise(resolve => { timeout = setTimeout(() => resolve({ ok: false, error: 'No response from Stremio. Try again.' }), 8000); }),
+      ]);
+      if (response?.ok !== true || response.handled === false || response.error) {
+        return { ok: false, error: response?.error || 'The action was not accepted. Open Stremio and try again.' };
+      }
+      return { ok: true };
+    } catch {
+      return { ok: false, error: 'Could not reach Stremio. Try again.' };
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  function roomActionUnavailable(action) {
+    if (!currentRoomState?.id) return 'Join a room first.';
+    if (action === WPConstants.ACTION.ROOM_LEAVE) return '';
+    if (!currentWsConnected) return 'Reconnect to the room first.';
+    if (action === WPConstants.ACTION.ROOM_READY_CHECK_UPDATE && !amIHost()) return 'Only the host can start a ready check.';
+    if (!currentHasVideo) return 'Open a video in Stremio first.';
+    return '';
+  }
+
+  function updateRoomActionAvailability() {
+    const controls = [
+      ['sp-ready-check', WPConstants.ACTION.ROOM_READY_CHECK_UPDATE],
+      ['sp-bookmark', WPConstants.ACTION.ROOM_BOOKMARK_ADD],
+      ['sp-leave', WPConstants.ACTION.ROOM_LEAVE],
+    ];
+    for (const [id, action] of controls) {
+      const button = document.getElementById(id);
+      if (!(button instanceof HTMLButtonElement)) continue;
+      const reason = roomActionUnavailable(action);
+      button.disabled = !!reason || pendingRoomActions.has(action);
+      button.title = reason;
+      button.setAttribute('aria-busy', String(pendingRoomActions.has(action)));
+    }
+    for (const button of bookmarkButtons) {
+      const action = WPConstants.ACTION.ROOM_BOOKMARK_SEEK;
+      const reason = roomActionUnavailable(action);
+      button.disabled = !!reason || pendingRoomActions.has(action);
+      button.title = reason || 'Seek to this moment in Stremio';
+    }
+  }
+
+  async function runRoomAction(detail, event, successMessage) {
+    const action = detail.action;
+    if (!isTrustedUserEvent(event) || pendingRoomActions.has(action)) return;
+    const unavailable = roomActionUnavailable(action);
+    if (unavailable) { showToast(unavailable); return; }
+    const entry = { roomId: currentRoomState.id, generation: roomActionGeneration };
+    pendingRoomActions.set(action, entry);
+    updateRoomActionAvailability();
+    const response = await sendAction({ ...detail, roomId: entry.roomId }, event);
+    if (pendingRoomActions.get(action) !== entry) return;
+    pendingRoomActions.delete(action);
+    if (entry.roomId === currentRoomState?.id && entry.generation === roomActionGeneration) {
+      showToast(response.ok ? successMessage : response.error);
+    }
+    updateRoomActionAvailability();
   }
 
   function stopTypingSignal() {
@@ -304,7 +373,7 @@
     }
     if (typingSent) {
       typingSent = false;
-      sendAction({ action: WPConstants.ACTION.ROOM_TYPING_SEND, typing: false });
+      void sendAction({ action: WPConstants.ACTION.ROOM_TYPING_SEND, typing: false, roomId: currentRoomState?.id });
     }
   }
 
@@ -318,6 +387,7 @@
   /** @param {Event | null} [event] */
   function onChatInput(event = null) {
     if (!isTrustedUserEvent(event)) return;
+    if (!currentRoomState?.id || !currentWsConnected) return;
     const input = inputById('chat-input');
     const hasText = !!input?.value.trim();
     if (!hasText) {
@@ -326,7 +396,7 @@
     }
     if (!typingSent) {
       typingSent = true;
-      sendAction({ action: WPConstants.ACTION.ROOM_TYPING_SEND, typing: true });
+      void sendAction({ action: WPConstants.ACTION.ROOM_TYPING_SEND, typing: true, roomId: currentRoomState?.id });
     }
     scheduleTypingStop();
   }
@@ -374,15 +444,15 @@
     timeButton.className = 'bookmark-time';
     timeButton.type = 'button';
     timeButton.textContent = `${mins}:${secs}`;
+    bookmarkButtons.add(timeButton);
     div.append(senderName, ' at ', timeButton);
     timeButton.addEventListener('click', (event) => {
-      if (sendAction({ action: WPConstants.ACTION.ROOM_BOOKMARK_SEEK, time: msg.time }, event)) {
-        showToast(`Seeking to ${mins}:${secs}`);
-      }
+      void runRoomAction({ action: WPConstants.ACTION.ROOM_BOOKMARK_SEEK, time: msg.time }, event, `Seek requested: ${mins}:${secs}`);
     });
     container.appendChild(div);
     pruneOldChildren(container);
     container.scrollTop = container.scrollHeight;
+    updateRoomActionAvailability();
   }
 
   function getBookmarkKey(msg) {
@@ -438,6 +508,7 @@
   }
 
   function renderEmptyState() {
+    renderedStatusKey = null;
     if (renderedRoomId) clearRoomChat();
     renderedRoomId = null;
     renderedBookmarkKeys.clear();
@@ -555,49 +626,49 @@
       linkHtml.push(`<a class="session-link" href="${escapeHtml(directStreamUrl)}" target="_blank" rel="noreferrer">Open host stream</a>`);
     }
 
-    // Room updates should not close the user's menu or discard keyboard focus.
-    const toolsPanel = document.getElementById('sp-room-tools');
-    const toolsOpen = toolsPanel instanceof HTMLDetailsElement && toolsPanel.open;
-    const focusedId = status.contains(document.activeElement) ? document.activeElement?.id : '';
-    status.innerHTML = `
-      <div class="status-copy">
-        <div class="eyebrow">Room</div>
-        <h2 class="status-title">${escapeHtml(roomTitle)}</h2>
-        <div class="pill-row">
-          <span class="pill ${isHost ? 'success' : ''}">${escapeHtml(roleLabel)}</span>
-          <span class="pill ${currentWsConnected ? 'success' : 'warn'}">${escapeHtml(wsLabel)}</span>
-        </div>
-        <p class="status-note">${escapeHtml(sessionCopy)}</p>
-        <div class="action-row">
-          <button class="action-btn" id="sp-copy-invite" type="button">Copy Invite</button>
-        </div>
-        <details class="room-tools" id="sp-room-tools"${toolsOpen ? ' open' : ''}>
-          <summary id="sp-room-tools-summary">Room actions</summary>
-          ${linkHtml.length > 0 ? `<div class="session-links">${linkHtml.join('')}</div>` : ''}
-          <div class="action-row">
-            ${isHost ? '<button class="action-btn" id="sp-ready-check" type="button">Ready Check</button>' : ''}
-            <button class="action-btn" id="sp-bookmark" type="button">Bookmark moment</button>
-            <button class="action-btn leave-btn" id="sp-leave" type="button">Leave room</button>
+    // Playback/presence updates can arrive many times per second. Keep live
+    // buttons mounted unless their displayed room context actually changes.
+    const statusKey = JSON.stringify([roomState.id, roomTitle, isHost, currentWsConnected, sessionCopy, detailUrl, directStreamUrl]);
+    if (statusKey !== renderedStatusKey) {
+      renderedStatusKey = statusKey;
+      // Room updates should not close the user's menu or discard keyboard focus.
+      const toolsPanel = document.getElementById('sp-room-tools');
+      const toolsOpen = toolsPanel instanceof HTMLDetailsElement && toolsPanel.open;
+      const focusedId = status.contains(document.activeElement) ? document.activeElement?.id : '';
+      status.innerHTML = `
+        <div class="status-copy">
+          <div class="eyebrow">Room</div>
+          <h2 class="status-title">${escapeHtml(roomTitle)}</h2>
+          <div class="pill-row">
+            <span class="pill ${isHost ? 'success' : ''}">${escapeHtml(roleLabel)}</span>
+            <span class="pill ${currentWsConnected ? 'success' : 'warn'}">${escapeHtml(wsLabel)}</span>
           </div>
-        </details>
-      </div>
-    `;
-    if (focusedId) document.getElementById(focusedId)?.focus({ preventScroll: true });
+          <p class="status-note">${escapeHtml(sessionCopy)}</p>
+          <div class="action-row">
+            <button class="action-btn" id="sp-copy-invite" type="button">Copy Invite</button>
+          </div>
+          <details class="room-tools" id="sp-room-tools"${toolsOpen ? ' open' : ''}>
+            <summary id="sp-room-tools-summary">Room actions</summary>
+            ${linkHtml.length > 0 ? `<div class="session-links">${linkHtml.join('')}</div>` : ''}
+            <div class="action-row">
+              ${isHost ? '<button class="action-btn" id="sp-ready-check" type="button">Ready Check</button>' : ''}
+              <button class="action-btn" id="sp-bookmark" type="button">Bookmark moment</button>
+              <button class="action-btn leave-btn" id="sp-leave" type="button">Leave room</button>
+            </div>
+          </details>
+        </div>
+      `;
+      if (focusedId) document.getElementById(focusedId)?.focus({ preventScroll: true });
 
-    document.getElementById('sp-copy-invite')?.addEventListener('click', () => copyInvite(roomState));
-    document.getElementById('sp-ready-check')?.addEventListener('click', (event) => {
-      if (sendAction({ action: WPConstants.ACTION.ROOM_READY_CHECK_UPDATE, readyAction: 'initiate' }, event)) {
-        showToast('Ready check started');
-      }
-    });
-    document.getElementById('sp-bookmark')?.addEventListener('click', (event) => {
-      if (sendAction({ action: WPConstants.ACTION.ROOM_BOOKMARK_ADD }, event)) {
-        showToast('Bookmark sent');
-      }
-    });
-    document.getElementById('sp-leave')?.addEventListener('click', (event) => {
-      sendAction({ action: WPConstants.ACTION.ROOM_LEAVE }, event);
-    });
+      document.getElementById('sp-copy-invite')?.addEventListener('click', () => copyInvite(roomState));
+      document.getElementById('sp-ready-check')?.addEventListener('click', (event) => runRoomAction(
+        { action: WPConstants.ACTION.ROOM_READY_CHECK_UPDATE, readyAction: 'initiate' }, event, 'Ready check requested'));
+      document.getElementById('sp-bookmark')?.addEventListener('click', (event) => runRoomAction(
+        { action: WPConstants.ACTION.ROOM_BOOKMARK_ADD }, event, 'Bookmark requested'));
+      document.getElementById('sp-leave')?.addEventListener('click', (event) => runRoomAction(
+        { action: WPConstants.ACTION.ROOM_LEAVE }, event, 'Leave request accepted'));
+    }
+    updateRoomActionAvailability();
 
     if (!isHost && roomState.player) {
       const playerTime = formatPlaybackClock(roomState.player.time || 0) || '0:00';
@@ -639,10 +710,18 @@
   function applyCoordinatorUpdate(payload) {
     if (!payload || typeof payload !== 'object') return;
     coordinatorRevision += 1;
+    if (('room' in payload && payload.room?.id !== currentRoomState?.id)
+        || ('wsConnected' in payload && payload.wsConnected !== currentWsConnected)) {
+      roomActionGeneration += 1;
+      pendingRoomActions.clear();
+    }
+    if ('room' in payload && payload.room?.id !== currentRoomState?.id) currentHasVideo = false;
     if ('userId' in payload) currentUserId = payload.userId || null;
     if ('sessionId' in payload) currentSessionId = payload.sessionId || null;
     if ('room' in payload) currentRoomState = payload.room || null;
     if ('wsConnected' in payload) currentWsConnected = payload.wsConnected === true;
+    if ('adapterState' in payload) currentHasVideo = payload.adapterState?.hasVideo === true;
+    if (!currentRoomState) currentHasVideo = false;
     render(currentRoomState);
     if (!currentWsConnected) finishChat(pendingChat, false, 'Disconnected. Your draft is still here.');
     updateChatAvailability();
@@ -659,6 +738,7 @@
           userId: response.userId || null,
           sessionId: response.sessionId || null,
           wsConnected: response.wsConnected === true,
+          adapterState: response.adapterState || null,
         });
       }
     );
@@ -696,6 +776,10 @@
       const error = message.payload;
       if (pendingChat && error.roomId === pendingChat.roomId && error.clientMessageId === pendingChat.clientMessageId) {
         finishChat(pendingChat, false, error.message || 'Message was not sent. Your draft is still here.');
+      } else if (currentRoomState?.id && error.roomId === currentRoomState.id && !error.clientMessageId
+          && [WPConstants.ACTION.ROOM_READY_CHECK_UPDATE, WPConstants.ACTION.ROOM_BOOKMARK_ADD,
+            WPConstants.ACTION.ROOM_BOOKMARK_SEEK].includes(error.command)) {
+        showToast(error.message || 'The room action was rejected. Try again.');
       }
     }
 

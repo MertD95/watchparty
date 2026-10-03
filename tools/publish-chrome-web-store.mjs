@@ -7,6 +7,7 @@ import { readStorePackage } from './validate-store-package.mjs';
 // Official API v2 only. Mutations are never automatically retried: after an
 // ambiguous network failure, inspect --status before deciding to run again.
 // https://developer.chrome.com/docs/webstore/api/reference/rest/v2/publishers.items/publish
+// https://developer.chrome.com/docs/webstore/api/reference/rest/v2/publishers.items/cancelSubmission
 const API = 'https://chromewebstore.googleapis.com';
 const ID_ENV = ['CHROME_EXTENSION_ID', 'CHROME_PUBLISHER_ID'];
 const LEGACY_AUTH_ENV = ['CHROME_CLIENT_ID', 'CHROME_CLIENT_SECRET', 'CHROME_REFRESH_TOKEN'];
@@ -51,30 +52,57 @@ function summarize(status) {
   };
 }
 
-export async function runPublisher({ env = process.env, submit = false, zipBytes, expectedTag = env.CHROME_RELEASE_TAG,
+export async function runPublisher({ env = process.env, submit = false, cancelReview = false,
+  expectedPendingVersion = env.CHROME_EXPECTED_PENDING_VERSION, zipBytes, expectedTag = env.CHROME_RELEASE_TAG,
   fetchImpl = globalThis.fetch, sleep = delay, now = Date.now, log = console.log,
   pollIntervalMs = 5000, maxPolls = 24, uploadDeadlineMs = 180000 } = {}) {
   const suppliedToken = env.CHROME_ACCESS_TOKEN !== undefined;
   const missing = [...ID_ENV, ...(suppliedToken ? [] : LEGACY_AUTH_ENV)].filter(name => !env[name]?.trim());
   if (missing.length) throw new Error(`Missing required environment variables: ${missing.join(', ')}.`);
   if (!/^[a-p]{32}$/.test(env.CHROME_EXTENSION_ID) || !/^[A-Za-z0-9_-]+$/.test(env.CHROME_PUBLISHER_ID)) throw new Error('Invalid Chrome item or publisher ID.');
+  if (cancelReview && submit) throw new Error('Cancel review and submit are separate operations; they cannot run together.');
+  if (cancelReview) {
+    if (typeof expectedPendingVersion !== 'string'
+      || !/^(?:0|[1-9]\d{0,4})(?:\.(?:0|[1-9]\d{0,4})){0,3}$/.test(expectedPendingVersion)
+      || expectedPendingVersion.split('.').some(part => Number(part) > 65535)) {
+      throw new Error('Cancel review requires the exact expected pending version, such as 2.0.3.');
+    }
+    if (zipBytes !== undefined) throw new Error('Cancel review must not receive a release package.');
+    if (env.GITHUB_ACTIONS === 'true' && (env.GITHUB_EVENT_NAME !== 'workflow_dispatch'
+      || env.GITHUB_REF !== 'refs/heads/main' || env.GITHUB_REPOSITORY !== 'MertD95/watchparty'
+      || env.CHROME_PUBLISH_ENABLED !== 'true')) {
+      throw new Error('CI cancellation requires an explicitly enabled manual dispatch from trusted main.');
+    }
+  }
   if (submit && env.GITHUB_ACTIONS === 'true' && env.CHROME_PUBLISH_ENABLED !== 'true') throw new Error('Chrome submission is disabled; CHROME_PUBLISH_ENABLED must be true.');
   if (submit && env.GITHUB_ACTIONS === 'true' && !expectedTag) throw new Error('A release tag is required for CI submission.');
-  const version = submit ? (expectedTag === undefined ? readStorePackage(zipBytes).manifest.version : validateReleasePackage(zipBytes, expectedTag)) : null;
+  const version = cancelReview ? expectedPendingVersion
+    : submit ? (expectedTag === undefined ? readStorePackage(zipBytes).manifest.version : validateReleasePackage(zipBytes, expectedTag)) : null;
   const name = `publishers/${env.CHROME_PUBLISHER_ID}/items/${env.CHROME_EXTENSION_ID}`;
   const endpoint = `${API}/v2/${name}`;
   let token;
 
-  async function request(label, url, options = {}, timeoutMs = 15000) {
+  async function request(label, url, options = {}, timeoutMs = 15000, expectEmpty = false) {
     let response;
     try {
       response = await fetchImpl(url, { ...options, redirect: 'error', signal: AbortSignal.timeout(timeoutMs) });
     } catch {
-      throw new Error(`${label} request failed or timed out; no automatic retry. Check store status before retrying a submission.`);
+      throw new Error(`${label} request failed or timed out; no automatic retry. Check store status before changing store state again.`);
     }
     // Do not echo response bodies, OAuth data, HTTP headers or provider error
     // descriptions: these can contain credentials or publisher-only metadata.
     if (!response.ok) throw new Error(`${label} failed (HTTP ${response.status}). Check the Chrome Web Store dashboard or OAuth configuration.`);
+    if (expectEmpty) {
+      // cancelSubmission documents an empty response, unlike all other methods.
+      let body;
+      try { body = await response.text(); } catch { throw new Error(`${label} response could not be read. Check store status before retrying.`); }
+      if (!body.trim()) return {};
+      try {
+        const empty = JSON.parse(body);
+        if (empty && typeof empty === 'object' && !Array.isArray(empty) && Object.keys(empty).length === 0) return {};
+      } catch {}
+      throw new Error(`${label} returned unexpected data. Check store status before retrying.`);
+    }
     let data;
     try { data = await response.json(); } catch { throw new Error(`${label} returned invalid JSON.`); }
     if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error(`${label} returned invalid data.`);
@@ -109,6 +137,51 @@ export async function runPublisher({ env = process.env, submit = false, zipBytes
   }
   const initial = await fetchStatus();
   report('initial-status', initial);
+  if (cancelReview) {
+    const matchesExpectedVersion = revision => Array.isArray(revision?.distributionChannels)
+      && revision.distributionChannels.length > 0
+      && revision.distributionChannels.every(channel => channel?.crxVersion === expectedPendingVersion);
+    const assertCancellationTarget = status => {
+      if (status.takenDown || status.warned || IN_PROGRESS.has(status.lastAsyncUploadState)) {
+        throw new Error('Store policy or upload state requires inspection; no cancellation was performed.');
+      }
+      if (status.submittedItemRevisionStatus?.state !== 'PENDING_REVIEW'
+        || !matchesExpectedVersion(status.submittedItemRevisionStatus)) {
+        throw new Error('The active pending review does not exactly match the expected version; no cancellation was performed.');
+      }
+      if (versions(status.publishedItemRevisionStatus).some(current => compareVersions(current, expectedPendingVersion) >= 0)) {
+        throw new Error('The expected review version or a newer version is already published; no cancellation was performed.');
+      }
+    };
+    assertCancellationTarget(initial);
+    // The API exposes no version/etag precondition. Re-read immediately before
+    // the single mutation; CI serializes this with every other store operation.
+    // Operators must also avoid changing this item in the dashboard concurrently.
+    const preflight = await fetchStatus();
+    assertCancellationTarget(preflight);
+    const publishedBefore = JSON.stringify(preflight.publishedItemRevisionStatus ?? null);
+    report('cancellation-preflight', preflight);
+    await request('Cancel pending review', `${endpoint}:cancelSubmission`, { method: 'POST', headers }, 15000, true);
+    log(JSON.stringify({ event: 'cancellation-accepted', itemId: env.CHROME_EXTENSION_ID, requestedVersion: version }));
+    // Never retry the mutation. Only bounded read-only status polling follows.
+    for (let poll = 0; poll <= maxPolls; poll++) {
+      let status;
+      try { status = await fetchStatus(); }
+      catch { throw new Error('Cancellation was accepted but status confirmation failed. Check --status before proceeding; do not automatically retry cancellation.'); }
+      if (JSON.stringify(status.publishedItemRevisionStatus ?? null) !== publishedBefore) {
+        throw new Error('Published store state changed during cancellation. Inspect --status before proceeding.');
+      }
+      const pending = status.submittedItemRevisionStatus;
+      if (!pending || (pending.state === 'CANCELLED' && matchesExpectedVersion(pending))) {
+        return report('cancellation-confirmed', status);
+      }
+      if (pending.state !== 'PENDING_REVIEW' || !matchesExpectedVersion(pending)) {
+        throw new Error('Submitted store state changed during cancellation. Inspect --status before proceeding.');
+      }
+      if (poll < maxPolls) await sleep(pollIntervalMs);
+    }
+    throw new Error('Cancellation was accepted but the expected review is still pending. Check --status before proceeding; cancellation was not retried.');
+  }
   if (!submit) return report('status-only-no-changes', initial);
   if (initial.takenDown || initial.warned) throw new Error('Store policy warning or takedown requires manual resolution before submission.');
   if (IN_PROGRESS.has(initial.lastAsyncUploadState)) throw new Error('An upload is already in progress; no additional upload was started.');
@@ -168,11 +241,13 @@ export async function runPublisher({ env = process.env, submit = false, zipBytes
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   try {
-    const [mode, archive, ...extra] = process.argv.slice(2);
-    if (extra.length || !['--status', '--submit'].includes(mode) || (mode === '--submit' ? !archive : archive)) {
-      throw new Error('Usage: node tools/publish-chrome-web-store.mjs --status | --submit <package.zip>');
+    const [mode, argument, ...extra] = process.argv.slice(2);
+    if (extra.length || !['--status', '--submit', '--cancel-review'].includes(mode) || (mode === '--status' ? argument : !argument)) {
+      throw new Error('Usage: node tools/publish-chrome-web-store.mjs --status | --submit <package.zip> | --cancel-review <expected-pending-version>');
     }
-    const result = await runPublisher({ submit: mode === '--submit', zipBytes: archive ? await fs.readFile(archive) : undefined });
+    const result = await runPublisher({ submit: mode === '--submit', cancelReview: mode === '--cancel-review',
+      expectedPendingVersion: mode === '--cancel-review' ? argument : undefined,
+      zipBytes: mode === '--submit' ? await fs.readFile(argument) : undefined });
     if (result.event === 'submission-accepted-status-unavailable') console.log(JSON.stringify(result));
   } catch (error) {
     console.error(error.message);

@@ -17,17 +17,6 @@ let refreshTimer = null;
 let backendMutationInFlight = false;
 let recoveryMutationInFlight = false;
 let didInit = false;
-const RECOVERY_RESET_LOCAL_KEYS = [
-  WPConstants.STORAGE.USERNAME,
-  WPConstants.STORAGE.SESSION_ID,
-  WPConstants.STORAGE.SESSION_TOKEN,
-  WPConstants.STORAGE.STREMIO_PROFILE,
-];
-const RECOVERY_RESET_SESSION_KEYS = [
-  ...WPConstants.STORAGE_CONTRACT.SESSION_RUNTIME,
-  ...WPConstants.STORAGE_CONTRACT.BOOTSTRAP_SESSION,
-  ...WPConstants.STORAGE_CONTRACT.SENSITIVE_SESSION,
-];
 
 function setText(id, value) {
   const el = $(id);
@@ -74,25 +63,24 @@ function setExtensionState(values) {
   return WPRuntimeState.set(values);
 }
 
-function removeExtensionState(keys) {
-  return WPRuntimeState.remove(keys);
+function boundedClipboardResult(work, timeoutMs) {
+  let timer;
+  return Promise.race([
+    work,
+    new Promise(resolve => { timer = setTimeout(() => resolve(false), timeoutMs); }),
+  ]).catch(() => false).finally(() => clearTimeout(timer));
 }
 
-function copyTextToClipboard(text) {
+async function copyTextToClipboard(text) {
   const value = String(text || '');
   if (!value) return Promise.resolve(false);
-  return chrome.runtime.sendMessage({
+  const copied = await boundedClipboardResult(Promise.resolve().then(() => chrome.runtime.sendMessage({
     type: 'watchparty-ext',
     action: WPConstants.ACTION.CLIPBOARD_COPY,
     text: value,
-  }).then((response) => response?.ok === true).catch(async () => {
-    try {
-      await navigator.clipboard.writeText(value);
-      return true;
-    } catch {
-      return false;
-    }
-  });
+  })).then((response) => response?.ok === true), 5000);
+  if (copied) return true;
+  return boundedClipboardResult(Promise.resolve().then(() => navigator.clipboard.writeText(value)).then(() => true), 1500);
 }
 
 function setBackendButtonsState(selectedMode, options = {}) {
@@ -126,6 +114,13 @@ function renderBackend(status) {
   const info = WPConstants.BACKEND.getInfo(displayBackendKey);
   const backendNote = $('backend-note');
   if (!backendNote) return;
+  const localAvailable = WPConstants.BACKEND.canUseLocal();
+  setHidden($('backend-toggle'), !localAvailable);
+  setHidden($('backend-mode-help'), !localAvailable);
+  if (!localAvailable) {
+    backendNote.textContent = 'WatchParty uses the production server automatically. No connection setting is needed.';
+    return;
+  }
   if (selectedMode === WPConstants.BACKEND.MODES.AUTO) {
     backendNote.textContent = status?.activeBackend
       ? `Automatic selection is using the ${info.key === WPConstants.BACKEND.MODES.LOCAL ? 'local development' : 'production'} server.`
@@ -473,8 +468,8 @@ async function runRecoveryAction(buttonId, work, messages) {
         : (messages.successMessage || 'Recovery action complete.'),
       'success'
     );
-  } catch {
-    setRecoveryFeedback(messages.errorMessage || 'Recovery action failed.', 'warn');
+  } catch (error) {
+    setRecoveryFeedback((error instanceof Error ? error.message : '') || messages.errorMessage || 'Recovery action failed.', 'warn');
   } finally {
     recoveryMutationInFlight = false;
     if (button) {
@@ -485,43 +480,35 @@ async function runRecoveryAction(buttonId, work, messages) {
   refreshStatus().catch(() => {});
 }
 
+async function requestRecovery(kind) {
+  const result = await chrome.runtime.sendMessage({
+    type: 'watchparty-ext',
+    action: WPConstants.ACTION.SESSION_RECOVERY_REQUEST,
+    kind,
+  });
+  if (result?.ok !== true) throw new Error(result?.error || 'Recovery did not complete. Refresh your Stremio tabs and try again.');
+  return result.count || 0;
+}
+
 async function clearBootstrapHandoff() {
-  await removeExtensionState([
-    WPConstants.STORAGE.BOOTSTRAP_ROOM_INTENT,
-    WPConstants.STORAGE.DEFERRED_LEAVE_ROOM,
-    WPConstants.STORAGE.CURRENT_ROOM,
-    WPConstants.STORAGE.ROOM_STATE,
-    WPConstants.STORAGE.USER_ID,
-    WPConstants.STORAGE.WS_CONNECTED,
-    WPConstants.STORAGE.ACTIVE_BACKEND,
-    WPConstants.STORAGE.ACTIVE_BACKEND_URL,
-    WPConstants.STORAGE.ACTIVE_VIDEO_TAB,
-  ]);
-  return 1;
+  return requestRecovery('clear-room');
 }
 
 async function clearPrivateKeys() {
-  const result = await WPRoomKeys.clearAll();
-  return result.count;
+  return requestRecovery('forget-keys');
 }
 
 async function resetWatchPartyState() {
-  const privateKeys = await WPRoomKeys.clearAll();
-  await removeExtensionState([...RECOVERY_RESET_LOCAL_KEYS, ...RECOVERY_RESET_SESSION_KEYS]);
-  await chrome.runtime.sendMessage({
-    type: 'watchparty-ext',
-    action: WPConstants.ACTION.AUTH_KEY_CLEAR,
-  }).catch(() => {});
-  return RECOVERY_RESET_LOCAL_KEYS.length + RECOVERY_RESET_SESSION_KEYS.length + privateKeys.count;
+  return requestRecovery('reset');
 }
 
 function bindRecoveryButtons() {
   $('btn-clear-bootstrap')?.addEventListener('click', () => {
-    if (recoveryMutationInFlight || !window.confirm('Clear the pending join and saved room state in this browser? You may need to open your invite again.')) return;
+    if (recoveryMutationInFlight || !window.confirm('Leave your current room in all Stremio tabs and clear any pending join? Your name and saved invite keys will be kept.')) return;
     runRecoveryAction('btn-clear-bootstrap', clearBootstrapHandoff, {
       pendingLabel: 'Clearing...',
       pendingMessage: 'Clearing the saved room...',
-      successMessage: 'Saved room cleared. Open your invite or create a room in Stremio to try again.',
+      successMessage: 'Left the room and cleared pending joins in all Stremio tabs. Open an invite or create a room to start again.',
       errorMessage: 'Could not clear the saved room.',
     }).catch(() => {});
   });

@@ -30,6 +30,12 @@
       return document.getElementById('profile-name-input');
     }
 
+    function getStoredUsername() {
+      // Browser privacy settings can disable storage without disabling the UI.
+      try { return localStorage.getItem(WEBSITE_USERNAME_KEY) || ''; }
+      catch { return ''; }
+    }
+
     function setPreferredUsername(value, options = {}) {
       const normalized = normalizeUsername(value);
       if (options.syncInput !== false) {
@@ -37,14 +43,16 @@
         if (input && input.value !== normalized) input.value = normalized;
       }
       if (options.persist !== false) {
-        if (normalized) localStorage.setItem(WEBSITE_USERNAME_KEY, normalized);
-        else localStorage.removeItem(WEBSITE_USERNAME_KEY);
+        try {
+          if (normalized) localStorage.setItem(WEBSITE_USERNAME_KEY, normalized);
+          else localStorage.removeItem(WEBSITE_USERNAME_KEY);
+        } catch { /* Keep the name in this page when browser storage is blocked. */ }
       }
       return normalized;
     }
 
     function hydrateLandingIdentity() {
-      const storedName = localStorage.getItem(WEBSITE_USERNAME_KEY) || '';
+      const storedName = getStoredUsername();
       setPreferredUsername(storedName, { persist: false });
       getProfileNameInput()?.addEventListener('input', (event) => {
         usernameEditedLocally = true;
@@ -66,7 +74,7 @@
         getProfileNameInput()?.value
         || latestExtensionStatus?.username
         || roomUserName
-        || localStorage.getItem(WEBSITE_USERNAME_KEY)
+        || getStoredUsername()
       );
     }
 
@@ -119,7 +127,7 @@
       const settingsBtn = document.getElementById('hero-settings-btn');
       const preferredName = normalizeUsername(nextStatus?.username)
         || (Array.isArray(nextStatus?.room?.users) ? nextStatus.room.users.find((user) => user.id === nextStatus.userId)?.name || '' : '')
-        || localStorage.getItem(WEBSITE_USERNAME_KEY)
+        || getStoredUsername()
         || '';
       if (preferredName && !usernameEditedLocally && document.activeElement !== getProfileNameInput()) {
         setPreferredUsername(preferredName, { persist: true });
@@ -955,7 +963,7 @@
       document.getElementById('page-redirect').style.display = 'block';
       document.getElementById('redirect-room-id').textContent = roomId;
       const inviteKeys = parseInviteKeysFromHash(window.location.hash);
-      const username = normalizeUsername(localStorage.getItem(WEBSITE_USERNAME_KEY) || '');
+      const username = normalizeUsername(getStoredUsername());
       const joinMessage = () => ({
         type: 'watchparty-join-room',
         roomId,

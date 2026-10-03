@@ -9,6 +9,11 @@ let currentUserId = null;
 let currentSessionId = null;
 let currentLobbyMode = 'create';
 let suppressedRoomId = null;
+let pendingLeaveRoomId = null;
+let pendingLobbyAction = null;
+let pendingLobbyRoomId = null;
+let copyOperation = 0;
+let copyingRoomId = null;
 
 document.body.dataset.statusReady = 'false';
 
@@ -29,11 +34,17 @@ function getErrorMessage(errorLike, fallback) {
 
 function getContentDetailUrl(room) {
   if (!room?.meta?.id || !room?.meta?.type) return null;
+  if (['pending', 'unknown'].includes(room.meta.id)) return null;
   return `https://web.stremio.com/#/detail/${encodeURIComponent(room.meta.type)}/${encodeURIComponent(room.meta.id)}`;
 }
 
 function getDirectStreamUrl(room) {
   return WPUtils.getDirectJoinUrl(room);
+}
+
+function showActionError(message = '') {
+  $('popup-error').textContent = message;
+  $('popup-error').classList.toggle('hidden', !message);
 }
 
 function getBrowseUrl() {
@@ -55,7 +66,7 @@ function markStatusReady() {
 
 function getExtensionState(keys, callback) {
   const work = WPRuntimeState.get(keys);
-  if (typeof callback === 'function') work.then(callback);
+  if (typeof callback === 'function') work.then(callback, () => callback({}));
   return work;
 }
 
@@ -64,67 +75,104 @@ function setExtensionState(values) {
 }
 
 function openWatchPartyTab() {
-  chrome.tabs.create({ url: getBrowseUrl() });
+  showActionError();
+  Promise.resolve(chrome.tabs.create({ url: getBrowseUrl() }))
+    .catch(error => showActionError(getErrorMessage(error, 'Could not open the room browser. Try again.')));
 }
 
 function openStremioTab() {
+  showActionError();
   chrome.runtime.sendMessage(
     { type: 'watchparty-ext', action: WPConstants.ACTION.APP_STREMIO_OPEN, url: 'https://web.stremio.com' },
     (response) => {
-      if (chrome.runtime.lastError || response?.ok === false) {
-        chrome.tabs.create({ url: 'https://web.stremio.com' });
+      if (chrome.runtime.lastError || response?.ok !== true) {
+        Promise.resolve(chrome.tabs.create({ url: 'https://web.stremio.com' }))
+          .catch(error => showActionError(getErrorMessage(error, 'Could not open Stremio. Try again.')));
       }
     }
   );
 }
 
 function openOptionsPage() {
-  chrome.runtime.openOptionsPage().catch(() => {});
+  showActionError();
+  chrome.runtime.openOptionsPage().catch(error => showActionError(getErrorMessage(error, 'Could not open Settings. Try again.')));
 }
 
 function updateQuickActions() {
   const resumeBtn = $('btn-resume-room');
   if (!resumeBtn) return;
   resumeBtn.textContent = currentRenderedRoom?.id ? 'Return to room in Stremio' : 'Open Stremio';
+  const hasRoom = !!currentRenderedRoom?.id;
+  $('btn-leave').disabled = !hasRoom || pendingLeaveRoomId === currentRenderedRoom?.id;
+  $('btn-leave').textContent = pendingLeaveRoomId === currentRenderedRoom?.id && hasRoom ? 'Leaving…' : 'Leave room';
+  $('btn-share').disabled = !hasRoom || copyingRoomId === currentRenderedRoom?.id;
+  $('room-id-display').disabled = !hasRoom || copyingRoomId === currentRenderedRoom?.id;
 }
 
 function resumeRoomInStremio() {
+  showActionError();
   if (!currentRenderedRoom?.id) {
     openStremioTab();
     return;
   }
   chrome.runtime.sendMessage(
-    { type: 'watchparty-ext', action: WPConstants.ACTION.ROOM_RESUME },
+    { type: 'watchparty-ext', action: WPConstants.ACTION.ROOM_RESUME, roomId: currentRenderedRoom.id },
     (response) => {
-      if (chrome.runtime.lastError || response?.ok === false) {
-        openStremioTab();
+      if (chrome.runtime.lastError || response?.ok !== true) {
+        showActionError(getErrorMessage(chrome.runtime.lastError || response, 'Could not return to this room. Open Stremio and try again.'));
       }
     }
   );
 }
 
 function resetLobbyActionButtons() {
+  pendingLobbyAction?.();
+  pendingLobbyAction = null;
+  pendingLobbyRoomId = null;
   $('btn-create').disabled = false;
   $('btn-create').textContent = 'Create Room';
   $('btn-join').disabled = false;
   $('btn-join').textContent = 'Join Room';
 }
 
-function copyTextWithFeedback(textSource, target, idleText, successText) {
-  WPUtils.copyTextDeferred(() => (
-    typeof textSource === 'function'
-      ? textSource()
-      : textSource
-  ))
+function copyTextWithFeedback(roomId, target, idleText, successText) {
+  if (copyingRoomId === roomId) return Promise.resolve();
+  const operation = ++copyOperation;
+  const isCurrent = () => operation === copyOperation && currentRenderedRoom?.id === roomId;
+  const wasPrivate = currentRenderedRoom?.public === false;
+  let copyError = '';
+  showActionError();
+  copyingRoomId = roomId;
+  updateQuickActions();
+  return WPUtils.copyTextDeferred(async () => {
+    try {
+      if (!isCurrent() || (currentRenderedRoom?.public === false) !== wasPrivate) throw new Error('The room changed. Copy its new invite instead.');
+      const url = await buildInviteUrlWithKey(roomId);
+      if (!isCurrent() || (currentRenderedRoom?.public === false) !== wasPrivate) throw new Error('The room changed. Copy its new invite instead.');
+      return url;
+    } catch (error) {
+      copyError = getErrorMessage(error, 'Could not prepare the invite link.');
+      throw error;
+    }
+  })
     .then((copied) => {
-      if (!copied) return;
-      if (!target) return;
+      if (!isCurrent()) return;
+      if (!copied) {
+        showActionError(copyError || 'Could not copy the invite. Try again or use Copy Invite in Stremio.');
+        return;
+      }
       target.textContent = successText;
       setTimeout(() => {
-        target.textContent = idleText;
+        if (isCurrent()) target.textContent = idleText;
       }, 1500);
     })
-    .catch(() => {});
+    .catch(error => {
+      if (isCurrent()) showActionError(getErrorMessage(error, 'Could not copy the invite. Try again.'));
+    })
+    .finally(() => {
+      if (operation === copyOperation) copyingRoomId = null;
+      updateQuickActions();
+    });
 }
 
 function setStremioStatus(hasStremioTab) {
@@ -186,7 +234,14 @@ function buildInviteUrl(roomId) {
 
 async function buildInviteUrlWithKey(roomId) {
   const inviteUrl = buildInviteUrl(roomId);
-  return WPRoomKeys.appendToInviteUrl(roomId, inviteUrl);
+  if (currentRenderedRoom?.id !== roomId) throw new Error('The room changed. Copy its new invite instead.');
+  if (currentRenderedRoom.public !== false) return inviteUrl;
+  const privateUrl = await WPRoomKeys.appendToInviteUrl(roomId, inviteUrl);
+  const keys = new URLSearchParams(new URL(privateUrl).hash.slice(1));
+  if (!keys.get('accessKey') || !keys.get('e2eKey')) {
+    throw new Error('This browser is missing the private invite keys. Rejoin using the full invite link before sharing.');
+  }
+  return privateUrl;
 }
 
 function parseRoomJoinInput(rawValue) {
@@ -258,6 +313,7 @@ function updateLobbyPrivacyState() {
 
 function renderBackendControls() {
   const selectedMode = WPConstants.BACKEND.normalizeMode(currentBackendMode);
+  $('connection-card').hidden = !WPConstants.BACKEND.canUseLocal();
   document.querySelectorAll('#backend-toggle .backend-btn').forEach((btn) => {
     const localUnavailable = btn.dataset.mode === WPConstants.BACKEND.MODES.LOCAL
       && !WPConstants.BACKEND.canUseLocal();
@@ -314,6 +370,7 @@ function applyCoordinatorUpdate(payload) {
   if (!('room' in payload)) return;
   const nextRoom = payload.room || null;
   if (nextRoom) {
+    if (pendingLobbyRoomId && nextRoom.id !== pendingLobbyRoomId) return;
     if (suppressedRoomId && nextRoom.id === suppressedRoomId) return;
     suppressedRoomId = null;
     showRoomView(nextRoom, currentUserId);
@@ -325,6 +382,7 @@ function applyCoordinatorUpdate(payload) {
 }
 
 function setBackendMode(mode) {
+  if (!WPConstants.BACKEND.canUseLocal()) return;
   const normalizedMode = WPConstants.BACKEND.normalizeMode(mode);
   if (currentBackendMode === normalizedMode) return;
   currentBackendMode = normalizedMode;
@@ -355,12 +413,14 @@ function loadIdentity(callback) {
 }
 
 // --- Reactive room state watcher (replaces polling) ---
-function waitForRoomState({ onRoom, onError, onTimeout }) {
+function waitForRoomState({ onRoom, onError, onTimeout, expectedRoomId, command }) {
   let resolved = false;
   const storageListener = (changes) => {
     if (resolved) return;
     const nextError = changes?.[WPConstants.STORAGE.LAST_ROOM_ERROR]?.newValue;
     if (!nextError) return;
+    if (nextError.command && command && nextError.command !== command) return;
+    if (nextError.roomId && expectedRoomId && nextError.roomId !== expectedRoomId) return;
     finish(() => onError?.(nextError));
   };
   const timeoutId = setTimeout(() => {
@@ -384,12 +444,15 @@ function waitForRoomState({ onRoom, onError, onTimeout }) {
     if (resolved) return;
     if (message.type !== 'watchparty-ext') return;
     if (message.action === WPConstants.ACTION.ROOM_ERROR_EVENT && message.payload) {
+      if (message.payload.command && command && message.payload.command !== command) return;
+      if (message.payload.roomId && expectedRoomId && message.payload.roomId !== expectedRoomId) return;
       finish(() => onError?.(message.payload));
       return;
     }
     if (message.action !== WPConstants.ACTION.STATUS_UPDATED) return;
     const nextRoom = message.payload?.room || null;
     if (!nextRoom) return;
+    if (expectedRoomId && nextRoom.id !== expectedRoomId) return;
     finish(() => onRoom(nextRoom, message.payload?.userId || null));
   }
 
@@ -405,15 +468,13 @@ function waitForRoomState({ onRoom, onError, onTimeout }) {
 }
 
 function setCreateError(message) {
-  $('btn-create').disabled = false;
-  $('btn-create').textContent = 'Create Room';
+  resetLobbyActionButtons();
   $('create-error').textContent = message;
   $('create-error').classList.remove('hidden');
 }
 
 function setJoinError(message) {
-  $('btn-join').disabled = false;
-  $('btn-join').textContent = 'Join Room';
+  resetLobbyActionButtons();
   $('join-error').textContent = message;
   $('join-error').classList.remove('hidden');
 }
@@ -424,7 +485,7 @@ function handleSendMessageFailure(response, fallbackMessage, stopWaiting, showEr
     showError(getErrorMessage(chrome.runtime.lastError, fallbackMessage));
     return true;
   }
-  if (response?.ok === false) {
+  if (response?.ok !== true) {
     stopWaiting?.();
     showError(getErrorMessage(response, fallbackMessage));
     return true;
@@ -437,7 +498,12 @@ function handleSendMessageFailure(response, fallbackMessage, stopWaiting, showEr
 chrome.runtime.sendMessage(
   { type: 'watchparty-ext', action: WPConstants.ACTION.STATUS_GET },
   (response) => {
-    if (!response) return;
+    if (chrome.runtime.lastError || !response) {
+      $('stremio-status').textContent = 'Status unavailable';
+      showActionError('Could not read WatchParty status. Close and reopen this popup.');
+      markStatusReady();
+      return;
+    }
 
     // Version
     $('version').textContent = `v${chrome.runtime.getManifest().version}`;
@@ -514,6 +580,7 @@ function showRoomView(room, myUserId) {
   $('room-actions').classList.remove('hidden');
   $('setup-card').classList.add('hidden');
   currentRenderedRoom = room;
+  resetLobbyActionButtons();
   updateQuickActions();
   setWsStatus(currentWsConnected);
 
@@ -525,12 +592,6 @@ function showRoomView(room, myUserId) {
 }
 
   function renderRoomDetails(room, myUserId, mySessionId) {
-    // Match identity by userId OR sessionId (multi-tab: client IDs differ but sessionId is shared)
-    function isMe(uid) {
-      const user = WPUtils.getMatchingRoomUser(room, uid, null);
-      return WPUtils.isCurrentSessionUser(user || { id: uid }, myUserId, mySessionId);
-    }
-
   // Resolve host status: owner ID may be orphaned after WS reconnect/dedup.
   // If the owner ID isn't in the users list, check if we're the only matching session.
   function amIHost() {
@@ -583,10 +644,13 @@ function showRoomView(room, myUserId) {
 // --- Actions ---
 
 $('btn-create').addEventListener('click', () => {
+  if (pendingLobbyAction) return;
+  showActionError();
   suppressedRoomId = null;
   setLobbyMode('create');
   const username = $('username-input').value.trim();
   if (!username) {
+    setCreateError('Enter your name first.');
     $('username-input').focus();
     return;
   }
@@ -606,10 +670,15 @@ $('btn-create').addEventListener('click', () => {
 
   // Arm the watcher before sending create-room so a warm WS can't win the race.
   const stopWaiting = waitForRoomState({
+    command: WPConstants.ACTION.ROOM_CREATE,
     onRoom: (room, userId) => showRoomView(room, userId),
     onError: (error) => setCreateError(getErrorMessage(error, 'Failed to create room. Open Stremio and try again.')),
     onTimeout: () => setCreateError('Failed to create room. Open Stremio and try again.'),
   });
+  pendingLobbyAction = stopWaiting;
+  $('btn-create').disabled = true;
+  $('btn-join').disabled = true;
+  $('btn-create').textContent = 'Creating...';
 
   chrome.runtime.sendMessage({
     type: 'watchparty-ext',
@@ -629,33 +698,41 @@ $('btn-create').addEventListener('click', () => {
     )) return;
     if (response?.staged === true && response?.needsStremio === true) {
       stopWaiting();
+      resetLobbyActionButtons();
       $('btn-create').textContent = 'Opening Stremio...';
       openStremioTab();
     }
   });
 
-  $('btn-create').disabled = true;
-  $('btn-create').textContent = 'Creating...';
 });
 
 $('btn-join').addEventListener('click', () => {
+  if (pendingLobbyAction) return;
+  showActionError();
   suppressedRoomId = null;
   setLobbyMode('join');
   const username = $('username-input').value.trim();
   const parsedJoin = parseRoomJoinInput($('room-id-input').value);
   const roomId = parsedJoin.roomId;
-  if (!username) { $('username-input').focus(); return; }
-  if (!roomId) { $('room-id-input').focus(); return; }
+  if (!username) { setJoinError('Enter your name first.'); $('username-input').focus(); return; }
+  if (!roomId || !/^[a-z0-9-]{1,100}$/i.test(roomId)) { setJoinError('Paste a valid invite link or room ID.'); $('room-id-input').focus(); return; }
 
   $('join-error').classList.add('hidden');
   setExtensionState({ [WPConstants.STORAGE.USERNAME]: username }).catch(() => {});
 
   // Arm the watcher before sending join-room so fast local updates aren't missed.
   const stopWaiting = waitForRoomState({
+    expectedRoomId: roomId,
+    command: WPConstants.ACTION.ROOM_JOIN,
     onRoom: (room, userId) => showRoomView(room, userId),
     onError: (error) => setJoinError(getErrorMessage(error, 'Room join timed out. Open Stremio and try again.')),
     onTimeout: () => setJoinError('Room join timed out. Open Stremio and try again.'),
   });
+  pendingLobbyAction = stopWaiting;
+  pendingLobbyRoomId = roomId;
+  $('btn-create').disabled = true;
+  $('btn-join').disabled = true;
+  $('btn-join').textContent = 'Joining...';
 
   chrome.runtime.sendMessage({
     type: 'watchparty-ext',
@@ -673,19 +750,31 @@ $('btn-join').addEventListener('click', () => {
     )) return;
     if (response?.staged === true && response?.needsStremio === true) {
       stopWaiting();
+      resetLobbyActionButtons();
       $('btn-join').textContent = 'Opening Stremio...';
       openStremioTab();
     }
   });
 
-  $('btn-join').disabled = true;
-  $('btn-join').textContent = 'Joining...';
 });
 
 $('btn-leave').addEventListener('click', () => {
-  suppressedRoomId = currentRenderedRoom?.id || null;
-  chrome.runtime.sendMessage({ type: 'watchparty-ext', action: WPConstants.ACTION.ROOM_LEAVE });
-  showLobbyView();
+  const roomId = currentRenderedRoom?.id;
+  if (!roomId || pendingLeaveRoomId === roomId) return;
+  showActionError();
+  pendingLeaveRoomId = roomId;
+  updateQuickActions();
+  chrome.runtime.sendMessage({ type: 'watchparty-ext', action: WPConstants.ACTION.ROOM_LEAVE, roomId }, response => {
+    if (pendingLeaveRoomId === roomId) pendingLeaveRoomId = null;
+    if (currentRenderedRoom?.id !== roomId) return;
+    updateQuickActions();
+    if (chrome.runtime.lastError || response?.ok !== true) {
+      showActionError(getErrorMessage(chrome.runtime.lastError || response, 'Could not leave the room. Try again.'));
+      return;
+    }
+    suppressedRoomId = roomId;
+    showLobbyView();
+  });
 });
 
 $('lobby-tab-create').addEventListener('click', () => setLobbyMode('create'));
@@ -711,10 +800,10 @@ updateQuickActions();
 
 // Share invite link
 $('btn-share').addEventListener('click', () => {
-  const roomId = $('room-id-display').textContent;
+  const roomId = currentRenderedRoom?.id;
   if (!roomId) return;
   copyTextWithFeedback(
-    () => buildInviteUrlWithKey(roomId),
+    roomId,
     $('btn-share'),
     'Copy Invite',
     'Link Copied!'
@@ -724,12 +813,12 @@ $('btn-share').addEventListener('click', () => {
 // Copy room ID on click (also copies invite link)
 document.addEventListener('click', (e) => {
   if (e.target.id === 'room-id-display') {
-    const roomId = e.target.textContent;
-    const original = e.target.textContent;
+    const roomId = currentRenderedRoom?.id;
+    if (!roomId) return;
     copyTextWithFeedback(
-      () => buildInviteUrlWithKey(roomId),
+      roomId,
       e.target,
-      original,
+      roomId,
       'Link copied!'
     );
   }

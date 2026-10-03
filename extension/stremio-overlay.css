@@ -105,6 +105,7 @@
   }
 
   #wp-room-code {
+    border: 0;
     font-family: 'Consolas', 'Monaco', monospace;
     font-size: 11px;
     color: var(--wp-accent);
@@ -1254,6 +1255,46 @@
     display: flex;
     flex-direction: column;
     z-index: 2;
+    padding: 12px;
+    gap: 8px;
+  }
+
+  #wp-gif-help,
+  #wp-gif-status {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.5;
+    color: #c4c4d2;
+  }
+
+  #wp-gif-picker label {
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  #wp-gif-status:empty {
+    display: none;
+  }
+
+  #wp-gif-send {
+    align-self: flex-end;
+    padding: 7px 12px;
+    border: none;
+    border-radius: 6px;
+    background: var(--wp-accent);
+    color: #fff;
+    cursor: pointer;
+  }
+
+  #wp-gif-send:disabled {
+    opacity: .45;
+    cursor: not-allowed;
+  }
+
+  #wp-gif-send:focus-visible,
+  #wp-gif-search:focus-visible {
+    outline: 2px solid var(--wp-accent-light);
+    outline-offset: 2px;
   }
 
   #wp-emoji-picker {
@@ -1303,31 +1344,7 @@
   }
 
   #wp-gif-search::placeholder {
-    color: #555;
-  }
-
-  #wp-gif-results {
-    flex: 1;
-    overflow-y: auto;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-    padding: 6px;
-    scrollbar-width: thin;
-    scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
-  }
-
-  .wp-gif-item {
-    width: calc(50% - 2px);
-    height: 90px;
-    object-fit: cover;
-    border-radius: 6px;
-    cursor: pointer;
-    transition: transform .1s;
-  }
-
-  .wp-gif-item:hover {
-    transform: scale(1.03);
+    color: #aaa;
   }
 
   .wp-chat-gif {
@@ -1336,6 +1353,17 @@
     border-radius: 6px;
     margin-top: 4px;
     display: block;
+  }
+
+  .wp-chat-gif[hidden] {
+    display: none;
+  }
+
+  .wp-chat-gif-error {
+    display: block;
+    margin-top: 4px;
+    color: #c4c4d2;
+    font-size: 12px;
   }
 
   /* Bookmarks */

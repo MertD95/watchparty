@@ -64,9 +64,10 @@ function runtime() {
       runtime: { id: 'extension-id', onMessage: { addListener() {} }, sendMessage: async (message) => { backgroundMessages.push(message); return {}; } },
       storage: { onChanged: { addListener: (fn) => { callbacks.storage = fn; } } },
     },
-    document: { body: null, addEventListener: (type, fn) => { callbacks[`document:${type}`] = fn; }, getElementById: () => null },
+    document: { body: null, addEventListener: (type, fn) => { callbacks[`document:${type}`] = fn; }, getElementById: () => null, querySelectorAll: () => [] },
     window: { addEventListener() {}, location: { hash: '#/player/test', origin: 'https://web.stremio.com' } },
     WPOverlay: overlay, WPWS: socket, WPCrypto: crypto,
+    WPProfile: { start() {}, stop: async () => {} },
     WPRuntimeClock: { now: () => now, setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; }, clearTimeout() {}, setInterval: () => 1, clearInterval() {} },
     WPRuntimeState: { get: async () => ({ ...storage }), set: async () => {}, remove: async () => {} },
     WPRoomKeys: { getAccessKey: async () => null, getInviteAccessToken: async () => null,
@@ -82,8 +83,9 @@ function runtime() {
   const instrumented = source.replace(/\}\)\(\);\s*$/, `globalThis.testContent = {
     processPendingActions, joinRoomFromCommand, createRoomFromCommand, shareContentLink, onChatMessage,
     stagePendingRoomJoinCommand, applyLocalLeaveState, handleAction, commitRoomState, applyPlaybackUpdate, attachSync,
-    applySharedRuntimeProjection, applyPassiveChatMessage, nativeMatchesRoomMedia, syncPeerVideoToRoom,
-    getState() { return { room: roomState, inRoom, isHost, resumeRoomPending }; },
+    applySharedRuntimeProjection, applyPassiveChatMessage, applyPassiveReadyCheck, nativeMatchesRoomMedia, syncPeerVideoToRoom,
+    beginSessionRecovery, completeSessionRecovery, refreshControllerLease, refreshActiveVideoLease,
+    getState() { return { room: roomState, inRoom, isHost, resumeRoomPending, recoverySuspended, sessionId, sessionToken, isControllerTab }; },
     setState(value) {
       if ('room' in value) roomState = value.room;
       if ('inRoom' in value) inRoom = value.inRoom;
@@ -200,6 +202,60 @@ test('failed ready command remains a failure through the content dispatcher', as
   const action = vm.runInContext('WPConstants.ACTION.ROOM_READY_CHECK_UPDATE', context);
   const result = await callbacks.dispatch({ action, readyAction: 'confirm' });
   assert.equal(result.handled, false);
+});
+
+test('bookmarks reject missing media and use the selected player rather than an earlier preview', async () => {
+  const app = runtime();
+  const add = vm.runInContext('WPConstants.ACTION.ROOM_BOOKMARK_ADD', app.context);
+  const seek = vm.runInContext('WPConstants.ACTION.ROOM_BOOKMARK_SEEK', app.context);
+  app.socket.markApplicationReady();
+  assert.equal((await app.callbacks.dispatch({ action: add })).handled, false);
+  assert.equal((await app.callbacks.dispatch({ action: seek, time: 18 })).handled, false);
+  assert.equal(app.sent.length, 0);
+  const selected = { isConnected: true, currentTime: 42 };
+  app.api.setState({ video: selected });
+  assert.equal((await app.callbacks.dispatch({ action: add })).handled, true);
+  assert.equal(app.sent.at(-1).payload.time, 42);
+  assert.equal(app.sent.at(-1).payload.roomId, 'room-a');
+  assert.equal((await app.callbacks.dispatch({ action: seek, time: 18 })).handled, true);
+  assert.equal(selected.currentTime, 18);
+});
+
+test('room controls reject an old visible room target before sending any command', async () => {
+  const app = runtime();
+  for (const name of ['ROOM_BOOKMARK_ADD', 'ROOM_SETTINGS_UPDATE', 'ROOM_READY_CHECK_UPDATE', 'ROOM_REACTION_SEND', 'ROOM_LEAVE']) {
+    const action = vm.runInContext(`WPConstants.ACTION.${name}`, app.context);
+    const result = await app.callbacks.dispatch({ action, roomId: 'old-room', readyAction: 'initiate', settings: {}, emoji: '😀' });
+    assert.equal(result.handled, false, name);
+  }
+  assert.equal(app.sent.length, 0);
+});
+
+test('passive ready check and countdown relays are room scoped and do not echo into controller', () => {
+  const app = runtime();
+  const shown = [];
+  app.context.WPOverlay.showReadyCheck = (...args) => shown.push(['check', ...args]);
+  app.context.WPOverlay.showCountdown = value => shown.push(['countdown', value]);
+  app.api.setState({ controller: false });
+  app.api.applyPassiveReadyCheck({ roomId: 'room-a', kind: 'state', action: 'started', confirmed: [], total: 2 });
+  app.api.applyPassiveReadyCheck({ roomId: 'room-a', kind: 'countdown', seconds: 3 });
+  assert.equal(shown.length, 2);
+  app.api.applyPassiveReadyCheck({ roomId: 'other-room', kind: 'countdown', seconds: 2 });
+  app.api.setState({ controller: true });
+  app.api.applyPassiveReadyCheck({ roomId: 'room-a', kind: 'state', action: 'started' });
+  assert.equal(shown.length, 2);
+});
+
+test('new passive tab restores an ongoing ready check from the shared snapshot', () => {
+  const app = runtime();
+  const shown = [];
+  app.context.WPOverlay.showReadyCheck = (...args) => shown.push(args);
+  app.api.setState({ controller: false });
+  app.api.applySharedRuntimeProjection({ room: { id: 'room-a', public: true, users: [], readyCheck: { confirmed: ['session'], total: 2 } } });
+  assert.equal(shown[0][0], 'started');
+  assert.equal(shown[1][0], 'updated');
+  app.api.applySharedRuntimeProjection({ room: { id: 'room-a', public: true, users: [], readyCheck: { confirmed: ['session'], total: 2 } } });
+  assert.equal(shown.length, 2, 'unrelated state refresh must not reopen the dialog');
 });
 
 test('public to private transition is blocked while other members would lose access to the chat key', async () => {
@@ -844,4 +900,69 @@ test('legacy staged membership waits for response without a microtask loop, and 
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(app.sent.filter((message) => message.type === 'room.create').length, 1);
   assert.ok(reads <= 2);
+});
+
+test('recovery leaves and disconnects the controller, blocks passive projections and prevents lease resurrection', async () => {
+  const app = runtime();
+  const message = { recoveryId: 'recovery-a', kind: 'clear-room' };
+  assert.equal((await app.api.beginSessionRecovery(message)).ok, true);
+  assert.equal(app.sent.filter(entry => entry.type === 'room.leave').length, 1);
+  assert.equal(app.socket.isConnected(), false);
+  assert.equal(app.api.getState().room, null);
+  assert.equal(app.api.getState().isControllerTab, false);
+  assert.equal(app.api.getState().recoverySuspended, true);
+  app.api.applySharedRuntimeProjection({ room: { id: 'stale-room' }, wsConnected: true });
+  assert.equal(app.api.getState().room, null);
+  assert.equal(await app.api.refreshControllerLease({ force: true }), false);
+  assert.equal(await app.api.refreshActiveVideoLease({ force: true }), false);
+  app.callbacks.storage({ currentRoom: { newValue: 'stale-room' }, wpBootstrapRoomIntent: { newValue: {} } }, 'session');
+  assert.equal(app.api.getState().resumeRoomPending, false);
+  const rejected = await app.callbacks.dispatch({ action: 'room.create', username: 'Alice' });
+  assert.equal(rejected.handled, false);
+  assert.match(rejected.error, /recovery/);
+});
+
+test('recovery cancels and drains a pending room bootstrap before acknowledging storage can be cleared', async () => {
+  const app = runtime();
+  const read = deferred();
+  app.context.WPRuntimeState.get = () => read.promise;
+  app.api.processPendingActions();
+  let acknowledged = false;
+  const recovery = app.api.beginSessionRecovery({ recoveryId: 'recovery-b', kind: 'reset' }).then(result => { acknowledged = true; return result; });
+  await Promise.resolve();
+  assert.equal(acknowledged, false);
+  read.resolve({ currentRoom: 'stale-room', wpUsername: 'Old name' });
+  assert.equal((await recovery).ok, true);
+  assert.equal(app.sent.some(entry => ['room.join', 'room.rejoin', 'room.create'].includes(entry.type)), false);
+  assert.equal(app.api.getState().room, null);
+});
+
+test('reset completion adopts a fresh shared identity while staying out of the old room', async () => {
+  const app = runtime();
+  let resetIdentity = 0;
+  app.context.WPOverlay.resetSessionIdentity = () => { resetIdentity += 1; };
+  app.context.chrome.runtime.sendMessage = async message => message.action === 'session.identity.get'
+    ? { ok: true, sessionId: 'new-session', sessionToken: 'new-token' } : { ok: true };
+  const message = { recoveryId: 'recovery-c', kind: 'reset' };
+  await app.api.beginSessionRecovery(message);
+  assert.equal((await app.api.completeSessionRecovery({ recoveryId: 'wrong-id' })).ok, false);
+  assert.equal((await app.api.completeSessionRecovery(message)).ok, true);
+  const state = app.api.getState();
+  assert.equal(state.sessionId, 'new-session');
+  assert.equal(state.sessionToken, 'new-token');
+  assert.equal(state.recoverySuspended, false);
+  assert.equal(state.room, null);
+  assert.equal(state.inRoom, false);
+  assert.equal(state.resumeRoomPending, false);
+  assert.equal(resetIdentity, 1);
+  assert.equal(await app.api.refreshControllerLease({ force: true }), false);
+});
+
+test('failed recovery identity initialization does not unsuspend an old in-memory session', async () => {
+  const app = runtime();
+  const message = { recoveryId: 'recovery-d', kind: 'reset' };
+  await app.api.beginSessionRecovery(message);
+  assert.equal((await app.api.completeSessionRecovery(message)).ok, false);
+  assert.equal(app.api.getState().recoverySuspended, true);
+  assert.equal(app.api.getState().room, null);
 });

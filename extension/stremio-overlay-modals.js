@@ -7,6 +7,23 @@ const WPModals = (() => {
 
   const TOAST_DURATION_MS = 3000;
 
+  function removeReadyModal(modal) {
+    if (!modal) return;
+    clearTimeout(modal.confirmationTimer);
+    try { modal.hidePopover(); } catch {}
+    modal.remove();
+  }
+
+  async function sendReadyAction(dispatchAction, detail, event) {
+    let timer;
+    try {
+      return await Promise.race([
+        Promise.resolve(dispatchAction?.(WPConstants.ACTION.ROOM_READY_CHECK_UPDATE, detail, event)),
+        new Promise(resolve => { timer = setTimeout(() => resolve({ handled: false, error: 'No response. Reconnect and try again.' }), 8000); }),
+      ]);
+    } finally { clearTimeout(timer); }
+  }
+
   // --- Toast notification (uses Popover API for top-layer rendering) ---
   function showToast(message, durationMs = TOAST_DURATION_MS) {
     const existing = document.getElementById('wp-toast');
@@ -27,15 +44,17 @@ const WPModals = (() => {
   }
 
   // --- Ready check modal (Popover API) ---
-  function showReadyCheck(action, confirmed, total, myUserId, dispatchAction = null) {
+  function showReadyCheck(action, confirmed, total, myUserId, dispatchAction = null, options = {}) {
+    confirmed = Array.isArray(confirmed) ? confirmed : [];
+    total = Number.isFinite(total) ? Math.max(0, Math.floor(total)) : 0;
     let modal = document.getElementById('wp-ready-modal');
     if (action === 'cancelled' || action === 'completed') {
-      if (modal) { try { modal.hidePopover(); } catch {} modal.remove(); }
+      removeReadyModal(modal);
       document.getElementById('wp-countdown')?.remove();
       return;
     }
     if (action === 'started') {
-      if (modal) { try { modal.hidePopover(); } catch {} modal.remove(); }
+      removeReadyModal(modal);
       document.getElementById('wp-countdown')?.remove();
       modal = document.createElement('div');
       modal.id = 'wp-ready-modal';
@@ -49,6 +68,7 @@ const WPModals = (() => {
           <div class="wp-ready-count" id="wp-ready-count">0 / ${total}</div>
           <button class="wp-ready-btn" id="wp-ready-confirm" autofocus>I'm Ready!</button>
           <button class="wp-ready-cancel" id="wp-ready-dismiss">Dismiss</button>
+          ${options.isHost ? '<button class="wp-ready-cancel" id="wp-ready-stop">Cancel for everyone</button>' : ''}
         </div>
       `;
       document.getElementById('wp-overlay')?.appendChild(modal);
@@ -56,31 +76,59 @@ const WPModals = (() => {
       const confirmButton = document.getElementById('wp-ready-confirm');
       confirmButton.addEventListener('click', async (event) => {
         if (confirmButton.disabled) return;
+        clearTimeout(modal.confirmationTimer);
         confirmButton.disabled = true;
         confirmButton.textContent = 'Sending...';
         let accepted = false;
+        let errorMessage = '';
         try {
-          const result = typeof dispatchAction === 'function'
-            ? await dispatchAction(WPConstants.ACTION.ROOM_READY_CHECK_UPDATE, { readyAction: 'confirm' }, event)
-            : false;
+          const result = await sendReadyAction(dispatchAction, { readyAction: 'confirm' }, event);
           accepted = !!result && result.handled !== false && result.ok !== false;
+          errorMessage = result?.error || '';
         } catch { /* Keep the confirmation retryable when disconnected. */ }
         if (document.getElementById('wp-ready-modal') !== modal) return;
-        confirmButton.disabled = accepted;
-        confirmButton.textContent = accepted ? 'Waiting...' : "I'm Ready!";
+        const confirmedByServer = modal.confirmedByServer === true;
+        confirmButton.disabled = accepted || confirmedByServer;
+        confirmButton.textContent = accepted || confirmedByServer ? 'Waiting...' : "I'm Ready!";
+        if (!accepted && !confirmedByServer) {
+          document.getElementById('wp-ready-status').textContent = errorMessage || 'Could not confirm. Reconnect and try again.';
+        } else if (!confirmedByServer) {
+          modal.confirmationTimer = setTimeout(() => {
+            if (document.getElementById('wp-ready-modal') !== modal || modal.confirmedByServer) return;
+            confirmButton.disabled = false;
+            confirmButton.textContent = "I'm Ready!";
+            document.getElementById('wp-ready-status').textContent = 'Confirmation was not received. Try again.';
+          }, 8000);
+        }
         // Counts, countdowns, and playback come only from the server. A queued
         // local confirmation is not proof that every participant is ready.
       });
       document.getElementById('wp-ready-dismiss').addEventListener('click', () => {
-        try { modal.hidePopover(); } catch {} modal.remove();
+        removeReadyModal(modal);
+      });
+      document.getElementById('wp-ready-stop')?.addEventListener('click', async (event) => {
+        const button = document.getElementById('wp-ready-stop');
+        if (!button || button.disabled) return;
+        button.disabled = true;
+        let result;
+        try { result = await sendReadyAction(dispatchAction, { readyAction: 'cancel' }, event); } catch {}
+        if (document.getElementById('wp-ready-modal') !== modal) return;
+        button.disabled = false;
+        if (!result || result.handled === false || result.ok === false) {
+          const status = document.getElementById('wp-ready-status');
+          if (status) status.textContent = result?.error || 'Could not cancel. Reconnect and try again.';
+        }
+        // The server's cancellation event closes every participant's dialog.
       });
     }
-    if (action === 'updated' && modal) {
+    if ((action === 'updated' || action === 'started') && modal) {
       const countEl = document.getElementById('wp-ready-count');
       if (countEl) countEl.textContent = `${confirmed.length} / ${total}`;
       const iConfirmed = confirmed.includes(myUserId);
+      modal.confirmedByServer = iConfirmed;
       const confirmBtn = document.getElementById('wp-ready-confirm');
       if (confirmBtn && iConfirmed) {
+        clearTimeout(modal.confirmationTimer);
         confirmBtn.disabled = true;
         confirmBtn.textContent = 'Waiting...';
       }
@@ -89,7 +137,7 @@ const WPModals = (() => {
 
   // --- Countdown overlay ---
   function showCountdown(seconds) {
-    document.getElementById('wp-ready-modal')?.remove();
+    removeReadyModal(document.getElementById('wp-ready-modal'));
     let el = document.getElementById('wp-countdown');
     if (seconds <= 0) {
       if (el) el.remove();

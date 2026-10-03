@@ -128,7 +128,7 @@
       <details class="settings-section" id="connection-section">
         <summary><span><span class="summary-title">Connection</span><span class="summary-description">Automatic is recommended.</span></span></summary>
         <div class="section-body">
-          <p class="card-copy">WatchParty chooses the server for you. Change this only for troubleshooting or local development.</p>
+          <p class="card-copy" id="backend-mode-help">WatchParty chooses the server for you. Change this only for troubleshooting or local development.</p>
           <div class="backend-toggle" id="backend-toggle" role="group" aria-label="Connection mode">
             <button class="backend-btn" id="backend-auto" data-mode="auto" type="button" aria-pressed="false">Automatic</button>
             <button class="backend-btn" id="backend-local" data-mode="local" type="button" aria-pressed="false">Local development</button>
@@ -153,11 +153,11 @@
             <button class="btn-secondary" id="btn-copy-diagnostics" type="button">Copy diagnostic report</button>
           </div>
           <div class="recovery-row">
-            <div><h3>Room won't open?</h3><p class="card-copy">Clear the pending join and saved room state in this browser, then try your invite again.</p></div>
+            <div><h3>Room won't open?</h3><p class="card-copy">Leave the current room in all Stremio tabs and clear pending joins. Your name and invite keys are kept.</p></div>
             <button class="btn-secondary" id="btn-clear-bootstrap" type="button">Clear saved room</button>
           </div>
           <div class="recovery-row">
-            <div><h3>Forget private room access</h3><p class="card-copy">Remove saved room keys. You'll need the original invites to rejoin private rooms.</p></div>
+            <div><h3>Forget private room access</h3><p class="card-copy">Leave your room first, then remove saved keys. You'll need the original invites to rejoin private rooms.</p></div>
             <button class="btn-secondary" id="btn-clear-room-keys" type="button">Forget room keys</button>
           </div>
           <div class="recovery-row">

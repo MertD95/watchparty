@@ -7,7 +7,7 @@ const html = fs.readFileSync(new URL('../landing/index.html', import.meta.url), 
 const source = fs.readFileSync(new URL('../landing/landing.js', import.meta.url), 'utf8');
 const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
 
-function landing({ installed = true, pathname = '/', hash = '', fetchResult, fetchError, fetchHandler } = {}) {
+function landing({ installed = true, pathname = '/', hash = '', fetchResult, fetchError, fetchHandler, storageBlocked = false } = {}) {
   const nodes = new Map();
   const sent = [];
   const navigated = [];
@@ -105,7 +105,11 @@ function landing({ installed = true, pathname = '/', hash = '', fetchResult, fet
   };
   const context = vm.createContext({
     console, document, window, location, URL, URLSearchParams, AbortSignal,
-    localStorage: { getItem: key => storage.get(key) || null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
+    localStorage: {
+      getItem: key => { if (storageBlocked) throw new Error('Storage blocked'); return storage.get(key) || null; },
+      setItem: (key, value) => { if (storageBlocked) throw new Error('Storage blocked'); storage.set(key, value); },
+      removeItem: key => { if (storageBlocked) throw new Error('Storage blocked'); storage.delete(key); },
+    },
     history: { state: null, replaceState(_state, _title, path) { location.hash = new URL(path, location.origin).hash; navigated.push(path); } },
     setTimeout: (callback, delay) => { const id = ++timerId; timers.set(id, { callback, delay }); return id; },
     clearTimeout: id => timers.delete(id), setInterval: () => ++timerId, clearInterval() {},
@@ -372,4 +376,79 @@ test('late extension responses cannot restore an old room after a pushed leave u
   ui.message({ type: 'watchparty-ext-response', requestId: request.requestId, data: { room: room('old') } });
   await flush();
   assert.equal(ui.nodes.get('hero-room-card').classList.contains('hidden'), true);
+});
+
+test('primary, settings and resume controls use the extension bridge with safe install fallbacks', () => {
+  const installed = landing();
+  installed.nodes.get('hero-primary-btn').click();
+  installed.nodes.get('hero-settings-btn').click();
+  installed.nodes.get('hero-resume-btn').click();
+  assert.equal(installed.sent.find(message => message.type === 'watchparty-open-stremio').url, 'https://web.stremio.com');
+  assert.equal(installed.sent.filter(message => message.type === 'watchparty-open-options').length, 1);
+  assert.equal(installed.sent.filter(message => message.type === 'watchparty-resume-room').length, 1);
+  for (const message of installed.sent) assert.equal(message.targetOrigin, 'http://localhost:8090');
+
+  for (const id of ['hero-primary-btn', 'hero-settings-btn', 'hero-private-btn', 'rooms-private-btn']) {
+    const visitor = landing({ installed: false }); visitor.nodes.get(id).click();
+    assert.match(visitor.navigated.at(-1), /^https:\/\/chromewebstore.google.com\/detail\//, id);
+    assert.equal(visitor.sent.filter(message => message.type === 'watchparty-join-room').length, 0);
+  }
+});
+
+test('public room actions distinguish choosing a title from watching the host stream', () => {
+  for (const direct of [false, true]) {
+    const ui = landing();
+    ui.snapshot({ revision: 1, rooms: [room('watch-night', { hasDirectJoin: true, directJoinType: 'web-url',
+      meta: { id: 'title/id', type: 'movie', name: 'Movie' } })] });
+    const card = ui.nodes.get('rooms-list').children[1];
+    card.__elements[direct ? 'directBtn' : 'joinBtn'].click();
+    const join = ui.sent.find(message => message.type === 'watchparty-join-room');
+    assert.equal(join.roomId, 'watch-night'); assert.equal(join.preferDirectJoin, direct);
+    assert.equal(ui.sent.find(message => message.type === 'watchparty-open-stremio').url,
+      direct ? 'https://web.stremio.com' : 'https://web.stremio.com/#/detail/movie/title%2Fid');
+  }
+});
+
+test('private room direct action waits for the correct full invite and cancel/backdrop never joins', () => {
+  const ui = landing();
+  ui.snapshot({ revision: 1, rooms: [room('private-night', { public: false, hasDirectJoin: true })] });
+  const card = ui.nodes.get('rooms-list').children[1];
+  card.__elements.directBtn.focus(); card.__elements.directBtn.click();
+  assert.equal(ui.sent.filter(message => message.type === 'watchparty-join-room').length, 0);
+  ui.nodes.get('uuid-cancel-btn').click();
+  assert.equal(ui.document.activeElement, card.__elements.directBtn);
+  assert.equal(ui.nodes.get('page-landing').inert, false);
+  card.__elements.directBtn.click(); ui.nodes.get('uuid-modal').click();
+  assert.equal(ui.nodes.get('uuid-modal').style.display, 'none');
+  card.__elements.directBtn.click();
+  ui.nodes.get('uuid-input').value = 'https://watchparty.mertd.me/r/private-night#accessKey=access&e2eKey=cipher';
+  ui.nodes.get('uuid-submit-btn').click();
+  const join = ui.sent.find(message => message.type === 'watchparty-join-room');
+  assert.equal(join.preferDirectJoin, true); assert.equal(join.accessKey, 'access'); assert.equal(join.e2eKey, 'cipher');
+});
+
+test('retry reloads the room list after an error and restores a ready empty state', async () => {
+  let online = false;
+  const ui = landing({ fetchHandler: async () => {
+    if (!online) throw new Error('offline');
+    return { ok: true, json: async () => ({ revision: 1, total: 0, rooms: [] }) };
+  } });
+  await flush();
+  assert.equal(ui.nodes.get('rooms-refresh-btn').hidden, false);
+  online = true; ui.nodes.get('rooms-refresh-btn').click(); await flush();
+  assert.equal(ui.nodes.get('rooms-refresh-btn').hidden, true);
+  assert.equal(ui.nodes.get('rooms-status').textContent, '');
+  assert.match(ui.nodes.get('rooms-empty').textContent, /No rooms right now/);
+});
+
+test('blocked browser storage does not break controls, name entry or invite handoff', async () => {
+  const ui = landing({ storageBlocked: true });
+  const input = ui.nodes.get('profile-name-input'); input.value = 'New name';
+  input.listeners.get('input')({ target: input }); input.listeners.get('blur')({ target: input });
+  await ui.context.joinRoom('public-night', '', '');
+  assert.equal(ui.sent.find(message => message.type === 'watchparty-join-room').username, 'New name');
+  const redirect = landing({ storageBlocked: true, pathname: '/r/private-night', hash: '#accessKey=access&e2eKey=cipher' });
+  const join = redirect.sent.find(message => message.type === 'watchparty-join-room');
+  assert.equal(join.accessKey, 'access'); assert.equal(join.e2eKey, 'cipher');
+  assert.equal(redirect.location.hash, '');
 });

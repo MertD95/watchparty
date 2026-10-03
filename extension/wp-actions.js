@@ -16,6 +16,9 @@ const WPAction = (() => {
     BOOTSTRAP_PENDING: 'bootstrap.pending',
     SESSION_STATE_PUBLISH: 'session.state.publish',
     SESSION_IDENTITY_GET: 'session.identity.get',
+    SESSION_RECOVERY_REQUEST: 'session.recovery.request',
+    SESSION_RECOVERY_BEGIN: 'session.recovery.begin',
+    SESSION_RECOVERY_COMPLETE: 'session.recovery.complete',
     CONTROLLER_RELEASED: 'controller.released',
     CONTROLLER_LEASE_CLAIM: 'controller.lease.claim',
     CONTROLLER_LEASE_RELEASE: 'controller.lease.release',
@@ -27,6 +30,7 @@ const WPAction = (() => {
     ROOM_CHAT_EVENT: 'room.chat.appended',
     ROOM_TYPING_EVENT: 'room.typing.updated',
     ROOM_BOOKMARK_EVENT: 'room.bookmark.appended',
+    ROOM_READY_CHECK_EVENT: 'room.readyCheck.event',
     ROOM_REACTION_EVENT: 'room.reaction.appended',
     ROOM_ERROR_EVENT: 'room.error',
     ROOM_VISIBILITY_UPDATE: 'room.visibility.update',
@@ -111,6 +115,21 @@ const WPActionRoutes = (() => {
       sources: Object.freeze(['stremio-content']),
       target: 'background',
     }),
+    SESSION_RECOVERY_REQUEST: Object.freeze({
+      action: WPAction.SESSION_RECOVERY_REQUEST,
+      sources: Object.freeze(['options']),
+      target: 'background',
+    }),
+    SESSION_RECOVERY_BEGIN: Object.freeze({
+      action: WPAction.SESSION_RECOVERY_BEGIN,
+      sources: Object.freeze(['background']),
+      target: 'stremio-content',
+    }),
+    SESSION_RECOVERY_COMPLETE: Object.freeze({
+      action: WPAction.SESSION_RECOVERY_COMPLETE,
+      sources: Object.freeze(['background']),
+      target: 'stremio-content',
+    }),
     CONTROLLER_RELEASED: Object.freeze({
       action: WPAction.CONTROLLER_RELEASED,
       sources: Object.freeze(['stremio-content']),
@@ -167,6 +186,11 @@ const WPActionRoutes = (() => {
       sources: Object.freeze(['stremio-content', 'background']),
       target: 'extension-surfaces',
     }),
+    ROOM_READY_CHECK_EVENT: Object.freeze({
+      action: WPAction.ROOM_READY_CHECK_EVENT,
+      sources: Object.freeze(['stremio-content', 'background']),
+      target: 'extension-surfaces',
+    }),
     ROOM_REACTION_EVENT: Object.freeze({
       action: WPAction.ROOM_REACTION_EVENT,
       sources: Object.freeze(['stremio-content', 'background']),
@@ -215,7 +239,7 @@ const WPActionRoutes = (() => {
     }),
     ROOM_BOOKMARK_SEEK: Object.freeze({
       action: WPAction.ROOM_BOOKMARK_SEEK,
-      sources: Object.freeze(['sidepanel']),
+      sources: Object.freeze(['overlay', 'sidepanel']),
       target: 'controller',
       requiresTrustedEvent: true,
     }),

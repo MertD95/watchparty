@@ -95,7 +95,7 @@ function overlayRuntime() {
     WPModals: { showToast: (message) => notices.push(message), showReadyCheck() {} },
     WPRuntimeState: { get: async () => ({}), set: async () => {} },
   });
-  for (const file of ['wp-actions.js', 'constants.js', 'wp-protocol.js', 'stremio-overlay-shells.js', 'stremio-overlay.js']) {
+  for (const file of ['wp-actions.js', 'constants.js', 'wp-protocol.js', 'stremio-overlay-shells.js', 'gif-links.js', 'stremio-overlay.js']) {
     vm.runInContext(fs.readFileSync(path.join(root, 'extension', file), 'utf8'), context, { filename: file });
   }
   const api = vm.runInContext('WPOverlay', context);
@@ -252,4 +252,103 @@ test('failed creation receives persistent lobby feedback instead of remaining in
   ui.api.showRoomError({ code: 'VALIDATION_FAILED', message: 'Choose a different room name.' });
   assert.equal(feedback.textContent, 'Choose a different room name.');
   assert.equal(feedback.dataset.pending, '');
+});
+
+test('direct GIF picker validates locally without searches or automatic image requests', async () => {
+  const ui = overlayRuntime();
+  const input = ui.nodes.get('wp-gif-search');
+  const send = ui.nodes.get('wp-gif-send');
+  let actions = 0;
+  ui.api.setActionDispatcher(async () => { actions += 1; return { handled: true }; });
+  ui.nodes.get('wp-gif-btn').listeners.get('click')({ isTrusted: true, stopPropagation() {} });
+  assert.equal(send.disabled, true);
+  input.value = 'https://example.com/a-page';
+  input.listeners.get('input')();
+  assert.equal(send.disabled, true);
+  assert.equal(input['aria-invalid'], 'true');
+  assert.match(ui.nodes.get('wp-gif-status').textContent, /\.gif/);
+  await send.listeners.get('click')({ isTrusted: true });
+  assert.equal(actions, 0);
+  input.value = 'https://example.com/image.gif';
+  input.listeners.get('input')();
+  assert.equal(send.disabled, false);
+  assert.equal(input['aria-invalid'], 'false');
+  assert.equal(ui.nodes.get('wp-gif-status').textContent, '');
+  assert.equal(ui.nodes.get('wp-gif-picker').children.some((node) => node.tagName === 'img'), false);
+  await send.listeners.get('click')({ isTrusted: false });
+  assert.equal(actions, 0, 'untrusted script cannot share an image');
+});
+
+test('GIF sharing targets the visible room and keeps the link until its own server echo', async () => {
+  const ui = overlayRuntime();
+  const input = ui.nodes.get('wp-gif-search');
+  const send = ui.nodes.get('wp-gif-send');
+  const actions = [];
+  ui.api.setActionDispatcher(async (action) => { actions.push(action); return { handled: true }; });
+  input.value = 'https://example.com/image.gif';
+  input.listeners.get('input')();
+  await send.listeners.get('click')({ isTrusted: true });
+  assert.equal(actions[0].content, '[gif:https://example.com/image.gif]');
+  assert.equal(actions[0].roomId, ui.room.id);
+  assert.equal(input.value, 'https://example.com/image.gif');
+  assert.equal(send.disabled, true);
+  assert.equal(ui.messages().length, 0, 'transport acceptance is not delivery');
+  ui.echo(actions[0].content, 'other-gif', 'other-request');
+  assert.equal(input.value, 'https://example.com/image.gif');
+  ui.echo(actions[0].content, 'our-gif', actions[0].clientMessageId);
+  assert.equal(input.value, '');
+  const content = ui.messages()[1].children[0].children[0];
+  const image = content.children.find((node) => node.tagName === 'img');
+  assert.equal(image.src, 'https://example.com/image.gif');
+  assert.equal(image.referrerPolicy, 'no-referrer');
+  image.listeners.get('error')();
+  assert.equal(image.hidden, true);
+  assert.match(content.children.at(-1).textContent, /GIF could not load/);
+});
+
+test('GIF rejection and timeout preserve the link and allow a retry without duplicate sends', async () => {
+  const ui = overlayRuntime();
+  const input = ui.nodes.get('wp-gif-search');
+  const send = ui.nodes.get('wp-gif-send');
+  input.value = 'https://example.com/image.gif';
+  input.listeners.get('input')();
+  ui.api.setActionDispatcher(async () => ({ handled: false }));
+  await send.listeners.get('click')({ isTrusted: true });
+  assert.equal(input.value, 'https://example.com/image.gif');
+  assert.equal(send.disabled, false);
+  let sends = 0;
+  ui.api.setActionDispatcher(async () => { sends += 1; return { handled: true }; });
+  await send.listeners.get('click')({ isTrusted: true });
+  await send.listeners.get('click')({ isTrusted: true });
+  assert.equal(sends, 1);
+  [...ui.timers.values()].find((timer) => timer.ms === 10000).callback();
+  assert.equal(input.value, 'https://example.com/image.gif');
+  assert.equal(send.disabled, false);
+  assert.match(ui.notices.at(-1), /not confirmed/);
+});
+
+test('GIF edits survive acknowledgment and a room change clears the private image draft', async () => {
+  const ui = overlayRuntime();
+  const input = ui.nodes.get('wp-gif-search');
+  const send = ui.nodes.get('wp-gif-send');
+  let resolveSend;
+  ui.api.setActionDispatcher((action) => action.action === 'room.chat.send'
+    ? new Promise((resolve) => { resolveSend = resolve; }) : { handled: true });
+  input.value = 'https://example.com/first.gif';
+  input.listeners.get('input')();
+  const sending = send.listeners.get('click')({ isTrusted: true });
+  input.value = 'https://example.com/second.gif';
+  ui.echo('[gif:https://example.com/first.gif]');
+  assert.equal(input.value, 'https://example.com/second.gif');
+  for (const id of ['wp-status', 'wp-content-link', 'wp-room-controls', 'wp-local-settings', 'wp-users']) ui.nodes.delete(id);
+  ui.api.updateState({ inRoom: true, isHost: false, userId: 'user-me', sessionId: 'session-me', roomState: { ...ui.room, id: 'another-room' } });
+  assert.equal(input.value, '');
+  assert.equal(send.disabled, true);
+  ui.nodes.get('wp-gif-picker').classList.remove('wp-hidden-el');
+  input.value = 'https://example.com/new-room.gif';
+  input.listeners.get('input')();
+  resolveSend({ handled: true });
+  await sending;
+  assert.equal(input.value, 'https://example.com/new-room.gif');
+  assert.equal(ui.nodes.get('wp-gif-picker').classList.contains('wp-hidden-el'), false);
 });
