@@ -486,7 +486,7 @@ const WPOverlay = (() => {
     const mode = WPWS?.getBackendMode?.() || stored[WPConstants.STORAGE.BACKEND_MODE];
     const active = WPWS?.getActiveBackend?.() || stored[WPConstants.STORAGE.ACTIVE_BACKEND];
     const normalizedMode = WPConstants.BACKEND.normalizeMode(mode);
-    if (normalizedMode === WPConstants.BACKEND.MODES.AUTO && !active && !('update_url' in chrome.runtime.getManifest())) {
+    if (normalizedMode === WPConstants.BACKEND.MODES.AUTO && !active && WPConstants.BACKEND.canUseLocal()) {
       try {
         const ready = await getLocalBackendResource('ready');
         if (ready.ok) return WPConstants.BACKEND.LOCAL;

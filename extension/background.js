@@ -23,7 +23,7 @@ const MANIFEST = chrome.runtime.getManifest();
 const STREMIO_BASE = 'http://localhost:11470';
 const STREMIO_API = 'https://api.strem.io';
 const POLL_INTERVAL_MS = 5000;
-const IS_DEV_INSTALL = !('update_url' in MANIFEST);
+const IS_DEV_INSTALL = WPConstants.BACKEND.canUseLocal();
 const STREMIO_WEB_URLS = ['https://web.stremio.com/*', 'https://web.strem.io/*', 'https://app.strem.io/*'];
 const MANIFEST_HOST_PERMISSIONS = Array.isArray(MANIFEST.host_permissions) ? MANIFEST.host_permissions : [];
 const MANIFEST_OPTIONAL_HOST_PERMISSIONS = Array.isArray(MANIFEST.optional_host_permissions) ? MANIFEST.optional_host_permissions : [];
@@ -1587,7 +1587,7 @@ fetchStremioSettings();
 syncLocalWatchPartyBridge().catch(() => {});
 chrome.storage.session?.setAccessLevel?.({ accessLevel: 'TRUSTED_AND_UNTRUSTED_CONTEXTS' }).catch(() => {});
 WPRuntimeClock.setInterval(checkStremio, POLL_INTERVAL_MS);
-// Dev-only: auto-reload on file changes (no update_url = unpacked/dev extension)
+// Dev-only: store packages remain production even when loaded unpacked.
 if (IS_DEV_INSTALL) connectDevReload();
 chrome.permissions?.onAdded?.addListener(() => { syncLocalWatchPartyBridge().catch(() => {}); });
 chrome.permissions?.onRemoved?.addListener(() => { syncLocalWatchPartyBridge().catch(() => {}); });

@@ -71,7 +71,7 @@ test('lease responses cannot overrule newer claims, storage elections, or releas
   assert.equal(guard.isCurrent(afterElection), false);
 });
 
-function loadSocketRuntime() {
+function loadSocketRuntime({ packaged = false } = {}) {
   const probe = deferred();
   const sockets = [];
   const timers = new Map();
@@ -87,7 +87,7 @@ function loadSocketRuntime() {
   }
   const context = vm.createContext({
     console, WebSocket: FakeSocket,
-    chrome: { runtime: { getManifest: () => ({}), sendMessage: () => probe.promise } },
+    chrome: { runtime: { getManifest: () => ({ host_permissions: packaged ? ['http://localhost:11470/*'] : ['http://localhost:8181/*'] }), sendMessage: () => probe.promise } },
     WPRuntimeClock: {
       now: () => 1000, random: () => 0,
       setTimeout: (callback) => { const id = ++timerId; timers.set(id, callback); return id; },
@@ -108,6 +108,13 @@ test('concurrent connect calls during the localhost probe create exactly one soc
   await Promise.all(requests);
   assert.equal(sockets.length, 1);
   assert.equal(sockets[0].url, 'ws://localhost:8181');
+});
+
+test('unpacked production packages connect directly to production without a development probe', { timeout: 1000 }, async () => {
+  const { api, sockets } = loadSocketRuntime({ packaged: true });
+  await api.connect();
+  assert.equal(sockets.length, 1);
+  assert.equal(sockets[0].url, 'wss://ws.mertd.me');
 });
 
 test('controller release while a backend probe is pending cannot resurrect its socket', async () => {

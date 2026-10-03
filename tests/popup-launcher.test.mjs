@@ -66,7 +66,7 @@ function launcher(options = {}) {
     },
     chrome: {
       runtime: {
-        getManifest: () => ({ version: '2.0.2', ...(!options.development && { update_url: 'https://clients2.google.com/service/update2/crx' }) }),
+        getManifest: () => ({ version: '2.0.2', host_permissions: options.development ? ['http://localhost:8181/*'] : [], ...(!options.development && { update_url: 'https://clients2.google.com/service/update2/crx' }) }),
         sendMessage(message, callback) {
           sent.push(message);
           if (message.action === 'status.get') initialStatus = callback;

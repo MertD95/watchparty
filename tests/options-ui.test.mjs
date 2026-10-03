@@ -10,7 +10,7 @@ const markup = fs.readFileSync(path.join(root, 'extension/options.html'), 'utf8'
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
 // Event-focused adapter: the MCP browser checks actual layout and keyboard use.
-function optionsRuntime({ installed = true, initialStatus = null, preferenceRead = async () => ({}) } = {}) {
+function optionsRuntime({ installed = true, packaged = false, initialStatus = null, preferenceRead = async () => ({}) } = {}) {
   const nodes = new Map();
   const removed = [];
   const messages = [];
@@ -63,7 +63,7 @@ function optionsRuntime({ installed = true, initialStatus = null, preferenceRead
     navigator: { clipboard: { writeText: async () => {} } },
     chrome: {
       runtime: {
-        getManifest: () => ({ version: '2.0.2', ...(installed ? { update_url: 'https://example.com/update' } : {}) }),
+        getManifest: () => ({ version: '2.0.2', host_permissions: packaged ? [] : ['http://localhost:8181/*'], ...(installed ? { update_url: 'https://example.com/update' } : {}) }),
         sendMessage: async message => { messages.push(message); return message.action === 'status.get' ? initialStatus : { ok: true }; },
       },
       storage: { onChanged: { addListener() {} } },
@@ -138,6 +138,16 @@ test('installed settings hides development-only connection and localhost permiss
   assert.equal(dev.visible('backend-toggle'), true);
   assert.equal(dev.visible('dev-localhost-block'), true);
   assert.equal(dev.nodes.get('backend-local')['aria-pressed'], 'true');
+});
+
+test('a production ZIP loaded unpacked cannot expose local development or redundant server selectors', () => {
+  const ui = optionsRuntime({ installed: false, packaged: true });
+  ui.render({ backendMode: 'auto', wsConnected: false, isDevInstall: false });
+  assert.equal(ui.visible('backend-toggle'), false);
+  assert.equal(ui.visible('backend-local'), false);
+  assert.equal(ui.visible('dev-localhost-block'), false);
+  assert.equal(ui.run('WPConstants.BACKEND.canUseLocal()'), false);
+  assert.equal(ui.run("WPConstants.BACKEND.normalizeMode('local')"), 'live');
 });
 
 test('missing status and server diagnostics are not shown as verified healthy', () => {

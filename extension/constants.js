@@ -34,9 +34,12 @@ const WPConstants = (() => {
 
   function canUseLocalBackend() {
     try {
-      return typeof chrome !== 'undefined'
-        && !!chrome.runtime?.getManifest
-        && !('update_url' in chrome.runtime.getManifest());
+      if (typeof chrome === 'undefined' || !chrome.runtime?.getManifest) return false;
+      const manifest = chrome.runtime.getManifest();
+      // A production ZIP loaded unpacked has no update_url until the store
+      // installs it. Packaging removes these development-only permissions.
+      return !('update_url' in manifest) && Array.isArray(manifest.host_permissions)
+        && manifest.host_permissions.some((origin) => origin === 'http://localhost:8181/*' || origin === 'http://127.0.0.1:8181/*');
     } catch {
       return false;
     }

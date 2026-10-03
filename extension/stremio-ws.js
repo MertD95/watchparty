@@ -45,8 +45,8 @@ const WPWS = (() => {
   let onConnectHandler = null;
   let onDisconnectHandler = null;
 
-  // Auto mode only prefers localhost for unpacked/dev installs.
-  const isDevInstall = !('update_url' in chrome.runtime.getManifest());
+  // Store packages loaded unpacked still use production-only permissions.
+  const isDevInstall = BACKEND.canUseLocal();
 
   function formatErrorMessage(error) {
     return error instanceof Error ? error.message : String(error);

@@ -170,7 +170,7 @@
   seedRoom();
   window.chrome = { runtime: {
     id: 'watchparty-local-ui-preview', lastError: undefined,
-    getManifest: () => ({ version: '2.0.4', name: 'WatchParty UI preview' }),
+    getManifest: () => ({ version: '2.0.4', name: 'WatchParty UI preview', host_permissions: ['http://localhost:8181/*'] }),
     getURL: path => new URL('/extension/' + path.replace(/^\//, ''), location.origin).href,
     sendMessage: (message, callback) => { const work = dispatch(message); if (callback) work.then(callback); return work; },
     onMessage: messages,
