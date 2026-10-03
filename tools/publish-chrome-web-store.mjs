@@ -63,7 +63,7 @@ function summarize(status) {
   };
 }
 
-export async function runPublisher({ env = process.env, submit = false, cancelReview = false, publishStaged = false,
+export async function runPublisher({ env = process.env, submit = false, uploadOnly = false, cancelReview = false, publishStaged = false,
   expectedPendingVersion = env.CHROME_EXPECTED_PENDING_VERSION, expectedStagedVersion = env.CHROME_EXPECTED_STAGED_VERSION,
   zipBytes, expectedTag = env.CHROME_RELEASE_TAG,
   fetchImpl = globalThis.fetch, sleep = delay, now = Date.now, log = console.log,
@@ -72,8 +72,8 @@ export async function runPublisher({ env = process.env, submit = false, cancelRe
   const missing = [...ID_ENV, ...(suppliedToken ? [] : OAUTH_AUTH_ENV)].filter(name => !env[name]?.trim());
   if (missing.length) throw new Error(`Missing required environment variables: ${missing.join(', ')}.`);
   if (!/^[a-p]{32}$/.test(env.CHROME_EXTENSION_ID) || !/^[A-Za-z0-9_-]+$/.test(env.CHROME_PUBLISHER_ID)) throw new Error('Invalid Chrome item or publisher ID.');
-  if ([submit, cancelReview, publishStaged].filter(Boolean).length > 1) {
-    throw new Error('Submit, cancel review and publish staged are separate operations; they cannot run together.');
+  if ([submit, uploadOnly, cancelReview, publishStaged].filter(Boolean).length > 1) {
+    throw new Error('Upload, submit, cancel review and publish staged are separate operations; they cannot run together.');
   }
   if (cancelReview) {
     if (!validExpectedVersion(expectedPendingVersion)) {
@@ -95,10 +95,15 @@ export async function runPublisher({ env = process.env, submit = false, cancelRe
       throw new Error('CI staged publication requires an explicitly enabled manual dispatch from trusted main.');
     }
   }
-  if (submit && env.GITHUB_ACTIONS === 'true' && env.CHROME_PUBLISH_ENABLED !== 'true') throw new Error('Chrome submission is disabled; CHROME_PUBLISH_ENABLED must be true.');
-  if (submit && env.GITHUB_ACTIONS === 'true' && !expectedTag) throw new Error('A release tag is required for CI submission.');
+  const packageMutation = submit || uploadOnly;
+  if (packageMutation && env.GITHUB_ACTIONS === 'true' && env.CHROME_PUBLISH_ENABLED !== 'true') throw new Error('Chrome package mutation is disabled; CHROME_PUBLISH_ENABLED must be true.');
+  if (packageMutation && env.GITHUB_ACTIONS === 'true' && !expectedTag) throw new Error('A release tag is required for CI upload or submission.');
+  if (submit && env.GITHUB_ACTIONS === 'true' && (env.GITHUB_EVENT_NAME !== 'workflow_dispatch'
+    || env.GITHUB_REF !== 'refs/heads/main' || env.GITHUB_REPOSITORY !== 'MertD95/watchparty')) {
+    throw new Error('CI review submission requires an explicit manual dispatch from trusted main after listing changes are saved.');
+  }
   const version = publishStaged ? expectedStagedVersion : cancelReview ? expectedPendingVersion
-    : submit ? (expectedTag === undefined ? readStorePackage(zipBytes).manifest.version : validateReleasePackage(zipBytes, expectedTag)) : null;
+    : packageMutation ? (expectedTag === undefined ? readStorePackage(zipBytes).manifest.version : validateReleasePackage(zipBytes, expectedTag)) : null;
   const name = `publishers/${env.CHROME_PUBLISHER_ID}/items/${env.CHROME_EXTENSION_ID}`;
   const endpoint = `${API}/v2/${name}`;
   let token;
@@ -255,7 +260,7 @@ export async function runPublisher({ env = process.env, submit = false, cancelRe
     }
     throw new Error('Cancellation was accepted but the expected review is still pending. Check --status before proceeding; cancellation was not retried.');
   }
-  if (!submit) return report('status-only-no-changes', initial);
+  if (!packageMutation) return report('status-only-no-changes', initial);
   if (initial.takenDown || initial.warned) throw new Error('Store policy warning or takedown requires manual resolution before submission.');
   if (IN_PROGRESS.has(initial.lastAsyncUploadState)) throw new Error('An upload is already in progress; no additional upload was started.');
 
@@ -290,14 +295,18 @@ export async function runPublisher({ env = process.env, submit = false, cancelRe
     report('upload-status', status);
   }
   if (uploadState !== 'SUCCEEDED') throw new Error('Upload failed, remained pending, or returned an unknown state; submission was not requested. Check status before retrying.');
-  // Recheck state immediately before publishing so another operator's active
-  // submission or a policy warning cannot be silently overwritten.
+  // Recheck state after upload so another operator's active submission or a
+  // policy warning cannot be silently overwritten. Upload-only stops here.
   status = await fetchStatus();
   if (status.takenDown || status.warned || IN_PROGRESS.has(status.lastAsyncUploadState)) throw new Error('Store state changed after upload; inspect the dashboard before submission.');
   if (status.submittedItemRevisionStatus && !KNOWN_STATES.has(status.submittedItemRevisionStatus.state)) throw new Error('Unrecognized submitted item state after upload; inspect the dashboard before proceeding.');
   if (status.submittedItemRevisionStatus && ACTIVE_STATES.has(status.submittedItemRevisionStatus.state)) {
     if (versions(status.submittedItemRevisionStatus).some(current => compareVersions(current, version) === 0)) return report('already-submitted-no-changes', status);
     throw new Error('Another submission became active after upload; submission was not requested.');
+  }
+  if (uploadOnly) {
+    return report('upload-only-complete', status, { reviewSubmitted: false,
+      note: 'Package upload completed; save listing and privacy changes before an explicit staged review submission. The status API does not expose the unsubmitted draft version.' });
   }
   const publishedResult = await request('Submit for review', `${endpoint}:publish`, {
     method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
@@ -316,13 +325,13 @@ export async function runPublisher({ env = process.env, submit = false, cancelRe
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   try {
     const [mode, argument, ...extra] = process.argv.slice(2);
-    if (extra.length || !['--status', '--submit', '--cancel-review', '--publish-staged'].includes(mode) || (mode === '--status' ? argument : !argument)) {
-      throw new Error('Usage: node tools/publish-chrome-web-store.mjs --status | --submit <package.zip> | --cancel-review <expected-pending-version> | --publish-staged <expected-staged-version>');
+    if (extra.length || !['--status', '--upload', '--submit', '--cancel-review', '--publish-staged'].includes(mode) || (mode === '--status' ? argument : !argument)) {
+      throw new Error('Usage: node tools/publish-chrome-web-store.mjs --status | --upload <package.zip> | --submit <package.zip> | --cancel-review <expected-pending-version> | --publish-staged <expected-staged-version>');
     }
-    const result = await runPublisher({ submit: mode === '--submit', cancelReview: mode === '--cancel-review', publishStaged: mode === '--publish-staged',
+    const result = await runPublisher({ submit: mode === '--submit', uploadOnly: mode === '--upload', cancelReview: mode === '--cancel-review', publishStaged: mode === '--publish-staged',
       expectedPendingVersion: mode === '--cancel-review' ? argument : undefined,
       expectedStagedVersion: mode === '--publish-staged' ? argument : undefined,
-      zipBytes: mode === '--submit' ? await fs.readFile(argument) : undefined });
+      zipBytes: ['--submit', '--upload'].includes(mode) ? await fs.readFile(argument) : undefined });
     if (result.event === 'submission-accepted-status-unavailable') console.log(JSON.stringify(result));
   } catch (error) {
     console.error(error.message);

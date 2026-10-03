@@ -18,8 +18,9 @@ export function verifyReleaseSource({ repository, event, ref, workflowSha, relea
   }
   if (releaseOnMain !== true) {
     // This exception is intentionally a single immutable candidate, not a
-    // branch pattern. Manual runs cannot use it, and divergent history fails.
-    if (event !== 'release' || typeof candidateSha !== 'string' || !SHA.test(candidateSha)
+    // branch pattern. Manual runs still execute trusted-main workflow tools;
+    // only the separately checked-out package source can be this exact SHA.
+    if (typeof candidateSha !== 'string' || !SHA.test(candidateSha)
       || candidateSha !== releaseSha || mainOnRelease !== true) {
       throw new Error('Release must be reachable from main or be the exact explicitly authorized descendant candidate.');
     }

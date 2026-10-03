@@ -92,7 +92,8 @@ test('short-lived supplied access token requires no OAuth secrets and never refr
   assert.equal(h.calls[0].headers.Authorization, 'Bearer private-short-lived-token');
   assert.ok(!h.logs.join('').includes(shortEnv.CHROME_ACCESS_TOKEN));
   const submit = harness([status(), uploaded(), status(), { ...identity, state: 'PENDING_REVIEW' }, pending], {
-    env: { ...shortEnv, GITHUB_ACTIONS: 'true', CHROME_PUBLISH_ENABLED: 'true', CHROME_RELEASE_TAG: 'v2.0.2' },
+    env: { ...shortEnv, GITHUB_ACTIONS: 'true', CHROME_PUBLISH_ENABLED: 'true', CHROME_RELEASE_TAG: 'v2.0.2',
+      GITHUB_EVENT_NAME: 'workflow_dispatch', GITHUB_REF: 'refs/heads/main', GITHUB_REPOSITORY: 'MertD95/watchparty' },
   });
   assert.equal((await submit.run()).submissionState, 'PENDING_REVIEW');
   assert.ok(submit.calls.every(call => !call.url.includes('oauth2.googleapis.com')));
@@ -137,7 +138,7 @@ test('release workflow keeps short-lived auth scoped, status cheap, and exact-ta
   const workflow = fs.readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
   assert.doesNotMatch(workflow, /npm (?:ci|install|test|run verify)|node --test/);
   assert.match(workflow, /!github\.event\.release\.prerelease/);
-  assert.match(workflow, /inputs\.mode == 'package' \|\| inputs\.mode == 'submit'/);
+  assert.match(workflow, /inputs\.mode == 'package' \|\| inputs\.mode == 'upload' \|\| inputs\.mode == 'submit'/);
   assert.match(workflow, /vars\.CHROME_PUBLISH_ENABLED == 'true'/);
   assert.match(workflow, /run: node tools\/verify-release-source\.mjs/);
   assert.match(workflow, /CHROME_RELEASE_CANDIDATE_SHA: \$\{\{ vars\.CHROME_RELEASE_CANDIDATE_SHA \}\}/);
@@ -354,7 +355,7 @@ test('status and ordinary release submission never cancel even when an expected 
 
 test('workflow cancellation is manual-only, skips packaging and uses protected explicit expected-version input', () => {
   const workflow = fs.readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
-  assert.match(workflow, /options: \[status, package, submit, cancel-review, publish-staged\]/);
+  assert.match(workflow, /options: \[status, package, upload, submit, cancel-review, publish-staged\]/);
   assert.match(workflow, /expected_version:/);
   assert.match(workflow, /CHROME_EXPECTED_PENDING_VERSION: \$\{\{ inputs\.expected_version \}\}/);
   const packageJob = workflow.slice(workflow.indexOf('  package:'), workflow.indexOf('  chrome-store:'));
@@ -365,7 +366,7 @@ test('workflow cancellation is manual-only, skips packaging and uses protected e
   assert.doesNotMatch(workflow, /npm (?:ci|install|test|run verify)|node --test/);
 });
 
-test('release source guard allows main history and only one authorized descendant release-tag candidate', () => {
+test('release source guard allows main history and one exact candidate with trusted release or main-dispatch tools', () => {
   const releaseSha = 'a'.repeat(40), candidate = { repository: 'MertD95/watchparty', event: 'release',
     ref: 'refs/tags/v2.1.0', workflowSha: releaseSha, releaseTag: 'v2.1.0', releaseSha,
     releaseOnMain: false, mainOnRelease: true, candidateSha: releaseSha };
@@ -373,15 +374,76 @@ test('release source guard allows main history and only one authorized descendan
   assert.doesNotThrow(() => verifyReleaseSource({ ...candidate, releaseOnMain: true, candidateSha: undefined, mainOnRelease: false }));
   assert.doesNotThrow(() => verifyReleaseSource({ ...candidate, event: 'workflow_dispatch', ref: 'refs/heads/main',
     workflowSha: 'b'.repeat(40), releaseOnMain: true, candidateSha: undefined }));
+  assert.doesNotThrow(() => verifyReleaseSource({ ...candidate, event: 'workflow_dispatch', ref: 'refs/heads/main',
+    workflowSha: 'b'.repeat(40) }));
   for (const override of [
     { repository: 'someone/watchparty' }, { event: 'push' }, { ref: 'refs/heads/release/v2.1.0' },
     { workflowSha: 'b'.repeat(40) }, { releaseSha: 'not-a-sha' }, { releaseTag: 'v2.1.0-beta' },
     { releaseTag: 'v02.1.0' }, { releaseTag: 'v2.1.0\n' }, { releaseTag: 'v2.1.0;echo unsafe' },
     { candidateSha: undefined }, { candidateSha: 'b'.repeat(40) }, { candidateSha: releaseSha + '\n' },
     { candidateSha: releaseSha.toUpperCase() }, { mainOnRelease: false }, { mainOnRelease: 'true' },
-    { event: 'workflow_dispatch', ref: 'refs/heads/main' },
+    { event: 'workflow_dispatch', ref: 'refs/heads/main', candidateSha: undefined },
+    { event: 'workflow_dispatch', ref: 'refs/heads/main', candidateSha: 'b'.repeat(40) },
+    { event: 'workflow_dispatch', ref: 'refs/heads/main', mainOnRelease: false },
     { event: 'workflow_dispatch', ref: 'refs/heads/release/v2.1.0', releaseOnMain: true },
   ]) assert.throws(() => verifyReleaseSource({ ...candidate, ...override }));
+});
+
+test('upload-only prepares the exact package and stops before review or publication', async () => {
+  for (const uploadState of ['SUCCEEDED', 'IN_PROGRESS']) {
+    const responses = [token(), status(), uploaded({ uploadState, ...(uploadState === 'IN_PROGRESS' ? { crxVersion: undefined } : {}) })];
+    if (uploadState === 'IN_PROGRESS') responses.push(status({ lastAsyncUploadState: 'SUCCEEDED' }));
+    responses.push(status());
+    const h = harness(responses, { submit: false, uploadOnly: true });
+    const result = await h.run();
+    assert.equal(result.event, 'upload-only-complete');
+    assert.equal(result.requestedVersion, '2.0.2');
+    assert.equal(result.reviewSubmitted, false);
+    assert.equal(h.calls.filter(call => call.url.endsWith(':upload')).length, 1);
+    assert.equal(h.calls.some(call => call.url.endsWith(':publish') || call.url.endsWith(':cancelSubmission')), false);
+  }
+});
+
+test('upload-only enforces package/version guards and never overlaps other operations', async () => {
+  for (const options of [{ submit: true }, { cancelReview: true }, { publishStaged: true }, { expectedTag: 'v2.0.3' },
+    { env: { ...env, GITHUB_ACTIONS: 'true', CHROME_PUBLISH_ENABLED: 'false' } },
+    { env: { ...env, GITHUB_ACTIONS: 'true', CHROME_PUBLISH_ENABLED: 'true' } }]) {
+    const h = harness([], { submit: false, uploadOnly: true, ...options });
+    await assert.rejects(h.run());
+    assert.equal(h.calls.length, 0);
+  }
+  for (const initial of [{ ...status(), warned: true }, { ...status(), takenDown: true },
+    status({ submittedItemRevisionStatus: revision('PENDING_REVIEW', '2.0.3') }),
+    status({ lastAsyncUploadState: 'IN_PROGRESS' })]) {
+    const h = harness([token(), initial], { submit: false, uploadOnly: true });
+    await assert.rejects(h.run());
+    assert.equal(h.calls.some(call => call.url.endsWith(':upload') || call.url.endsWith(':publish')), false);
+  }
+  const failed = harness([token(), status(), new Error('private-provider-data')], { submit: false, uploadOnly: true });
+  await assert.rejects(failed.run(), error => !error.message.includes('private-provider-data'));
+  assert.equal(failed.calls.filter(call => call.url.endsWith(':upload')).length, 1);
+});
+
+test('explicit review submission reuploads its validated package and cannot run automatically on release', async () => {
+  const trusted = { ...env, GITHUB_ACTIONS: 'true', CHROME_PUBLISH_ENABLED: 'true', CHROME_RELEASE_TAG: 'v2.0.2',
+    GITHUB_EVENT_NAME: 'workflow_dispatch', GITHUB_REF: 'refs/heads/main', GITHUB_REPOSITORY: 'MertD95/watchparty' };
+  for (const changes of [{ GITHUB_EVENT_NAME: 'release', GITHUB_REF: 'refs/tags/v2.0.2' },
+    { GITHUB_REF: 'refs/heads/release/v2.0.2' }, { GITHUB_REPOSITORY: 'someone/watchparty' }]) {
+    const h = harness([], { env: { ...trusted, ...changes } });
+    await assert.rejects(h.run(), /explicit manual dispatch from trusted main/);
+    assert.equal(h.calls.length, 0);
+  }
+  const h = harness([token(), status({ lastAsyncUploadState: 'SUCCEEDED' }), uploaded(), status(),
+    { ...identity, state: 'PENDING_REVIEW' }, pending], { env: trusted });
+  assert.equal((await h.run()).submissionState, 'PENDING_REVIEW');
+  assert.equal(h.calls.filter(call => call.url.endsWith(':upload')).length, 1);
+  assert.deepEqual(h.calls.find(call => call.url.endsWith(':upload')).body, archive());
+  assert.equal(JSON.parse(h.calls.find(call => call.url.endsWith(':publish')).body).publishType, 'STAGED_PUBLISH');
+  const workflow = fs.readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /STORE_MODE: \$\{\{ github\.event_name == 'workflow_dispatch' && inputs\.mode \|\| 'upload' \}\}/);
+  assert.match(workflow, /if \[ "\$\{STORE_MODE\}" = 'submit' \]; then\r?\n\s+test "\$\{GITHUB_EVENT_NAME\}" = 'workflow_dispatch'/);
+  assert.equal((workflow.match(/--upload "\$\{PACKAGE_NAME\}"/g) || []).length, 2);
+  assert.equal((workflow.match(/if: env\.STORE_MODE == 'submit' \|\| env\.STORE_MODE == 'upload'/g) || []).length, 2);
 });
 
 const stagedTwo = () => status({ submittedItemRevisionStatus: revision('STAGED', '2.0.2') });
