@@ -127,8 +127,8 @@
       <p>
         The extension stores room state, private-room access keys, display name, and user preferences in Chrome extension
         storage so it can recover sessions and keep extension surfaces in sync. Private-room chat keys are kept in
-        memory-backed session storage and are not persisted across browser restarts. Stremio authentication state is held
-        only in the extension's service-worker memory, not in persistent or session extension storage.
+        memory-backed session storage and are not persisted across browser restarts. Within the extension, the Stremio
+        authentication key is retained only in the service worker's memory, not in persistent or session extension storage.
       </p>
 
       <h2>Security</h2>
@@ -137,11 +137,12 @@
         and operational endpoints are restricted separately from the public production room flow.
       </p>
       <p>
-        Public-room chat is not end-to-end encrypted. Private-room chat is encrypted in participants' browsers, with its
-        chat key carried in the invite link's fragment rather than sent to the room service. Room metadata, membership,
-        reactions and playback events are not end-to-end encrypted. Anyone with the full private invite can join and read
-        that room's chat, so share it only with intended participants. Shared playback links may contain provider-specific
-        access information; share only sources you are authorized to share.
+        Public-room chat is not end-to-end encrypted. Private-room chat is encrypted in participants' browsers. Its chat
+        key is carried in the invite link's fragment and is not sent to the room service; the separate room access key
+        is sent to the service to authorize access. Room metadata, membership, reactions and playback events are not
+        end-to-end encrypted. Anyone with the full private invite has the keys needed to join and read that room's chat,
+        so share it only with intended participants. Shared playback links may contain provider-specific access
+        information; share only sources you are authorized to share.
       </p>
       <p>
         For local playback compatibility, packaged network rules adjust headers only for supported Stremio Web requests
