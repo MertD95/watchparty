@@ -7,7 +7,7 @@ const SHA = /^[0-9a-f]{40}$/;
 const TAG = /^v(?:0|[1-9]\d*)(?:\.(?:0|[1-9]\d*)){0,3}$/;
 
 export function verifyReleaseSource({ repository, event, ref, workflowSha, releaseTag, releaseSha,
-  candidateSha, releaseOnMain, mainOnRelease } = {}) {
+  candidateSha, candidateBaseSha, releaseOnMain, mainOnRelease, baseOnRelease, baseOnMain } = {}) {
   if (repository !== 'MertD95/watchparty') throw new Error('Unexpected release repository.');
   if (!['release', 'workflow_dispatch'].includes(event)) throw new Error('Untrusted release event.');
   if (typeof releaseTag !== 'string' || !TAG.test(releaseTag)) throw new Error('An existing stable version tag is required.');
@@ -20,9 +20,15 @@ export function verifyReleaseSource({ repository, event, ref, workflowSha, relea
     // This exception is intentionally a single immutable candidate, not a
     // branch pattern. Manual runs still execute trusted-main workflow tools;
     // only the separately checked-out package source can be this exact SHA.
+    // An explicitly pinned common baseline lets main's release tooling evolve
+    // without moving an already uploaded/reviewed tag. This additional path is
+    // never available to a release event, whose workflow comes from that tag.
+    const trustedMainBaseline = event === 'workflow_dispatch'
+      && typeof candidateBaseSha === 'string' && SHA.test(candidateBaseSha)
+      && baseOnRelease === true && baseOnMain === true;
     if (typeof candidateSha !== 'string' || !SHA.test(candidateSha)
-      || candidateSha !== releaseSha || mainOnRelease !== true) {
-      throw new Error('Release must be reachable from main or be the exact explicitly authorized descendant candidate.');
+      || candidateSha !== releaseSha || (mainOnRelease !== true && !trustedMainBaseline)) {
+      throw new Error('Release must be reachable from main or be the exact authorized candidate with trusted ancestry.');
     }
   }
   return { releaseTag, releaseSha };
@@ -41,10 +47,16 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
     if (typeof releaseTag !== 'string' || !TAG.test(releaseTag)) throw new Error('An existing stable version tag is required.');
     const releaseSha = execFileSync('git', ['rev-parse', '--verify', `refs/tags/${releaseTag}^{commit}`],
       { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    const releaseOnMain = isAncestor(releaseSha, 'origin/main');
+    const mainOnRelease = isAncestor('origin/main', releaseSha);
+    const candidateBaseSha = process.env.CHROME_RELEASE_CANDIDATE_BASE_SHA;
+    const checkBaseline = !releaseOnMain && !mainOnRelease && process.env.GITHUB_EVENT_NAME === 'workflow_dispatch'
+      && typeof candidateBaseSha === 'string' && SHA.test(candidateBaseSha);
     const source = verifyReleaseSource({ repository: process.env.GITHUB_REPOSITORY, event: process.env.GITHUB_EVENT_NAME,
       ref: process.env.GITHUB_REF, workflowSha: process.env.GITHUB_SHA, releaseTag, releaseSha,
-      candidateSha: process.env.CHROME_RELEASE_CANDIDATE_SHA,
-      releaseOnMain: isAncestor(releaseSha, 'origin/main'), mainOnRelease: isAncestor('origin/main', releaseSha) });
+      candidateSha: process.env.CHROME_RELEASE_CANDIDATE_SHA, candidateBaseSha,
+      releaseOnMain, mainOnRelease, baseOnRelease: checkBaseline && isAncestor(candidateBaseSha, releaseSha),
+      baseOnMain: checkBaseline && isAncestor(candidateBaseSha, 'origin/main') });
     if (!process.env.GITHUB_OUTPUT) throw new Error('GitHub output file is required.');
     appendFileSync(process.env.GITHUB_OUTPUT, `release_tag=${source.releaseTag}\nrelease_sha=${source.releaseSha}\n`);
     console.log('Exact release identity and trusted ancestry verified.');

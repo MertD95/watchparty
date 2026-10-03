@@ -60,6 +60,7 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
           CHROME_RELEASE_CANDIDATE_SHA: ${{ vars.CHROME_RELEASE_CANDIDATE_SHA }}
+          CHROME_RELEASE_CANDIDATE_BASE_SHA: ${{ vars.CHROME_RELEASE_CANDIDATE_BASE_SHA }}
         run: node tools/verify-release-source.mjs
       - name: Checkout exact tested tag separately from workflow tools
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
