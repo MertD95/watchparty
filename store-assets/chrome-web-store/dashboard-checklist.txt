@@ -1,4 +1,4 @@
-WATCHPARTY 2.1.0 — DASHBOARD CHECKLIST
+WATCHPARTY 2.1.1 — DASHBOARD CHECKLIST
 
 Open https://chrome.google.com/webstore/devconsole/
 Select the existing "WatchParty for Stremio" item.
@@ -30,7 +30,7 @@ Privacy policy: https://watchparty.mertd.me/privacy.html
 4. PRIVACY PRACTICES
 Use privacy-and-permissions.txt for the single-purpose statement,
 permission explanations, remote-code answer, and collected-data categories.
-Some permission fields may appear only after the 2.1.0 package is uploaded
+Some permission fields may appear only after the 2.1.1 package is uploaded
 by the release workflow. If it still shows 2.0.4, save your listing edits
 and wait for confirmation that the new package is uploaded.
 Do not select "no user data collected"; this would be inaccurate.
@@ -43,6 +43,6 @@ Do not click "Submit for review", "Publish", "Cancel review", or change rollout.
 Tell me when the description, images, and privacy fields have been saved.
 If a field is unclear, send its label/message, not any secrets.
 
-The pipeline will submit the tested 2.1.0 package for staged review after
+The pipeline will submit the tested 2.1.1 package for staged review after
 you confirm these draft edits. Approval will not automatically make it live.
 The website/backend and extension require a coordinated release.

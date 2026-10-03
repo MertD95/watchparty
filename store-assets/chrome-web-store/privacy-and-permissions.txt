@@ -1,4 +1,4 @@
-WATCHPARTY 2.1.0 — COPY-READY PRIVACY FIELDS
+WATCHPARTY 2.1.1 — COPY-READY PRIVACY FIELDS
 
 SINGLE PURPOSE
 Let people watch together on supported Stremio Web pages through shared rooms with synchronized playback and in-room communication.
