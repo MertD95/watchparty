@@ -4,7 +4,7 @@ import fs from 'node:fs';
 
 const listing = JSON.parse(fs.readFileSync(new URL('../store-listing.json', import.meta.url), 'utf8'));
 const manifest = JSON.parse(fs.readFileSync(new URL('../extension/manifest.json', import.meta.url), 'utf8'));
-const privacy = fs.readFileSync(new URL('../landing/privacy.html', import.meta.url), 'utf8');
+const privacy = fs.readFileSync(new URL('../landing/privacy.html', import.meta.url), 'utf8').replace(/\s+/g, ' ');
 
 test('store copy stays in sync with the manifest and explains real requirements', () => {
   assert.equal(listing.title, manifest.name);
@@ -30,7 +30,7 @@ test('privacy disclosures distinguish encrypted chat from ordinary room metadata
   assert.match(listing.detailedDescription, /membership and playback events are not end-to-end encrypted/);
   assert.match(privacy, /Public-room chat is not end-to-end encrypted/);
   assert.match(privacy, /reactions and playback events are not end-to-end encrypted/);
-  assert.match(privacy, /only in the extension's service-worker memory/);
+  assert.match(privacy, /authentication key is retained only in the service worker's memory, not in persistent or session extension storage/);
   assert.match(listing.dataDisclosures.authenticationInformation, /not sent to the WatchParty room backend/);
 });
 
